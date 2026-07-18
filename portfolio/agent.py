@@ -11,13 +11,14 @@ from .config import Settings
 from .database import PortfolioDatabase
 from .lseg_capabilities import capability_answer
 from .lseg_research import (
+    LSEGNoMatches,
     ResearchCancelled,
     ResearchResult,
     answer_follow_up,
     concise_report,
     run_research,
 )
-from .research_planner import build_research_plan
+from .research_planner import UnsupportedResearchConstraint, build_research_plan
 from .market_data import current_price
 from .models import Purchase
 
@@ -56,6 +57,8 @@ class StockAgent:
             return "Enter a request."
 
         lower = text.casefold()
+        if self._last_research_result is not None and self._is_research_follow_up(text):
+            return answer_follow_up(self._last_research_result, text, self.settings)
         if (
             "lseg capabilities" in lower
             or "lseg functions" in lower
@@ -69,8 +72,6 @@ class StockAgent:
             or (re.search(r"\b(find|show|list)\b", lower) and re.search(r"\b(stocks?|companies|equities)\b", lower))
         ):
             return self.research(text, progress_callback=progress_callback, cancel_event=cancel_event)
-        if self._last_research_result is not None and self._is_research_follow_up(text):
-            return answer_follow_up(self._last_research_result, text, self.settings)
         if "show holdings" in lower or lower in {"holdings", "portfolio"}:
             return self.show_holdings()
         if "calculate return" in lower or "portfolio return" in lower:
@@ -105,6 +106,10 @@ class StockAgent:
                 pass
 
         progress(2, "Interpreting request", "Translating the request into a constrained research workflow.")
+        # A new research attempt invalidates pronoun-based context immediately.
+        # If it fails or returns no matches, follow-ups must not discuss a stale
+        # company from an earlier request.
+        self._last_research_result = None
         try:
             if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
                 raise ResearchCancelled("Research stopped by user.")
@@ -115,14 +120,26 @@ class StockAgent:
             result = run_research(
                 plan, self.settings, progress_callback=progress, cancel_event=cancel_event
             )
-            self._last_research_result = result
-            progress(94, "Synthesizing report", "Identifying the most important opportunities, catalysts, risks, and contradictions.")
+            progress(97, "Synthesizing report", "Identifying the most important opportunities, catalysts, risks, and contradictions.")
             report = concise_report(result, self.settings, cancel_event=cancel_event)
-            progress(100, "Research complete", f"Finished with {result.metrics.get('api_call_count', len(result.calls))} LSEG operations.")
+            self._last_research_result = result
+            request_count = result.metrics.get("lseg_request_count", len(getattr(result, "call_records", [])))
+            progress(
+                100,
+                "Research complete",
+                f"Finished with {request_count} LSEG requests; "
+                f"{result.metrics.get('lseg_request_succeeded', 0)} succeeded.",
+            )
             return report
         except ResearchCancelled:
             progress(None, "Research stopped", "Stopped by user.")
             return "Research stopped. Partial results were discarded."
+        except UnsupportedResearchConstraint as exc:
+            progress(None, "Request needs revision", str(exc))
+            return f"I did not run an LSEG request because the research constraint could not be compiled safely: {exc}"
+        except LSEGNoMatches as exc:
+            progress(100, "No validated matches", str(exc))
+            return f"No adequately supported company was found after validating the requested constraints. {exc}"
         except Exception as exc:
             progress(None, "Research failed", f"{type(exc).__name__}: {exc}")
             return (
@@ -144,7 +161,19 @@ class StockAgent:
                 lower,
             )
         )
-        return refers_to_prior_result and research_question
+        direct_follow_up = bool(
+            re.fullmatch(
+                r"\s*(?:why\s+(?:is\s+)?(?:it|this company|this stock)?\s*undervalued\??|"
+                r"what\s+(?:are|is)\s+(?:the\s+)?(?:major\s+)?(?:risks?|catalysts?)\??|"
+                r"what(?:'s|\s+is)\s+(?:the\s+)?(?:risk|catalyst|downside)\??|"
+                r"what\s+could\s+go\s+wrong\??|"
+                r"why\s+(?:was\s+)?(?:it|this company|this stock)\s+selected\??|"
+                r"tell\s+me\s+more(?:\s+about\s+(?:it|this company|this stock))?\.?|"
+                r"explain\s+(?:the\s+)?valuation\.?)\s*",
+                lower,
+            )
+        )
+        return (refers_to_prior_result and research_question) or direct_follow_up
 
     def show_holdings(self) -> str:
         holdings = self.database.holdings()

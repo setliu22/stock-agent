@@ -21,7 +21,12 @@ import pandas as pd
 
 from .company_resolver import ResolvedInstrument, resolve_instrument
 from .config import Settings
-from .research_planner import ResearchPlan, ScreenFilters, canonicalize_sector
+from .research_planner import (
+    ResearchPlan,
+    ScreenFilters,
+    canonicalize_sector,
+    classification_definition,
+)
 from .research_workflows import get_workflow
 
 
@@ -47,7 +52,10 @@ def _emit_progress(
 TOPIC_FIELDS: dict[str, tuple[str, ...]] = {
     "profile": (
         "TR.CommonName", "TR.TickerSymbol", "TR.HeadquartersCountry", "TR.ExchangeName",
-        "TR.TRBCEconomicSector", "TR.TRBCIndustryGroup", "TR.CompanyMarketCap", "TR.EV",
+        "TR.HQCountryCode", "TR.TRBCEconomicSector", "TR.TRBCEconSectorCode",
+        "TR.TRBCBusinessSector", "TR.TRBCBusinessSectorCode",
+        "TR.TRBCIndustryGroup", "TR.TRBCIndustryGroupCode",
+        "TR.TRBCIndustry", "TR.TRBCIndustryCode", "TR.CompanyMarketCap", "TR.EV",
         "TR.PriceClose", "TR.OrganizationID", "TR.BusinessSummary",
     ),
     "fundamentals": (
@@ -97,10 +105,8 @@ TOPIC_FIELDS: dict[str, tuple[str, ...]] = {
 }
 
 ESTIMATE_HISTORY_FIELDS: tuple[str, ...] = (
-    "TR.EPSMean(Period=FY1).calcdate", "TR.EPSMean(Period=FY1)",
-    "TR.EPSNumIncEstimates(Period=FY1)", "TR.EpsSmartEst(Period=FY1)",
-    "TR.EpsSENumIncEst(Period=FY1)", "TR.RevenueMean(Period=FY1)",
-    "TR.RevenueNumIncEstimates(Period=FY1)", "TR.ClosePrice(Adjusted=1)",
+    "TR.EPSMean(Period=FY1).calcdate", "TR.EPSMean(Period=FY1).periodenddate",
+    "TR.EPSMean(Period=FY1)",
 )
 
 FIELD_LABELS: dict[str, str] = {
@@ -124,9 +130,14 @@ FIELD_LABELS: dict[str, str] = {
 }
 
 SCREEN_FIELDS: tuple[str, ...] = (
-    "TR.CommonName", "TR.TickerSymbol", "TR.TRBCEconomicSector", "TR.TRBCIndustryGroup",
+    "TR.CommonName", "TR.TickerSymbol", "TR.HQCountryCode",
+    "TR.TRBCEconomicSector", "TR.TRBCEconSectorCode",
+    "TR.TRBCBusinessSector", "TR.TRBCBusinessSectorCode",
+    "TR.TRBCIndustryGroup", "TR.TRBCIndustryGroupCode",
+    "TR.TRBCIndustry", "TR.TRBCIndustryCode",
     "TR.CompanyMarketCap", "TR.PriceClose", "TR.PE", "TR.PtoEPSMeanEst(Period=FY1)",
-    "TR.EVToEBITDA", "TR.DividendYield", "TR.TotalReturn3Mo",
+    "TR.EVToEBITDA", "TR.PriceToSalesPerShare", "TR.PriceToBVPerShare",
+    "TR.DividendYield", "TR.TotalReturn3Mo",
     "TR.ReturnonAvgTotEqtyPctNetIncomeBeforeExtraItemsTTM", "TR.ROAPercentTrailing12M",
     "TR.PriceTargetMean", "TR.EpsPreSurprisePct", "TR.EPSMean(Period=FY1)",
     "TR.EpsSmartEst(Period=FY1)", "TR.FCFMean(Period=FY1)", "TR.F.DebtTot",
@@ -146,13 +157,21 @@ TRBC_SECTOR_CODES: dict[str, str] = {
 }
 
 SCREEN_CORE_FIELDS: tuple[str, ...] = (
-    "TR.CommonName", "TR.TickerSymbol", "TR.TRBCEconomicSector", "TR.TRBCIndustryGroup",
+    "TR.CommonName", "TR.TickerSymbol", "TR.HQCountryCode",
+    "TR.TRBCEconomicSector", "TR.TRBCEconSectorCode",
+    "TR.TRBCBusinessSector", "TR.TRBCBusinessSectorCode",
+    "TR.TRBCIndustryGroup", "TR.TRBCIndustryGroupCode",
+    "TR.TRBCIndustry", "TR.TRBCIndustryCode",
     "TR.CompanyMarketCap", "TR.PriceClose",
 )
 
 
 class LSEGResearchError(RuntimeError):
     pass
+
+
+class LSEGNoMatches(LSEGResearchError):
+    """The validated screen ran successfully but no rows met every constraint."""
 
 
 class ResearchCancelled(RuntimeError):
@@ -185,8 +204,14 @@ def _looks_like_invalid_field_error(exc: BaseException) -> bool:
         "invalid field name",
         "invalid data item",
         "unrecognized data item",
+        "unable to resolve all requested fields",
+        "formula must contain at least one field or function",
     )
-    return any(phrase in text for phrase in phrases)
+    if "412" in text and "identifier" in text:
+        return False
+    return any(phrase in text for phrase in phrases) or bool(
+        re.search(r"(?:error\s+code|code)\s*[:=-]?\s*218\b", text)
+    )
 
 
 def _is_cancelled(cancel_event: Any | None) -> bool:
@@ -211,6 +236,7 @@ class ResearchResult:
     metrics: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     calls: list[str] = field(default_factory=list)
+    call_records: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def has_data(self) -> bool:
@@ -238,6 +264,7 @@ class _LSEGClient:
         *,
         warn: bool = True,
         capture_failure: bool = False,
+        request_metadata: dict[str, Any] | None = None,
     ) -> Any:
         _raise_if_cancelled(self.cancel_event)
         wait = self.minimum_interval - (time.monotonic() - self._last_call)
@@ -249,7 +276,7 @@ class _LSEGClient:
                 time.sleep(wait)
         _raise_if_cancelled(self.cancel_event)
         self._last_call = time.monotonic()
-        call_number = len(self.result.calls) + 1
+        call_number = len(self.result.call_records) + 1
         self.result.calls.append(label)
         _emit_progress(
             self.progress_callback,
@@ -257,23 +284,52 @@ class _LSEGClient:
             "Querying LSEG",
             f"API request {call_number}: {label}",
         )
+        started = time.monotonic()
+        record: dict[str, Any] = {
+            "request_number": call_number,
+            "label": label,
+            "status": "started",
+        }
+        if request_metadata:
+            record["request"] = _json_safe(request_metadata)
+        self.result.call_records.append(record)
         try:
             value = function()
             _raise_if_cancelled(self.cancel_event)
+            frame = _frame_from_response(value)
+            record.update({
+                "status": "succeeded",
+                "duration_ms": round((time.monotonic() - started) * 1000, 1),
+                "rows": len(frame) if not frame.empty else 0 if isinstance(value, pd.DataFrame) else None,
+            })
             return value
         except ResearchCancelled:
+            record.update({
+                "status": "cancelled",
+                "duration_ms": round((time.monotonic() - started) * 1000, 1),
+            })
             raise
         except Exception as exc:
             if _looks_like_timeout(exc):
+                record.update({
+                    "status": "timed_out",
+                    "duration_ms": round((time.monotonic() - started) * 1000, 1),
+                    "error_type": type(exc).__name__,
+                })
                 message = f"{label}: timed out and was skipped"
                 self.result.warnings.append(message)
                 _emit_progress(
                     self.progress_callback,
                     None,
                     "Skipping slow LSEG request",
-                    f"{label} exceeded the configured request timeout; continuing without that optional evidence.",
+                    f"{label} exceeded the configured request timeout; the workflow will verify whether enough evidence remains.",
                 )
                 return _CALL_TIMED_OUT
+            record.update({
+                "status": "failed",
+                "duration_ms": round((time.monotonic() - started) * 1000, 1),
+                "error_type": type(exc).__name__,
+            })
             if warn:
                 self.result.warnings.append(f"{label}: {type(exc).__name__}: {exc}")
             return _CallFailure(exc) if capture_failure else None
@@ -407,6 +463,28 @@ def _canonicalize(frame: Any, requested_fields: Iterable[str]) -> pd.DataFrame:
     def normalized(value: Any) -> str:
         return re.sub(r"[^a-z0-9]", "", str(value).casefold())
 
+    # Display-title aliases observed in LSEG Data Library responses when an
+    # older build cannot honor HeaderType.NAME. Unknown equal-width columns are
+    # never mapped positionally: doing so can attribute one field's values to a
+    # different requested field when LSEG changes or omits columns.
+    header_aliases = {
+        normalized("Company Common Name"): "TR.CommonName",
+        normalized("Ticker Symbol"): "TR.TickerSymbol",
+        normalized("Price Close"): "TR.PriceClose",
+        normalized("Headquarters Country"): "TR.HeadquartersCountry",
+        normalized("Country of Headquarters"): "TR.HeadquartersCountry",
+        normalized("Country ISO Code"): "TR.HQCountryCode",
+        normalized("Country ISO Code of Headquarters"): "TR.HQCountryCode",
+        normalized("TRBC Economic Sector Name"): "TR.TRBCEconomicSector",
+        normalized("TRBC Economic Sector Code"): "TR.TRBCEconSectorCode",
+        normalized("TRBC Business Sector Name"): "TR.TRBCBusinessSector",
+        normalized("TRBC Business Sector Code"): "TR.TRBCBusinessSectorCode",
+        normalized("TRBC Industry Group Name"): "TR.TRBCIndustryGroup",
+        normalized("TRBC Industry Group Code"): "TR.TRBCIndustryGroupCode",
+        normalized("TRBC Industry Name"): "TR.TRBCIndustry",
+        normalized("TRBC Industry Code"): "TR.TRBCIndustryCode",
+    }
+
     field_keys: dict[str, list[str]] = {}
     for field_name in fields:
         field_keys.setdefault(normalized(field_name), []).append(field_name)
@@ -421,12 +499,11 @@ def _canonicalize(frame: Any, requested_fields: Iterable[str]) -> pd.DataFrame:
         if len(candidates) == 1:
             rename[column] = candidates[0]
             matched += 1
-
-    # HeaderType.NAME should make the mapping above exact. This fallback exists
-    # only for older/mocked responses where titles are returned in request order.
-    if matched == 0 and len(value_columns) == len(fields):
-        for field_name, column in zip(fields, value_columns):
-            rename[column] = field_name
+            continue
+        aliased = header_aliases.get(key)
+        if aliased in fields:
+            rename[column] = aliased
+            matched += 1
 
     result = result.rename(columns=rename)
     return result.loc[:, ~result.columns.duplicated()]
@@ -438,11 +515,46 @@ def _combine_columns(frames: list[pd.DataFrame]) -> pd.DataFrame:
         return pd.DataFrame()
     output = frames[0].copy()
     for frame in frames[1:]:
-        join_columns = [column for column in ("Instrument",) if column in output.columns and column in frame.columns]
-        if join_columns:
-            output = output.merge(frame, on=join_columns, how="outer")
+        frame = frame.copy()
+        if "Instrument" in output.columns and "Instrument" in frame.columns:
+            if output["Instrument"].duplicated().any() or frame["Instrument"].duplicated().any():
+                raise LSEGResearchError(
+                    "LSEG returned row-expanding field batches without a shared record key; "
+                    "combining them by row order would risk cross-record attribution."
+                )
+            join_columns = ["Instrument"]
+            overlaps = [column for column in frame.columns if column in output.columns and column not in join_columns]
+            right_names = {column: f"__right_{index}" for index, column in enumerate(overlaps)}
+            frame = frame.rename(columns=right_names)
+            output = output.merge(frame, on=join_columns, how="outer", validate="one_to_one")
+            for column, right_column in right_names.items():
+                if column in {
+                    "TR.HQCountryCode", "TR.TRBCEconSectorCode", "TR.TRBCBusinessSectorCode",
+                    "TR.TRBCIndustryGroupCode", "TR.TRBCIndustryCode", "TR.TickerSymbol",
+                    "TR.OrganizationID",
+                }:
+                    left = output[column].map(_normalized_code)
+                    right = output[right_column].map(_normalized_code)
+                    conflicts = left.ne("") & right.ne("") & left.ne(right)
+                    if conflicts.any():
+                        instruments = output.loc[conflicts, "Instrument"].astype(str).head(5).tolist()
+                        raise LSEGResearchError(
+                            f"LSEG returned conflicting {column} values for: {', '.join(instruments)}."
+                        )
+                output[column] = output[column].combine_first(output[right_column])
+                output = output.drop(columns=right_column)
+        elif len(output) == len(frame) == 1:
+            overlaps = [column for column in frame.columns if column in output.columns]
+            for column in overlaps:
+                output[column] = output[column].combine_first(frame[column])
+            output = pd.concat(
+                [output.reset_index(drop=True), frame.drop(columns=overlaps).reset_index(drop=True)], axis=1
+            )
         else:
-            output = pd.concat([output.reset_index(drop=True), frame.reset_index(drop=True)], axis=1)
+            raise LSEGResearchError(
+                "LSEG returned multiple field batches without instrument identifiers; "
+                "the rows cannot be combined safely."
+            )
     return output.loc[:, ~output.columns.duplicated()]
 
 
@@ -455,7 +567,10 @@ def _call_get_data(ld: Any, universe: Any, fields: tuple[str, ...], parameters: 
         return ld.get_data(**kwargs)
     except TypeError as exc:
         # Preserve compatibility with older library builds and unit-test fakes.
-        if "header_type" not in kwargs:
+        message = str(exc).casefold()
+        if "header_type" not in kwargs or not (
+            "header_type" in message and ("unexpected" in message or "keyword" in message)
+        ):
             raise
         kwargs.pop("header_type", None)
         return ld.get_data(**kwargs)
@@ -501,23 +616,37 @@ def _safe_get_data(
         field_batches = [requested]
 
     row_frames: list[pd.DataFrame] = []
-    timed_out = False
+    coverage = client.result.metrics.setdefault("data_request_coverage", {})
 
     for chunk_index, universe_chunk in enumerate(chunks, start=1):
         _raise_if_cancelled(client.cancel_event)
         batch_frames: list[pd.DataFrame] = []
+        chunk_timed_out = False
 
         def fetch(batch: tuple[str, ...]) -> list[pd.DataFrame]:
-            nonlocal timed_out
+            nonlocal chunk_timed_out
             _raise_if_cancelled(client.cancel_event)
+            if isinstance(universe_chunk, (list, tuple, set)):
+                universe_metadata: Any = [str(item) for item in universe_chunk]
+            elif isinstance(universe_chunk, str):
+                universe_metadata = universe_chunk
+            else:
+                universe_metadata = type(universe_chunk).__name__
             response = client.call(
                 f"{label} chunk {chunk_index}/{len(chunks)} ({len(batch)} fields)",
                 lambda: _call_get_data(ld, universe_chunk, batch, parameters),
                 warn=False,
                 capture_failure=True,
+                request_metadata={
+                    "operation": "get_data",
+                    "universe": universe_metadata,
+                    "universe_count": len(universe_chunk) if isinstance(universe_chunk, (list, tuple, set)) else 1,
+                    "fields": list(batch),
+                    "parameters": parameters or {},
+                },
             )
             if response is _CALL_TIMED_OUT:
-                timed_out = True
+                chunk_timed_out = True
                 failures.extend(batch)
                 return []
             if isinstance(response, _CallFailure):
@@ -536,18 +665,68 @@ def _safe_get_data(
                 # content family or date window. It is not a reason to retry each
                 # field individually.
                 return []
+            requested_rics: set[str] = set()
+            if isinstance(universe_chunk, (list, tuple, set)):
+                requested_rics = {str(item).strip() for item in universe_chunk if str(item).strip()}
+            elif isinstance(universe_chunk, str):
+                candidate_ric = universe_chunk.strip()
+                if candidate_ric and not candidate_ric.upper().startswith(("SCREEN(", "0#")):
+                    requested_rics = {candidate_ric}
+            if len(requested_rics) == 1 and "Instrument" not in frame.columns:
+                frame.insert(0, "Instrument", next(iter(requested_rics)))
+            if requested_rics:
+                if "Instrument" not in frame.columns:
+                    client.result.warnings.append(
+                        f"{label}: explicit-instrument response had no Instrument column and was discarded."
+                    )
+                    failures.extend(batch)
+                    return []
+                returned_rics = {str(item).strip() for item in frame["Instrument"].dropna() if str(item).strip()}
+                unexpected_rics = sorted(returned_rics - requested_rics)
+                if unexpected_rics:
+                    client.result.warnings.append(
+                        f"{label}: discarded unexpected instruments returned by LSEG: "
+                        + ", ".join(unexpected_rics[:20])
+                    )
+                    frame = frame[frame["Instrument"].astype(str).isin(requested_rics)].copy()
+                    returned_rics = {
+                        str(item).strip() for item in frame["Instrument"].dropna() if str(item).strip()
+                    }
+                coverage_record = {
+                    "fields": list(batch),
+                    "requested_rics": len(requested_rics),
+                    "returned_rics": len(returned_rics),
+                    "missing_rics": sorted(requested_rics - returned_rics)[:100],
+                    "unexpected_rics": unexpected_rics[:100],
+                }
+                coverage.setdefault(f"{label}:chunk_{chunk_index}", []).append(coverage_record)
+                if coverage_record["missing_rics"]:
+                    client.result.warnings.append(
+                        f"{label}: no row returned for requested instruments: "
+                        + ", ".join(coverage_record["missing_rics"][:20])
+                    )
+                if frame.empty:
+                    failures.extend(batch)
+                    return []
+            mapped_fields = [field for field in batch if field in frame.columns]
+            missing_fields = [field for field in batch if field not in frame.columns]
+            if missing_fields:
+                client.result.warnings.append(
+                    f"{label}: LSEG omitted returned columns for: {', '.join(missing_fields)}"
+                )
+                failures.extend(missing_fields)
+            if not mapped_fields:
+                return []
             return [frame]
 
         for batch in field_batches:
-            if not batch or timed_out:
+            if not batch or chunk_timed_out:
                 break
             batch_frames.extend(fetch(batch))
 
         combined_chunk = _combine_columns(batch_frames)
         if not combined_chunk.empty:
             row_frames.append(combined_chunk)
-        if timed_out:
-            break
 
     combined = pd.concat(row_frames, ignore_index=True, sort=False) if row_frames else pd.DataFrame()
     if failures:
@@ -561,9 +740,14 @@ def _first_value(result: ResearchResult, table_name: str, field_name: str, ric: 
     if frame is None or frame.empty or field_name not in frame.columns:
         return None
     subset = frame
-    if ric and "Instrument" in subset.columns:
-        selected = subset[subset["Instrument"].astype(str) == ric]
-        if not selected.empty:
+    if ric:
+        if "Instrument" not in subset.columns:
+            if len(result.resolved) != 1 or result.resolved[0].ric != ric:
+                return None
+        else:
+            selected = subset[subset["Instrument"].astype(str) == ric]
+            if selected.empty:
+                return None
             subset = selected
     values = subset[field_name].dropna()
     return None if values.empty else values.iloc[0]
@@ -573,19 +757,26 @@ def _numeric(value: Any) -> float | None:
     if _missing(value):
         return None
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    return number if math.isfinite(number) else None
 
 
 def _column(frame: pd.DataFrame, field_name: str) -> pd.Series:
     if frame.empty or field_name not in frame.columns:
         return pd.Series(dtype="float64")
-    return pd.to_numeric(frame[field_name], errors="coerce")
+    return (
+        pd.to_numeric(frame[field_name], errors="coerce")
+        .astype("float64")
+        .replace([math.inf, -math.inf], float("nan"))
+    )
 
 
 def _screen_number(value: float) -> str:
     number = float(value)
+    if not math.isfinite(number):
+        raise LSEGResearchError("Screen thresholds must be finite numbers.")
     return str(int(number)) if number.is_integer() else format(number, ".15g")
 
 
@@ -598,22 +789,36 @@ def build_screen_body(filters: ScreenFilters) -> str:
     """
     clauses = ["U(IN(Equity(active,public,primary)))/*UNV:Public*/"]
     if filters.country_code:
-        clauses.append(f'IN(TR.HQCountryCode,"{filters.country_code.upper()}")')
+        country = str(filters.country_code).strip().upper()
+        if not re.fullmatch(r"[A-Z]{2}", country):
+            raise LSEGResearchError("Headquarters country must be a two-letter code.")
+        if country not in {"US", "GB", "CA", "DE", "FR", "JP", "CN", "IN"}:
+            raise LSEGResearchError(f"Unsupported headquarters-country code: {country}.")
+        clauses.append(f'IN(TR.HQCountryCode,"{country}")')
     if filters.sector:
         canonical_sector = canonicalize_sector(filters.sector)
         if canonical_sector is None:
             raise LSEGResearchError(f"Unsupported sector wording: {filters.sector!r}.")
         sector_code = TRBC_SECTOR_CODES[canonical_sector.casefold()]
         clauses.append(f'IN(TR.TRBCEconSectorCode,"{sector_code}")')
+    if filters.industry:
+        definition = classification_definition(filters.industry)
+        if definition is None:
+            raise LSEGResearchError(f"Unsupported industry wording: {filters.industry!r}.")
+        codes = ",".join(f'"{code}"' for code in definition.codes)
+        clauses.append(f"IN({definition.code_field},{codes})")
     if filters.market_cap_min is not None:
         clauses.append(f"TR.CompanyMarketCap>={_screen_number(filters.market_cap_min)}")
     if filters.market_cap_max is not None:
         clauses.append(f"TR.CompanyMarketCap<={_screen_number(filters.market_cap_max)}")
     if filters.pe_max is not None:
+        clauses.append("TR.PE>0")
         clauses.append(f"TR.PE<={_screen_number(filters.pe_max)}")
     if filters.forward_pe_max is not None:
+        clauses.append("TR.PtoEPSMeanEst(Period=FY1)>0")
         clauses.append(f"TR.PtoEPSMeanEst(Period=FY1)<={_screen_number(filters.forward_pe_max)}")
     if filters.ev_ebitda_max is not None:
+        clauses.append("TR.EVToEBITDA>0")
         clauses.append(f"TR.EVToEBITDA<={_screen_number(filters.ev_ebitda_max)}")
     if filters.dividend_yield_min is not None:
         clauses.append(f"TR.DividendYield>={_screen_number(filters.dividend_yield_min)}")
@@ -643,7 +848,11 @@ def _rank_candidate_screen(frame: pd.DataFrame) -> pd.DataFrame:
     def numeric(field: str) -> pd.Series:
         if field not in output.columns:
             return pd.Series(float("nan"), index=output.index, dtype="float64")
-        return pd.to_numeric(output[field], errors="coerce")
+        return (
+            pd.to_numeric(output[field], errors="coerce")
+            .astype("float64")
+            .replace([math.inf, -math.inf], float("nan"))
+        )
 
     price = numeric("TR.PriceClose")
     target = numeric("TR.PriceTargetMean")
@@ -656,6 +865,34 @@ def _rank_candidate_screen(frame: pd.DataFrame) -> pd.DataFrame:
     debt = numeric("TR.F.DebtTot")
     fcf = numeric("TR.FCFMean(Period=FY1)")
     output["FCF to Debt"] = fcf.div(debt.abs()).where(debt.abs() > 0)
+    sector_codes = output.get("TR.TRBCEconSectorCode", pd.Series("", index=output.index)).map(_normalized_code)
+    # Corporate leverage and EV/EBITDA are not comparable primary factors for
+    # banks and insurers. Keep those rows eligible through price/book, ROE and
+    # other applicable factors instead of rewarding an economically invalid ratio.
+    financial_rows = sector_codes.eq("55")
+    output.loc[financial_rows, "FCF to Debt"] = pd.NA
+    output["Applicable EV/EBITDA"] = numeric("TR.EVToEBITDA").mask(financial_rows)
+
+    positive_signal_sets: dict[Any, set[str]] = {index: set() for index in output.index}
+    positive_signals = {
+        "quality": (numeric("TR.ReturnonAvgTotEqtyPctNetIncomeBeforeExtraItemsTTM") > 0)
+        | (numeric("TR.ROAPercentTrailing12M") > 0),
+        "cash_flow": output["FCF to Debt"] > 0,
+        "income": numeric("TR.DividendYield") > 0,
+        "momentum": numeric("TR.TotalReturn3Mo") > 0,
+        "expectations": (output["Target Upside"] > 0)
+        | (numeric("TR.EpsPreSurprisePct") > 0)
+        | (output["Smart Gap"] > 0),
+    }
+    for family, mask in positive_signals.items():
+        for index in output.index[mask.fillna(False)]:
+            positive_signal_sets[index].add(family)
+    output["Positive Signal Family Count"] = pd.Series(
+        {index: len(families) for index, families in positive_signal_sets.items()}, dtype="int64"
+    )
+    output["Positive Signal Families"] = pd.Series(
+        {index: ", ".join(sorted(families)) for index, families in positive_signal_sets.items()}
+    )
 
     components: list[tuple[str, pd.Series, float, str]] = []
 
@@ -672,7 +909,9 @@ def _rank_candidate_screen(frame: pd.DataFrame) -> pd.DataFrame:
         components.append((family, percentile.where(valid), weight, field))
 
     add("valuation", "TR.PtoEPSMeanEst(Period=FY1)", 0.13, higher_is_better=False, positive_only=True)
-    add("valuation", "TR.EVToEBITDA", 0.09, higher_is_better=False, positive_only=True)
+    add("valuation", "Applicable EV/EBITDA", 0.09, higher_is_better=False, positive_only=True)
+    add("valuation", "TR.PriceToSalesPerShare", 0.07, higher_is_better=False, positive_only=True)
+    add("valuation", "TR.PriceToBVPerShare", 0.07, higher_is_better=False, positive_only=True)
     add("quality", "TR.ReturnonAvgTotEqtyPctNetIncomeBeforeExtraItemsTTM", 0.13)
     add("quality", "TR.ROAPercentTrailing12M", 0.09)
     add("cash_flow", "FCF to Debt", 0.09)
@@ -688,6 +927,18 @@ def _rank_candidate_screen(frame: pd.DataFrame) -> pd.DataFrame:
         output["Evidence Count"] = 0
         output["Evidence Families"] = ""
         return output.sort_values("TR.CompanyMarketCap", ascending=False, na_position="last")
+
+    value_fields = (
+        "TR.PtoEPSMeanEst(Period=FY1)", "TR.EVToEBITDA",
+        "TR.PriceToSalesPerShare", "TR.PriceToBVPerShare",
+    )
+    value_evidence = pd.Series(0, index=output.index, dtype="int64")
+    for field_name in value_fields:
+        values = numeric(field_name)
+        if field_name == "TR.EVToEBITDA":
+            values = values.mask(financial_rows)
+        value_evidence = value_evidence.add((values > 0).astype(int), fill_value=0).astype(int)
+    output["Value Evidence Count"] = value_evidence
 
     weighted_sum = pd.Series(0.0, index=output.index)
     available_weight = pd.Series(0.0, index=output.index)
@@ -717,7 +968,20 @@ def _rank_candidate_screen(frame: pd.DataFrame) -> pd.DataFrame:
     ).drop(columns="_market_cap_sort")
 
 
-def apply_screen_filters(frame: pd.DataFrame, filters: ScreenFilters) -> pd.DataFrame:
+def _normalized_code(value: Any) -> str:
+    if _missing(value):
+        return ""
+    text = str(value).strip()
+    return text[:-2] if text.endswith(".0") else text
+
+
+def apply_screen_filters(
+    frame: pd.DataFrame,
+    filters: ScreenFilters,
+    *,
+    truncate: bool = True,
+    strict: bool = True,
+) -> pd.DataFrame:
     output = frame.copy()
     tests = (
         ("TR.CompanyMarketCap", filters.market_cap_min, "min"),
@@ -729,16 +993,61 @@ def apply_screen_filters(frame: pd.DataFrame, filters: ScreenFilters) -> pd.Data
         ("TR.TotalReturn3Mo", filters.total_return_3m_min, "min"),
     )
     for field_name, threshold, direction in tests:
-        if threshold is None or field_name not in output.columns:
+        if threshold is None:
+            continue
+        if field_name not in output.columns:
+            if strict:
+                raise LSEGResearchError(
+                    f"The requested screen constraint could not be validated because LSEG did not return {field_name}."
+                )
             continue
         values = pd.to_numeric(output[field_name], errors="coerce")
-        output = output[values >= threshold] if direction == "min" else output[values <= threshold]
-    if filters.sector and "TR.TRBCEconomicSector" in output.columns:
-        output = output[
-            output["TR.TRBCEconomicSector"].astype(str).str.casefold() == filters.sector.casefold()
-        ]
+        if direction == "min":
+            output = output[values >= threshold]
+        elif field_name in {"TR.PE", "TR.PtoEPSMeanEst(Period=FY1)", "TR.EVToEBITDA"}:
+            output = output[(values > 0) & (values <= threshold)]
+        else:
+            output = output[values <= threshold]
+    if filters.country_code:
+        if "TR.HQCountryCode" not in output.columns:
+            if strict:
+                raise LSEGResearchError(
+                    "The headquarters-country constraint could not be validated because LSEG did not return TR.HQCountryCode."
+                )
+        else:
+            output = output[
+                output["TR.HQCountryCode"].map(_normalized_code).str.upper()
+                == filters.country_code.upper()
+            ]
+    if filters.sector:
+        canonical_sector = canonicalize_sector(filters.sector)
+        sector_code = TRBC_SECTOR_CODES.get((canonical_sector or "").casefold())
+        if "TR.TRBCEconSectorCode" in output.columns and sector_code:
+            output = output[output["TR.TRBCEconSectorCode"].map(_normalized_code) == sector_code]
+        elif "TR.TRBCEconomicSector" in output.columns:
+            output = output[
+                output["TR.TRBCEconomicSector"].astype(str).str.casefold()
+                == (canonical_sector or filters.sector).casefold()
+            ]
+        elif strict:
+            raise LSEGResearchError(
+                "The TRBC sector constraint could not be validated because LSEG returned no sector code or name."
+            )
+    if filters.industry:
+        definition = classification_definition(filters.industry)
+        if definition is None:
+            raise LSEGResearchError(f"Unsupported industry wording: {filters.industry!r}.")
+        if definition.code_field not in output.columns:
+            if strict:
+                raise LSEGResearchError(
+                    f"The TRBC industry constraint could not be validated because LSEG did not return {definition.code_field}."
+                )
+        else:
+            allowed = set(definition.codes)
+            output = output[output[definition.code_field].map(_normalized_code).isin(allowed)]
     if filters.candidate_search or filters.sort_by == "quality_value":
-        return _rank_candidate_screen(output).head(filters.limit).reset_index(drop=True)
+        ranked = _rank_candidate_screen(output).reset_index(drop=True)
+        return ranked.head(filters.limit) if truncate else ranked
     sort_field = {
         "market_cap": "TR.CompanyMarketCap",
         "pe": "TR.PE",
@@ -750,7 +1059,8 @@ def apply_screen_filters(frame: pd.DataFrame, filters: ScreenFilters) -> pd.Data
         output = output.assign(_sort=pd.to_numeric(output[sort_field], errors="coerce"))
         output = output.sort_values("_sort", ascending=sort_field not in {"TR.CompanyMarketCap", "TR.TotalReturn3Mo"})
         output = output.drop(columns="_sort")
-    return output.head(filters.limit).reset_index(drop=True)
+    output = output.reset_index(drop=True)
+    return output.head(filters.limit) if truncate else output
 
 
 def _retrieve_screen(ld: Any, client: _LSEGClient, result: ResearchResult) -> None:
@@ -759,7 +1069,20 @@ def _retrieve_screen(ld: Any, client: _LSEGClient, result: ResearchResult) -> No
     if filters.universe:
         from lseg.data.discovery import Chain
 
-        universe: Any = list(client.call(f"Chain {filters.universe}", lambda: Chain(filters.universe), warn=True) or [])
+        chain_response = client.call(
+            f"Chain {filters.universe}",
+            lambda: list(Chain(filters.universe)),
+            warn=False,
+            capture_failure=True,
+            request_metadata={"operation": "discovery.Chain", "chain": filters.universe},
+        )
+        if chain_response is _CALL_TIMED_OUT:
+            raise LSEGResearchError(f"Constituent expansion timed out for {filters.universe}.")
+        if isinstance(chain_response, _CallFailure):
+            raise LSEGResearchError(
+                f"Constituent expansion failed for {filters.universe}: {chain_response.error}"
+            ) from chain_response.error
+        universe: Any = list(chain_response or [])
         if not universe:
             raise LSEGResearchError(f"No constituents were returned for {filters.universe}.")
         core = _safe_get_data(ld, client, universe[:workflow.screen_limit], SCREEN_CORE_FIELDS, label="Index universe")
@@ -772,55 +1095,247 @@ def _retrieve_screen(ld: Any, client: _LSEGClient, result: ResearchResult) -> No
         # LSEG's documented Python pattern is discovery.Screener(body), followed
         # by get_data on that object. A full SCREEN(...) string is retained only
         # as a compatibility fallback for library builds that accept it directly.
-        discovery_fields = ("TR.CommonName", "TR.CompanyMarketCap", "TR.TRBCEconomicSector")
+        discovery_fields_list = ["TR.CommonName", "TR.CompanyMarketCap"]
+        if filters.country_code:
+            discovery_fields_list.append("TR.HQCountryCode")
+        if filters.sector:
+            discovery_fields_list.extend(("TR.TRBCEconomicSector", "TR.TRBCEconSectorCode"))
+        if filters.industry:
+            definition = classification_definition(filters.industry)
+            if definition is None:
+                raise LSEGResearchError(f"Unsupported industry wording: {filters.industry!r}.")
+            discovery_fields_list.append(definition.code_field)
+        discovery_fields = tuple(dict.fromkeys(discovery_fields_list))
 
-        def fetch_once(universe_value: Any, label: str, fields: tuple[str, ...]) -> pd.DataFrame:
+        def fetch_once(universe_value: Any, label: str, fields: tuple[str, ...]) -> tuple[pd.DataFrame, BaseException | None]:
+            universe_label = universe_value if isinstance(universe_value, str) else type(universe_value).__name__
             response = client.call(
                 label,
                 lambda: _call_get_data(ld, universe_value, fields, None),
-                warn=True,
+                warn=False,
+                capture_failure=True,
+                request_metadata={
+                    "operation": "get_data",
+                    "universe": universe_label,
+                    "fields": list(fields),
+                    "parameters": {},
+                },
             )
-            return _canonicalize(response, fields)
+            if isinstance(response, _CallFailure):
+                return pd.DataFrame(), response.error
+            if response is _CALL_TIMED_OUT:
+                return pd.DataFrame(), TimeoutError("screen request timed out")
+            return _canonicalize(response, fields), None
 
         core = pd.DataFrame()
+        object_error: BaseException | None = None
         try:
             from lseg.data.discovery import Screener
 
             screener = Screener(body)
-            core = fetch_once(screener, "Stock screen via discovery.Screener", discovery_fields)
-            if core.empty:
-                core = fetch_once(screener, "Stock screen retry with minimal field", ("TR.CommonName",))
+            core, object_error = fetch_once(screener, "Stock screen via discovery.Screener", discovery_fields)
         except Exception as exc:
-            result.warnings.append(f"Stock screen object: {type(exc).__name__}: {exc}")
+            object_error = exc
 
+        if object_error is not None:
+            message = f"{type(object_error).__name__}: {object_error}".casefold()
+            compatibility_error = isinstance(object_error, (ImportError, AttributeError, TypeError)) and any(
+                token in message for token in ("screener", "universe", "unexpected", "unsupported")
+            )
+            if not compatibility_error:
+                raise LSEGResearchError(
+                    f"The canonical discovery.Screener request failed: {type(object_error).__name__}: {object_error}"
+                ) from object_error
+            result.warnings.append(
+                f"Stock screen object compatibility fallback: {type(object_error).__name__}: {object_error}"
+            )
+            core, fallback_error = fetch_once(
+                expression, "Stock screen via SCREEN expression compatibility fallback", discovery_fields
+            )
+            if fallback_error is not None:
+                raise LSEGResearchError(
+                    f"Both supported screen representations failed; fallback error: "
+                    f"{type(fallback_error).__name__}: {fallback_error}"
+                ) from fallback_error
         if core.empty:
-            core = fetch_once(expression, "Stock screen via SCREEN expression fallback", discovery_fields)
-        if core.empty:
-            raise LSEGResearchError(
-                "The LSEG session opened, but the canonical TRBC stock screen returned no rows. "
-                f"Sector={filters.sector!r}; expression={expression}. "
-                "The application used the documented TRBC sector-code screen and tried both "
-                "discovery.Screener and the full SCREEN expression. Check whether the Workspace "
-                "Screener app itself returns results for the same sector and whether your account "
-                "is entitled to company screening."
+            raise LSEGNoMatches(
+                "The validated LSEG screen completed successfully but returned no matching companies. "
+                f"Criteria: {expression}"
             )
 
     if core.empty or "Instrument" not in core.columns:
         raise LSEGResearchError("The screen returned no usable instrument identifiers.")
+
+    raw_screen_count = len(core)
+    identity_filters = ScreenFilters(
+        country_code=filters.country_code,
+        sector=filters.sector,
+        industry=filters.industry,
+        limit=max(len(core), 3),
+    )
+    core = apply_screen_filters(core, identity_filters, truncate=False, strict=True)
+    instrument_text = core["Instrument"].astype("string").str.strip()
+    blank_instruments = instrument_text.isna() | instrument_text.eq("")
+    if blank_instruments.any():
+        result.warnings.append(
+            f"Stock screen: discarded {int(blank_instruments.sum())} row(s) without a usable Instrument identifier."
+        )
+        core = core.loc[~blank_instruments].copy()
+    duplicate_instruments = core["Instrument"].astype(str).duplicated(keep=False)
+    if duplicate_instruments.any():
+        duplicates = core.loc[duplicate_instruments, "Instrument"].astype(str).drop_duplicates().head(10)
+        raise LSEGResearchError(
+            "The screen returned duplicate rows for instrument identifiers: " + ", ".join(duplicates)
+        )
+    result.metrics["constraint_validation"] = {
+        "requested_country": filters.country_code,
+        "requested_sector": filters.sector,
+        "requested_industry": filters.industry,
+        "returned_rows": raw_screen_count,
+        "validated_rows": len(core),
+        "rejected_rows": raw_screen_count - len(core),
+    }
+    if core.empty:
+        raise LSEGNoMatches(
+            "LSEG returned rows for the compiled screen, but none passed local country/TRBC postcondition checks."
+        )
 
     rics = list(dict.fromkeys(str(value).strip() for value in core["Instrument"].dropna().tolist() if str(value).strip()))
     if not rics:
         raise LSEGResearchError("The screen returned no usable RICs.")
     rics = rics[:workflow.screen_limit]
     result.metrics["screen_universe_count"] = len(rics)
+    result.metrics["screen_universe_cap"] = workflow.screen_limit
+    result.metrics["screen_universe_scope"] = (
+        f"Top {workflow.screen_limit} active public primary equities by USD market capitalization "
+        "after the compiled country/TRBC constraints."
+    )
 
-    enrichment = _safe_get_data(ld, client, rics, SCREEN_FIELDS, label="Stock-screen enrichment")
+    enrichment = _safe_get_data(
+        ld,
+        client,
+        rics,
+        SCREEN_FIELDS,
+        parameters={"Curn": "USD"},
+        label="Stock-screen enrichment",
+    )
     frame = _combine_columns([core, enrichment])
-    ranked = apply_screen_filters(frame, filters)
+    full_ranked = apply_screen_filters(frame, filters, truncate=False, strict=True)
+    if full_ranked.empty:
+        raise LSEGNoMatches(
+            "The LSEG screen ran successfully, but no companies met every validated numeric and classification constraint."
+        )
+    result.tables["screen_universe"] = full_ranked.reset_index(drop=True)
+    result.metrics["screen_matching_count"] = len(full_ranked)
+    cohort_statistics: dict[str, dict[str, Any]] = {}
+    for field_name, unit, positive_only in (
+        ("TR.PtoEPSMeanEst(Period=FY1)", "multiple", True),
+        ("TR.EVToEBITDA", "multiple", True),
+        ("TR.PriceToSalesPerShare", "multiple", True),
+        ("TR.PriceToBVPerShare", "multiple", True),
+        ("TR.ReturnonAvgTotEqtyPctNetIncomeBeforeExtraItemsTTM", "percentage_points", False),
+        ("TR.DividendYield", "percentage_points", False),
+    ):
+        values = _column(full_ranked, field_name).replace([math.inf, -math.inf], pd.NA).dropna()
+        if positive_only:
+            values = values[values > 0]
+        if not values.empty:
+            cohort_statistics[field_name] = {
+                "median": float(values.median()),
+                "valid_n": len(values),
+                "unit": unit,
+                "currency": "USD" if field_name.startswith("TR.CompanyMarketCap") else None,
+                "sector": filters.sector,
+                "industry": filters.industry,
+            }
+    result.metrics["cohort_statistics"] = cohort_statistics
+
+    value_discount_count = pd.Series(0, index=full_ranked.index, dtype="int64")
+    value_discount_fields: dict[Any, list[str]] = {index: [] for index in full_ranked.index}
+    financial_rows = full_ranked.get(
+        "TR.TRBCEconSectorCode", pd.Series("", index=full_ranked.index)
+    ).map(_normalized_code).eq("55")
+    for field_name in (
+        "TR.PtoEPSMeanEst(Period=FY1)", "TR.EVToEBITDA",
+        "TR.PriceToSalesPerShare", "TR.PriceToBVPerShare",
+    ):
+        values = _column(full_ranked, field_name)
+        for index, value in values.items():
+            if not math.isfinite(value) or value <= 0:
+                continue
+            if field_name == "TR.EVToEBITDA" and bool(financial_rows.loc[index]):
+                continue
+            peers = values.drop(index=index).replace([math.inf, -math.inf], pd.NA).dropna()
+            peers = peers[peers > 0]
+            if len(peers) < 5:
+                continue
+            median = float(peers.median())
+            if value < median * 0.90:
+                value_discount_count.loc[index] += 1
+                value_discount_fields[index].append(field_name)
+    full_ranked["Value Discount Count"] = value_discount_count
+    full_ranked["Value Discount Fields"] = pd.Series(
+        {index: ", ".join(fields) for index, fields in value_discount_fields.items()}
+    )
+    result.tables["screen_universe"] = full_ranked.reset_index(drop=True)
+
+    eligible = full_ranked
+    if filters.candidate_search:
+        family_column = "Evidence Family Count"
+        if family_column not in eligible.columns:
+            required_failures = [
+                record for record in result.call_records
+                if str(record.get("label", "")).startswith("Stock-screen enrichment")
+                and record.get("status") in {"failed", "timed_out", "cancelled"}
+            ]
+            if required_failures:
+                raise LSEGResearchError(
+                    "The screen matched companies, but required ranking enrichment did not complete; "
+                    "the run was not classified as a true no-match."
+                )
+            raise LSEGNoMatches("No candidate had enough comparable value, quality, expectations, momentum, and risk data.")
+        family_count = pd.to_numeric(eligible[family_column], errors="coerce").fillna(0)
+        eligible = eligible[family_count >= workflow.minimum_screen_factor_families]
+        if eligible.empty:
+            raise LSEGNoMatches(
+                f"The screen matched companies, but none had the required {workflow.minimum_screen_factor_families} "
+                "independent factor families for candidate selection."
+            )
+        if re.search(r"\b(promising|good|attractive|strong|investable|best)\b", result.plan.raw_request.casefold()):
+            if "Positive Signal Family Count" not in eligible.columns:
+                eligible = eligible.iloc[0:0]
+            else:
+                positive_count = pd.to_numeric(
+                    eligible["Positive Signal Family Count"], errors="coerce"
+                ).fillna(0)
+                eligible = eligible[positive_count >= 2]
+            result.metrics["screen_positive_eligible_count"] = len(eligible)
+            if eligible.empty:
+                raise LSEGNoMatches(
+                    "The screen matched companies, but none had positive signals in at least two independent "
+                    "quality, cash-flow, income, momentum, or expectations families."
+                )
+        if re.search(r"\b(undervalued|bargain|cheap|value)\b", result.plan.raw_request.casefold()):
+            if "Value Discount Count" not in eligible.columns:
+                eligible = eligible.iloc[0:0]
+            else:
+                value_count = pd.to_numeric(eligible["Value Discount Count"], errors="coerce").fillna(0)
+                eligible = eligible[value_count >= 1]
+            result.metrics["screen_value_eligible_count"] = len(eligible)
+            if eligible.empty:
+                raise LSEGNoMatches(
+                    "The screen matched companies, but none traded at least 10% below a validated cohort median on a usable positive valuation multiple."
+                )
+        result.metrics["screen_evidence_eligible_count"] = len(eligible)
+
+    ranked = eligible.head(filters.limit).reset_index(drop=True)
     result.tables["screen"] = ranked
-    result.metrics["screen_ranked_count"] = len(ranked)
-    if not ranked.empty and "Evidence Family Count" in ranked.columns:
-        result.metrics["screen_median_evidence_families"] = float(pd.to_numeric(ranked["Evidence Family Count"], errors="coerce").median())
+    result.metrics["screen_ranked_count"] = len(eligible)
+    result.metrics["screen_display_count"] = len(ranked)
+    if "Evidence Family Count" in eligible.columns:
+        result.metrics["screen_median_evidence_families"] = float(
+            pd.to_numeric(eligible["Evidence Family Count"], errors="coerce").median()
+        )
 
 
 def _limit_per_instrument(frame: pd.DataFrame, limit: int) -> pd.DataFrame:
@@ -844,6 +1359,19 @@ def _retrieve_winner_optional_context(
     """
     if not result.resolved:
         return
+    lower_request = result.plan.raw_request.casefold()
+    requested_optional = {
+        topic
+        for topic, pattern in {
+            "guidance": r"\bguidance\b",
+            "events": r"\b(?:events?|calendar)\b",
+            "ownership": r"\b(?:ownership|holders?|shareholders?)\b",
+            "insiders": r"\b(?:insiders?|insider transactions?)\b",
+        }.items()
+        if re.search(pattern, lower_request)
+    }
+    if not requested_optional:
+        return
     winner = result.resolved[0]
     ric = winner.ric
     _emit_progress(
@@ -853,49 +1381,73 @@ def _retrieve_winner_optional_context(
         f"{winner.company_name} ({ric}): checking recent guidance, events, ownership, and insider activity.",
     )
 
-    for topic in ("guidance", "events"):
-        frame = _safe_get_data(
-            ld,
-            client,
-            [ric],
-            TOPIC_FIELDS[topic],
-            parameters={"SDate": -365, "EDate": 0},
-            label=f"Winner {topic}",
-            universe_chunk_size=1,
-            field_batch_size=None,
-            isolate_invalid_fields=True,
+    if "guidance" in requested_optional:
+        result.warnings.append(
+            "Winner guidance: generic row-expanding guidance fields were not queried because they do not expose "
+            "a stable shared record key and can create a Cartesian response."
         )
+
+    for topic in ("events",):
+        if topic not in requested_optional:
+            continue
+        try:
+            frame = _safe_get_data(
+                ld,
+                client,
+                [ric],
+                TOPIC_FIELDS[topic],
+                parameters={"SDate": -365, "EDate": 0},
+                label=f"Winner {topic}",
+                universe_chunk_size=1,
+                field_batch_size=None,
+                isolate_invalid_fields=True,
+            )
+        except LSEGResearchError as exc:
+            result.warnings.append(f"Winner {topic}: optional row-expanding data was skipped: {exc}")
+            continue
         if not frame.empty:
             result.tables[topic] = _limit_per_instrument(frame, 12)
 
     # LSEG's documented fund-ownership example uses a narrow daily snapshot
     # window. Asking for an unconstrained current table can expand to thousands
     # of rows and block the workflow.
-    ownership = _safe_get_data(
-        ld,
-        client,
-        [ric],
-        TOPIC_FIELDS["ownership"],
-        parameters={"SDate": -25, "EDate": -24, "Frq": "D"},
-        label="Winner ownership snapshot",
-        universe_chunk_size=1,
-        field_batch_size=None,
-        isolate_invalid_fields=False,
-    )
+    ownership = pd.DataFrame()
+    if "ownership" in requested_optional:
+        try:
+            ownership = _safe_get_data(
+                ld,
+                client,
+                [ric],
+                TOPIC_FIELDS["ownership"],
+                parameters={"SDate": -25, "EDate": -24, "Frq": "D"},
+                label="Winner ownership snapshot",
+                universe_chunk_size=1,
+                field_batch_size=None,
+                isolate_invalid_fields=False,
+            )
+        except LSEGResearchError as exc:
+            result.warnings.append(f"Winner ownership: optional data was skipped: {exc}")
+            ownership = pd.DataFrame()
     if not ownership.empty:
         result.tables["ownership"] = _limit_per_instrument(ownership, 15)
 
-    insiders = _safe_get_data(
-        ld,
-        client,
-        [ric],
-        TOPIC_FIELDS["insiders"],
-        parameters={"SDate": -365, "EDate": 0, "Frq": "Q"},
-        label="Winner insider activity",
-        universe_chunk_size=1,
-        field_batch_size=None,
-        isolate_invalid_fields=False,
-    )
+    insiders = pd.DataFrame()
+    if "insiders" in requested_optional:
+        try:
+            insiders = _safe_get_data(
+                ld,
+                client,
+                [ric],
+                TOPIC_FIELDS["insiders"],
+                parameters={"SDate": -365, "EDate": 0, "Frq": "Q"},
+                label="Winner insider activity",
+                universe_chunk_size=1,
+                field_batch_size=None,
+                isolate_invalid_fields=False,
+            )
+        except LSEGResearchError as exc:
+            result.warnings.append(f"Winner insiders: optional data was skipped: {exc}")
+            insiders = pd.DataFrame()
     if not insiders.empty:
         result.tables["insiders"] = _limit_per_instrument(insiders, 15)
 
@@ -913,7 +1465,8 @@ def _retrieve_candidate_deep_dive(
     shortlist = screen.head(workflow.deep_dive_candidates)
     resolved: list[ResolvedInstrument] = []
     for _, row in shortlist.iterrows():
-        ric = str(row.get("Instrument") or "").strip()
+        ric_value = row.get("Instrument")
+        ric = "" if _missing(ric_value) else str(ric_value).strip()
         if not ric:
             continue
         ticker_value = row.get("TR.TickerSymbol")
@@ -954,6 +1507,7 @@ def _retrieve_candidate_deep_dive(
     )
 
     total_candidates = max(len(resolved), 1)
+    esg_enabled = True
     for index, item in enumerate(resolved):
         candidate_percent = 62 + int((index / total_candidates) * 24)
         _emit_progress(
@@ -965,11 +1519,11 @@ def _retrieve_candidate_deep_dive(
         _retrieve_price_history(ld, client, result, item)
         _retrieve_estimate_history(ld, client, result, item)
         _retrieve_news(ld, client, result, item)
-        if index < 3:
-            _retrieve_news_stories(ld, client, result, item, workflow.news_stories_per_candidate)
-            _retrieve_peers(ld, client, result, item)
-            _retrieve_filings(client, result, item)
-            _retrieve_esg(client, result, item)
+        _retrieve_news_stories(ld, client, result, item, workflow.news_stories_per_candidate)
+        _retrieve_peers(ld, client, result, item)
+        _retrieve_filings(client, result, item)
+        if esg_enabled:
+            esg_enabled = _retrieve_esg(client, result, item)
     _emit_progress(
         progress_callback,
         86,
@@ -997,28 +1551,71 @@ def _retrieve_price_history(ld: Any, client: _LSEGClient, result: ResearchResult
             "start": start.isoformat(),
             "end": end.isoformat(),
             "interval": "daily",
+            "adjustments": ["exchangeCorrection", "manualCorrection", "CCH", "CRE", "RTS", "RPO"],
         }
         header_type = getattr(getattr(ld, "HeaderType", None), "NAME", None)
         if header_type is not None:
             kwargs["header_type"] = header_type
         try:
             return ld.get_history(**kwargs)
-        except TypeError:
+        except TypeError as exc:
+            message = str(exc).casefold()
+            if not ("header_type" in message and ("unexpected" in message or "keyword" in message)):
+                raise
             kwargs.pop("header_type", None)
             return ld.get_history(**kwargs)
 
-    response = client.call(f"Price history {resolved.ric}", call_history)
+    response = client.call(
+        f"Price history {resolved.ric}",
+        call_history,
+        request_metadata={
+            "operation": "get_history",
+            "universe": resolved.ric,
+            "fields": ["TRDPRC_1"],
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "interval": "daily",
+            "adjustments": ["exchangeCorrection", "manualCorrection", "CCH", "CRE", "RTS", "RPO"],
+        },
+    )
     frame = _frame_from_response(response)
     if frame.empty:
         return
     if isinstance(frame.columns, pd.MultiIndex):
         frame.columns = [" ".join(str(item) for item in column if item not in {None, ""}).strip() for column in frame.columns]
+    date_source: Any = frame.index
+    if isinstance(frame.index, pd.RangeIndex) or pd.api.types.is_numeric_dtype(frame.index.dtype):
+        date_column = _date_column(frame)
+        if date_column is None:
+            result.tables[f"price:{resolved.ric}"] = frame
+            result.warnings.append(
+                f"Price history {resolved.ric}: no trustworthy date index was returned, so return metrics were omitted."
+            )
+            return
+        date_source = frame[date_column]
+    parsed_values = pd.to_datetime(date_source, errors="coerce", utc=True)
+    parsed_dates = (
+        parsed_values.reindex(frame.index)
+        if isinstance(parsed_values, pd.Series)
+        else pd.Series(parsed_values, index=frame.index)
+    )
+    plausible = parsed_dates.notna() & parsed_dates.dt.year.between(1990, end.year + 2)
+    if not plausible.any():
+        result.tables[f"price:{resolved.ric}"] = frame
+        result.warnings.append(
+            f"Price history {resolved.ric}: returned dates were invalid, so return metrics were omitted."
+        )
+        return
+    frame = frame.assign(__history_date=parsed_dates).loc[plausible]
+    frame = frame.sort_values("__history_date").drop_duplicates("__history_date", keep="last")
+    frame = frame.set_index("__history_date")
     result.tables[f"price:{resolved.ric}"] = frame
     converted = frame.apply(pd.to_numeric, errors="coerce")
     numeric_columns = [column for column in converted.columns if converted[column].notna().any()]
     if not numeric_columns:
         return
-    prices = converted[numeric_columns[0]].dropna()
+    prices = converted[numeric_columns[0]].replace([math.inf, -math.inf], pd.NA).dropna()
+    prices = prices[prices > 0]
     if len(prices) < 2:
         return
     returns = prices.pct_change().dropna()
@@ -1033,7 +1630,7 @@ def _retrieve_price_history(ld: Any, client: _LSEGClient, result: ResearchResult
         result.metrics[f"{prefix}:return_6m"] = float(prices.iloc[-1] / prices.iloc[-127] - 1)
     if len(prices) >= 253:
         result.metrics[f"{prefix}:return_1y"] = float(prices.iloc[-1] / prices.iloc[-253] - 1)
-    if not returns.empty:
+    if len(prices) >= 3 and len(returns) >= 2:
         result.metrics[f"{prefix}:annualized_vol"] = float(returns.std() * math.sqrt(252))
         running_max = prices.cummax()
         drawdown = prices.div(running_max).sub(1)
@@ -1061,6 +1658,7 @@ def _retrieve_estimate_history(ld: Any, client: _LSEGClient, result: ResearchRes
         ld, client, resolved.ric, ESTIMATE_HISTORY_FIELDS,
         parameters={"SDate": -min(max(result.plan.lookback_days, 120), 730), "EDate": 0, "Frq": "D"},
         label=f"Estimate history {resolved.ric}",
+        isolate_invalid_fields=False,
     )
     if frame.empty:
         return
@@ -1071,38 +1669,79 @@ def _retrieve_estimate_history(ld: Any, client: _LSEGClient, result: ResearchRes
     dates = pd.to_datetime(frame[date_col], errors="coerce", utc=True)
     if dates.dropna().empty:
         return
-    latest_date = dates.max()
-    for field_name, metric_name in (
-        ("TR.EPSMean(Period=FY1)", "eps_revision"),
-        ("TR.RevenueMean(Period=FY1)", "revenue_revision"),
-        ("TR.EpsSmartEst(Period=FY1)", "smart_revision"),
-    ):
-        if field_name not in frame.columns:
+    value_field = "TR.EPSMean(Period=FY1)"
+    period_field = "TR.EPSMean(Period=FY1).periodenddate"
+    if value_field not in frame.columns or period_field not in frame.columns:
+        result.warnings.append(
+            f"Estimate history {resolved.ric}: FY1 period identity was unavailable, so revision metrics were omitted."
+        )
+        return
+    observations = pd.DataFrame(
+        {
+            "date": dates,
+            "value": pd.to_numeric(frame[value_field], errors="coerce"),
+            "period": pd.to_datetime(frame[period_field], errors="coerce", utc=True),
+        }
+    ).dropna().sort_values("date")
+    if observations.empty:
+        return
+    latest = observations.iloc[-1]
+    now = pd.Timestamp.now(tz="UTC")
+    if now - latest["date"] > pd.Timedelta(14, unit="D"):
+        result.warnings.append(
+            f"Estimate history {resolved.ric}: latest consensus observation was stale, so revision metrics were omitted."
+        )
+        return
+    same_period = observations[observations["period"] == latest["period"]]
+    for days in (30, 90):
+        target = latest["date"] - pd.Timedelta(int(days), unit="D")
+        candidates = same_period[
+            (same_period["date"] <= target)
+            & (same_period["date"] >= target - pd.Timedelta(14, unit="D"))
+        ]
+        if candidates.empty:
             continue
-        latest = _value_at_or_before(frame[field_name], dates, latest_date)
-        if latest is None:
-            continue
-        for days in (30, 90):
-            prior = _value_at_or_before(frame[field_name], dates, latest_date - pd.Timedelta(days=days))
-            if prior not in {None, 0}:
-                result.metrics[f"{resolved.ric}:{metric_name}_{days}d"] = (latest - prior) / abs(prior)
+        prior = candidates.iloc[-1]
+        if prior["value"] != 0:
+            result.metrics[f"{resolved.ric}:eps_revision_{days}d"] = (
+                latest["value"] - prior["value"]
+            ) / abs(prior["value"])
+            result.metrics[f"{resolved.ric}:eps_revision_{days}d_observation"] = {
+                "latest_date": latest["date"].isoformat(),
+                "prior_date": prior["date"].isoformat(),
+                "period_end": latest["period"].date().isoformat(),
+            }
 
 
 def _retrieve_news(ld: Any, client: _LSEGClient, result: ResearchResult, resolved: ResolvedInstrument) -> None:
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=min(result.plan.lookback_days, 450))
-    response = client.call(
-        f"News headlines {resolved.ric}",
-        lambda: ld.news.get_headlines(
-            query=f"R:{resolved.ric} AND Language:LEN",
-            count=50,
-            start=start.isoformat(),
-            end=end.isoformat(),
-        ),
-    )
-    frame = _frame_from_response(response)
-    if not frame.empty:
-        result.tables[f"news:{resolved.ric}"] = frame.head(50).reset_index(drop=True)
+    news_rics = [resolved.ric]
+    if resolved.ric.endswith(".OQ"):
+        news_rics.append(resolved.ric[:-1])
+    for news_ric in news_rics:
+        response = client.call(
+            f"News headlines {resolved.ric} via {news_ric}",
+            lambda ric=news_ric: ld.news.get_headlines(
+                query=f"R:{ric} AND Language:LEN",
+                count=50,
+                start=start.isoformat(),
+                end=end.isoformat(),
+            ),
+            request_metadata={
+                "operation": "news.get_headlines",
+                "ric": news_ric,
+                "language": "LEN",
+                "count": 50,
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+            },
+        )
+        frame = _frame_from_response(response)
+        if not frame.empty:
+            result.tables[f"news:{resolved.ric}"] = frame.head(50).reset_index(drop=True)
+            result.metrics[f"{resolved.ric}:news_ric"] = news_ric
+            return
 
 
 def _story_id_column(frame: pd.DataFrame) -> Any | None:
@@ -1129,17 +1768,26 @@ def _retrieve_news_stories(ld: Any, client: _LSEGClient, result: ResearchResult,
     records: list[dict[str, Any]] = []
     seen: set[str] = set()
     for _, row in headlines.iterrows():
-        story_id = str(row.get(story_col) or "").strip()
+        story_value = row.get(story_col)
+        story_id = "" if _missing(story_value) else str(story_value).strip()
         if not story_id or story_id in seen:
             continue
         seen.add(story_id)
-        story = client.call(f"News story {resolved.ric} {story_id}", lambda sid=story_id: ld.news.get_story(sid), warn=False)
-        if not story:
+        story = client.call(
+            f"News story {resolved.ric} {story_id}",
+            lambda sid=story_id: ld.news.get_story(sid),
+            warn=False,
+            request_metadata={"operation": "news.get_story", "ric": resolved.ric, "story_id": story_id},
+        )
+        if story is _CALL_TIMED_OUT or not story:
             continue
         records.append({
             "Instrument": resolved.ric,
             "story_id": story_id,
-            "headline": str(row.get(headline_col) or "").strip() if headline_col is not None else "",
+            "headline": (
+                "" if headline_col is None or _missing(row.get(headline_col))
+                else str(row.get(headline_col)).strip()
+            ),
             "story_text": _strip_html(str(story))[:6000],
         })
         if len(records) >= limit:
@@ -1155,6 +1803,10 @@ def _retrieve_market_news(ld: Any, client: _LSEGClient, result: ResearchResult) 
     response = client.call(
         "Market news",
         lambda: ld.news.get_headlines(query=query, count=40, start=start.isoformat(), end=end.isoformat()),
+        request_metadata={
+            "operation": "news.get_headlines", "query": query, "count": 40,
+            "start": start.isoformat(), "end": end.isoformat(),
+        },
     )
     frame = _frame_from_response(response)
     if not frame.empty:
@@ -1164,8 +1816,12 @@ def _retrieve_market_news(ld: Any, client: _LSEGClient, result: ResearchResult) 
 def _retrieve_peers(ld: Any, client: _LSEGClient, result: ResearchResult, resolved: ResolvedInstrument) -> None:
     from lseg.data.discovery import Peers
 
-    peers = client.call(f"Peers {resolved.ric}", lambda: list(Peers(resolved.ric)))
-    if not peers:
+    peers = client.call(
+        f"Peers {resolved.ric}",
+        lambda: list(Peers(resolved.ric)),
+        request_metadata={"operation": "discovery.Peers", "ric": resolved.ric},
+    )
+    if peers is _CALL_TIMED_OUT or not peers:
         return
     peer_rics = [str(item) for item in peers[:20] if str(item) != resolved.ric]
     if resolved.ric not in peer_rics:
@@ -1189,16 +1845,23 @@ def _retrieve_stakeholders(client: _LSEGClient, result: ResearchResult, resolved
         result.tables[f"{kind}:{resolved.ric}"] = frame
 
 
-def _retrieve_esg(client: _LSEGClient, result: ResearchResult, resolved: ResolvedInstrument) -> None:
+def _retrieve_esg(client: _LSEGClient, result: ResearchResult, resolved: ResolvedInstrument) -> bool:
     from lseg.data.content import esg
 
     response = client.call(
         f"ESG overview {resolved.ric}",
         lambda: esg.basic_overview.Definition(universe=resolved.ric).get_data(),
+        request_metadata={"operation": "content.esg.basic_overview", "ric": resolved.ric},
     )
     frame = _frame_from_response(response)
     if not frame.empty:
         result.tables[f"esg:{resolved.ric}"] = frame
+    if result.call_records and result.call_records[-1].get("status") == "failed":
+        result.warnings.append(
+            f"ESG overview {resolved.ric}: disabling further ESG calls after the optional content endpoint failed."
+        )
+        return False
+    return True
 
 
 def _retrieve_filings(client: _LSEGClient, result: ResearchResult, resolved: ResolvedInstrument) -> None:
@@ -1219,6 +1882,10 @@ def _retrieve_filings(client: _LSEGClient, result: ResearchResult, resolved: Res
             limit=10,
             sort_order="DESC",
         ).get_data(),
+        request_metadata={
+            "operation": "content.filings.search", "ric": resolved.ric, "organization_id": str(org_id),
+            "start": start.isoformat(), "end": end.isoformat(), "limit": 10, "sort_order": "DESC",
+        },
     )
     frame = _frame_from_response(response)
     if not frame.empty:
@@ -1268,8 +1935,9 @@ def _derive_metrics(result: ResearchResult) -> None:
                 peers = peers[peers["Instrument"].astype(str) != ric]
             for field_name in (
                 "TR.PE", "TR.PtoEPSMeanEst(Period=FY1)", "TR.EVToEBITDA",
+                "TR.PriceToSalesPerShare", "TR.PriceToBVPerShare",
                 "TR.ReturnonAvgTotEqtyPctNetIncomeBeforeExtraItemsTTM", "TR.ROAPercentTrailing12M",
-                "TR.TotalReturn3Mo", "TR.PriceTargetMean",
+                "TR.TotalReturn3Mo",
             ):
                 values = _column(peers, field_name).dropna()
                 if not values.empty:
@@ -1354,7 +2022,115 @@ def _rerank_finalists(result: ResearchResult) -> None:
             score -= 4.0
         result.metrics[f"{ric}:finalist_score"] = score
         ranked.append((score, resolved))
-    result.resolved = [item for _, item in sorted(ranked, key=lambda pair: pair[0], reverse=True)]
+    ordered = [item for _, item in sorted(ranked, key=lambda pair: pair[0], reverse=True)]
+    qualified = [
+        item
+        for item in ordered
+        if int(result.metrics.get(f"{item.ric}:evidence_family_count", 0) or 0)
+        >= workflow.minimum_evidence_families
+    ]
+    result.metrics["insufficient_evidence_finalists"] = [item.ric for item in ordered if item not in qualified]
+    if not qualified:
+        required_failures = [
+            record for record in result.call_records
+            if str(record.get("label", "")).startswith("Finalist ")
+            and record.get("status") in {"failed", "timed_out", "cancelled"}
+        ]
+        if required_failures:
+            raise LSEGResearchError(
+                "Required finalist core evidence did not complete, so the run cannot be classified as a true no-match."
+            )
+        raise LSEGNoMatches(
+            f"The finalists were retrieved, but none met the required {workflow.minimum_evidence_families} "
+            "deep-research evidence families."
+        )
+    result.resolved = qualified
+    result.metrics["selected_ric"] = qualified[0].ric
+
+
+def _validate_workflow_outcome(result: ResearchResult, workflow: Any) -> None:
+    """Enforce required workflow postconditions before reporting success."""
+    if workflow.workflow_id == "stock_screen":
+        if result.tables.get("screen", pd.DataFrame()).empty:
+            raise LSEGNoMatches("The screen completed but no rows met every validated constraint.")
+        return
+    if workflow.workflow_id == "sector_opportunity":
+        if not result.resolved:
+            raise LSEGNoMatches("No finalist had enough validated evidence to support candidate selection.")
+        winner = result.resolved[0]
+        result.metrics["selected_ric"] = winner.ric
+        count = int(result.metrics.get(f"{winner.ric}:evidence_family_count", 0) or 0)
+        if count < workflow.minimum_evidence_families:
+            raise LSEGNoMatches(
+                f"The leading finalist had only {count} evidence families; {workflow.minimum_evidence_families} are required."
+            )
+        return
+    if workflow.workflow_id == "market_news":
+        if result.tables.get("market_news", pd.DataFrame()).empty:
+            raise LSEGNoMatches("No matching Reuters/LSEG headlines were returned.")
+        return
+    if not result.resolved:
+        raise LSEGResearchError("No named instrument was resolved.")
+    sparse = [
+        item.ric
+        for item in result.resolved
+        if int(result.metrics.get(f"{item.ric}:evidence_family_count", 0) or 0)
+        < workflow.minimum_evidence_families
+    ]
+    if sparse:
+        raise LSEGResearchError(
+            "Required deep-research evidence was incomplete for: " + ", ".join(sparse)
+        )
+    if len(result.resolved) == 1:
+        result.metrics["selected_ric"] = result.resolved[0].ric
+
+
+def _finalize_call_metrics(result: ResearchResult) -> None:
+    statuses = [record.get("status") for record in result.call_records]
+    result.metrics["lseg_request_count"] = len(result.call_records)
+    result.metrics["lseg_request_succeeded"] = statuses.count("succeeded")
+    result.metrics["lseg_request_failed"] = statuses.count("failed")
+    result.metrics["lseg_request_timed_out"] = statuses.count("timed_out")
+    result.metrics["lseg_request_cancelled"] = statuses.count("cancelled")
+    result.metrics["api_call_count"] = len(result.call_records)
+
+
+def _persist_research_trace(
+    result: ResearchResult,
+    settings: Settings,
+    outcome: str,
+    error: BaseException | None = None,
+) -> None:
+    """Append a sanitized, table-free run record for post-hoc trace auditing."""
+    _finalize_call_metrics(result)
+    path = settings.project_root / "data" / "research_runs.jsonl"
+    payload = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "outcome": outcome,
+        "request": result.plan.raw_request,
+        "normalized_plan": result.plan.to_dict(),
+        "compiled_screen": result.metrics.get("screen_expression"),
+        "constraint_validation": result.metrics.get("constraint_validation"),
+        "counts": {
+            key: value for key, value in result.metrics.items()
+            if key.startswith("screen_") or key.startswith("lseg_request_")
+        },
+        "selected_ric": result.metrics.get("selected_ric"),
+        "resolved_rics": [item.ric for item in result.resolved],
+        "evidence_coverage": result.metrics.get("evidence_coverage", {}),
+        "data_request_coverage": result.metrics.get("data_request_coverage", {}),
+        "call_records": result.call_records,
+        "warnings": result.warnings[:30],
+        "error_type": type(error).__name__ if error is not None else None,
+        "error": str(error)[:1000] if error is not None else None,
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(_json_safe(payload), allow_nan=False, default=str) + "\n")
+        result.metrics["trace_path"] = str(path)
+    except Exception as exc:
+        result.warnings.append(f"Research trace could not be persisted: {type(exc).__name__}: {exc}")
 
 
 def run_research(
@@ -1453,6 +2229,7 @@ def run_research(
             )
 
             total_companies = max(len(result.resolved), 1)
+            esg_enabled = True
             for index, resolved in enumerate(result.resolved):
                 company_percent = 58 + int((index / total_companies) * 28)
                 _emit_progress(
@@ -1464,11 +2241,11 @@ def run_research(
                 _retrieve_price_history(ld, client, result, resolved)
                 _retrieve_estimate_history(ld, client, result, resolved)
                 _retrieve_news(ld, client, result, resolved)
-                if index < 3:
-                    _retrieve_news_stories(ld, client, result, resolved, workflow.news_stories_per_candidate)
-                    _retrieve_peers(ld, client, result, resolved)
-                    _retrieve_filings(client, result, resolved)
-                    _retrieve_esg(client, result, resolved)
+                _retrieve_news_stories(ld, client, result, resolved, workflow.news_stories_per_candidate)
+                _retrieve_peers(ld, client, result, resolved)
+                _retrieve_filings(client, result, resolved)
+                if esg_enabled:
+                    esg_enabled = _retrieve_esg(client, result, resolved)
                 if "suppliers" in plan.topics:
                     _retrieve_stakeholders(client, result, resolved, "suppliers")
                 if "customers" in plan.topics:
@@ -1491,24 +2268,35 @@ def run_research(
                 _derive_evidence_coverage(result)
 
         _raise_if_cancelled(cancel_event)
-        result.metrics["api_call_count"] = len(result.calls)
+        _validate_workflow_outcome(result, workflow)
+        _finalize_call_metrics(result)
+        statuses = [record.get("status") for record in result.call_records]
         _emit_progress(
             progress_callback,
             96,
             "Evidence collection complete",
-            f"Completed {len(result.calls)} LSEG API operations; preparing the concise report.",
+            f"Attempted {len(result.call_records)} LSEG requests; "
+            f"{statuses.count('succeeded')} succeeded and {statuses.count('timed_out')} timed out.",
         )
         if not result.has_data:
             detail = " | ".join(result.warnings[:5]) or "No rows were returned."
             raise LSEGResearchError(f"LSEG returned no usable research data. {detail}")
+        _persist_research_trace(result, settings, "success")
         return result
     except ResearchCancelled:
+        _persist_research_trace(result, settings, "cancelled")
         _emit_progress(progress_callback, None, "Research stopped", "Stopped by user.")
         raise
+    except LSEGNoMatches as exc:
+        _persist_research_trace(result, settings, "no_match", exc)
+        _emit_progress(progress_callback, 100, "No validated matches", str(exc))
+        raise
     except LSEGResearchError as exc:
+        _persist_research_trace(result, settings, "failed", exc)
         _emit_progress(progress_callback, None, "Research failed", str(exc))
         raise
     except Exception as exc:
+        _persist_research_trace(result, settings, "failed", exc)
         _emit_progress(progress_callback, None, "Research failed", f"{type(exc).__name__}: {exc}")
         raise LSEGResearchError(f"LSEG research failed: {type(exc).__name__}: {exc}") from exc
     finally:
@@ -1561,6 +2349,15 @@ def _company_name(result: ResearchResult, resolved: ResolvedInstrument) -> str:
     return str(name) if not _missing(name) else (resolved.company_name or resolved.query)
 
 
+def _selected_resolved(result: ResearchResult) -> ResolvedInstrument | None:
+    selected_ric = str(result.metrics.get("selected_ric") or "").strip()
+    if selected_ric:
+        for item in result.resolved:
+            if item.ric == selected_ric:
+                return item
+    return result.resolved[0] if result.resolved else None
+
+
 def _screen_row(result: ResearchResult, ric: str) -> pd.Series | None:
     frame = result.tables.get("screen", pd.DataFrame())
     if frame.empty or "Instrument" not in frame.columns:
@@ -1569,22 +2366,58 @@ def _screen_row(result: ResearchResult, ric: str) -> pd.Series | None:
     return None if selected.empty else selected.iloc[0]
 
 
-def _sector_median(result: ResearchResult, field_name: str) -> float | None:
-    frame = result.tables.get("screen", pd.DataFrame())
-    values = _column(frame, field_name).dropna()
-    return None if values.empty else float(values.median())
+def _sector_median(
+    result: ResearchResult,
+    field_name: str,
+    *,
+    exclude_ric: str | None = None,
+    minimum_sample: int = 5,
+) -> float | None:
+    frame = result.tables.get("screen_universe", result.tables.get("screen", pd.DataFrame())).copy()
+    if exclude_ric and "Instrument" in frame.columns:
+        frame = frame[frame["Instrument"].astype(str) != exclude_ric]
+    values = _column(frame, field_name).replace([math.inf, -math.inf], pd.NA).dropna()
+    if field_name in {
+        "TR.PE",
+        "TR.PtoEPSMeanEst(Period=FY1)",
+        "TR.EVToEBITDA",
+        "TR.PriceToSalesPerShare",
+        "TR.PricetoCFPerShare",
+        "TR.PriceToBVPerShare",
+    }:
+        values = values[values > 0]
+    if len(values) < minimum_sample:
+        return None
+    return float(values.median())
 
 
 def _candidate_opportunities(result: ResearchResult, resolved: ResolvedInstrument) -> list[str]:
     ric = resolved.ric
     row = _screen_row(result, ric)
     items: list[str] = []
-    fpe = _numeric(_first_value(result, "valuation", "TR.PtoEPSMeanEst(Period=FY1)", ric))
-    median_fpe = _sector_median(result, "TR.PtoEPSMeanEst(Period=FY1)")
-    if fpe and median_fpe and fpe < median_fpe * 0.9:
-        items.append(f"Forward P/E {_format_number(fpe)} is below the screened median {_format_number(median_fpe)}.")
+    financial = bool(
+        row is not None and _normalized_code(row.get("TR.TRBCEconSectorCode")) == "55"
+    )
+    for field_name, label in (
+        ("TR.PtoEPSMeanEst(Period=FY1)", "Forward P/E"),
+        ("TR.EVToEBITDA", "EV/EBITDA"),
+        ("TR.PriceToSalesPerShare", "Price/sales"),
+        ("TR.PriceToBVPerShare", "Price/book"),
+    ):
+        if financial and field_name == "TR.EVToEBITDA":
+            continue
+        value = _numeric(_first_value(result, "valuation", field_name, ric))
+        if value is None and row is not None:
+            value = _numeric(row.get(field_name))
+        median = _sector_median(result, field_name, exclude_ric=ric)
+        if value is not None and median is not None and value > 0 and value < median * 0.90:
+            items.append(
+                f"{label} {_format_number(value)} is at least 10% below the screened median {_format_number(median)}."
+            )
     roe = _numeric(_first_value(result, "profitability", "TR.ReturnonAvgTotEqtyPctNetIncomeBeforeExtraItemsTTM", ric))
-    median_roe = _sector_median(result, "TR.ReturnonAvgTotEqtyPctNetIncomeBeforeExtraItemsTTM")
+    median_roe = _sector_median(
+        result, "TR.ReturnonAvgTotEqtyPctNetIncomeBeforeExtraItemsTTM", exclude_ric=ric
+    )
     if roe is not None and median_roe is not None and roe > median_roe:
         items.append(f"ROE {_format_number(roe)}% exceeds the screened median {_format_number(median_roe)}%.")
     fcf_margin = result.metrics.get(f"{ric}:fcf_margin")
@@ -1613,7 +2446,7 @@ def _candidate_risks(result: ResearchResult, resolved: ResolvedInstrument) -> li
     ric = resolved.ric
     items: list[str] = []
     fpe = _numeric(_first_value(result, "valuation", "TR.PtoEPSMeanEst(Period=FY1)", ric))
-    median_fpe = _sector_median(result, "TR.PtoEPSMeanEst(Period=FY1)")
+    median_fpe = _sector_median(result, "TR.PtoEPSMeanEst(Period=FY1)", exclude_ric=ric)
     if fpe and median_fpe and fpe > median_fpe * 1.25:
         items.append(f"Forward P/E {_format_number(fpe)} is well above the screened median {_format_number(median_fpe)}.")
     revision = result.metrics.get(f"{ric}:eps_revision_30d")
@@ -1656,21 +2489,25 @@ def _deterministic_company_report(result: ResearchResult) -> str:
         valuation_parts: list[str] = []
         pe = _numeric(_first_value(result, "valuation", "TR.PE", ric))
         fpe = _numeric(_first_value(result, "valuation", "TR.PtoEPSMeanEst(Period=FY1)", ric))
-        if pe is not None:
+        if pe is not None and pe > 0:
             valuation_parts.append(f"P/E {_format_number(pe)}")
-        if fpe is not None:
+        if fpe is not None and fpe > 0:
             valuation_parts.append(f"forward P/E {_format_number(fpe)}")
         if valuation_parts:
             lines.append("Valuation and expectations: " + ", ".join(valuation_parts) + ".")
+        else:
+            lines.append("Valuation and expectations: No usable positive valuation multiple was returned.")
         titles = _latest_titles(result.tables.get(f"news:{ric}", pd.DataFrame()), 2)
         if titles:
-            lines.append("Recent developments: " + " | ".join(titles))
+            lines.append("Catalyst: No positive catalyst was independently validated; recent developments include " + " | ".join(titles))
+        else:
+            lines.append("Catalyst: No specific catalyst was supported by the retrieved Reuters/LSEG evidence.")
         if risks:
             lines.append("Major risks: " + " ".join(risks[:2]))
         else:
             lines.append("Major risks: The retrieved quantitative fields did not identify a dominant risk; news and filing coverage may still be incomplete.")
         families = result.metrics.get(f"{ric}:evidence_families", [])
-        lines.append(f"Evidence: {len(families)} families available: {', '.join(families) if families else 'limited data' }.")
+        lines.append(f"Coverage: {len(families)} evidence families available: {', '.join(families) if families else 'limited data' }.")
     return "\n".join(lines)
 
 
@@ -1678,9 +2515,9 @@ def _deterministic_screen_report(result: ResearchResult) -> str:
     frame = result.tables.get("screen", pd.DataFrame())
     expression = result.metrics.get("screen_expression")
     if result.plan.workflow == "sector_opportunity" or result.plan.screen.candidate_search:
-        if not result.resolved:
+        candidate = _selected_resolved(result)
+        if candidate is None:
             return "The sector screen ran, but no finalist had enough usable data for a deep dive."
-        candidate = result.resolved[0]
         ric = candidate.ric
         row = _screen_row(result, ric)
         lines = [f"Candidate: {_company_name(result, candidate)} ({ric})"]
@@ -1689,28 +2526,37 @@ def _deterministic_screen_report(result: ResearchResult) -> str:
         lines.append("Opportunity: " + (" ".join(opportunities[:2]) if opportunities else "The ranking was supported mainly by relative factor scores, not a clear standalone opportunity."))
         titles = _latest_titles(result.tables.get(f"news:{ric}", pd.DataFrame()), 2)
         if titles:
-            lines.append("Catalysts or developments: " + " | ".join(titles))
+            lines.append("Catalyst: No positive catalyst was independently validated; recent developments include " + " | ".join(titles))
+        else:
+            lines.append("Catalyst: No specific catalyst was supported by the retrieved Reuters/LSEG evidence.")
         lines.append("Major risks: " + (" ".join(risks[:2]) if risks else "No dominant quantitative risk was available; review the retrieved news and filings."))
         alternatives: list[str] = []
-        for other in result.resolved[1:3]:
-            other_row = _screen_row(result, other.ric)
-            score = _numeric(other_row.get("Research Score")) if other_row is not None else None
+        for other in (item for item in result.resolved if item.ric != ric):
+            score = _numeric(result.metrics.get(f"{other.ric}:finalist_score"))
             alternatives.append(f"{_company_name(result, other)} ({other.ric})" + (f" score {_format_number(score)}" if score is not None else ""))
+            if len(alternatives) >= 2:
+                break
         if alternatives:
-            lines.append("Other finalists: " + "; ".join(alternatives) + ".")
+            lines.append("Why selected: It had the strongest post-deep-dive score among adequately covered finalists. Other finalists were " + "; ".join(alternatives) + ".")
+        else:
+            lines.append("Why selected: It was the only finalist that met the required screen and deep-evidence postconditions.")
         families = result.metrics.get(f"{ric}:evidence_families", [])
         lines.append(
             f"Coverage: screened {int(result.metrics.get('screen_universe_count', len(frame)))} companies; "
             f"deeply researched {int(result.metrics.get('deep_dive_count', len(result.resolved)))}; "
-            f"selected candidate has {len(families)} evidence families."
+            f"selected candidate has {len(families)} evidence families. Universe scope was capped at the top "
+            f"{int(result.metrics.get('screen_universe_cap', 200))} qualifying companies by USD market capitalization."
         )
         return "\n".join(lines)
 
-    lines = [f"Screen results ({len(frame)} shown)"]
+    lines = [f"Screen results ({min(len(frame), 10)} shown)"]
     if expression:
         lines.append(f"Criteria: {expression}")
     for _, row in frame.head(10).iterrows():
-        name = row.get("TR.CommonName") or row.get("Instrument") or "Unknown"
+        name_value = row.get("TR.CommonName")
+        if _missing(name_value):
+            name_value = row.get("Instrument")
+        name = "Unknown" if _missing(name_value) else str(name_value)
         ticker = row.get("TR.TickerSymbol")
         label = f"{name} ({ticker})" if not _missing(ticker) else str(name)
         parts: list[str] = []
@@ -1739,7 +2585,7 @@ def _evidence_payload(result: ResearchResult) -> dict[str, Any]:
     for name, frame in result.tables.items():
         if frame is None or frame.empty:
             continue
-        if name == "screen":
+        if name in {"screen", "screen_universe"}:
             limited = frame.head(12).copy()
         elif name.startswith("estimate_history:"):
             limited = frame.tail(20).copy()
@@ -1754,7 +2600,7 @@ def _evidence_payload(result: ResearchResult) -> dict[str, Any]:
                 lambda value: None if _missing(value) else str(value) if not isinstance(value, (int, float, bool)) else value
             )
         tables[name] = limited.to_dict(orient="records")
-    return {
+    payload = {
         "request": result.plan.raw_request,
         "workflow": result.plan.workflow,
         "investment_horizon": result.plan.investment_horizon,
@@ -1767,6 +2613,19 @@ def _evidence_payload(result: ResearchResult) -> dict[str, Any]:
         "unavailable": result.warnings[:20],
         "research_trace": result.calls,
     }
+    return _json_safe(payload)
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, (pd.Timestamp, datetime)):
+        return value.isoformat()
+    return value
 
 
 def _plain_text_report(text: str) -> str:
@@ -1780,15 +2639,56 @@ def _plain_text_report(text: str) -> str:
     return cleaned.strip()
 
 
+def _llm_report_is_valid(result: ResearchResult, text: str) -> bool:
+    """Deterministically bind generated prose to the validated workflow result."""
+    if not text.strip():
+        return False
+    lower = text.casefold()
+    if any(token in lower for token in (
+        "draft report", "none identified", "provided data does not contain",
+        "no companies from the", "no company identified",
+    )):
+        return False
+    workflow = result.plan.workflow
+    required_labels = {
+        "sector_opportunity": ("candidate:", "opportunity:", "catalyst:", "major risks:", "why selected:", "coverage:"),
+        "company_deep_dive": ("company:", "opportunity:", "catalyst:", "major risks:", "valuation and expectations:", "coverage:"),
+    }.get(str(workflow), ())
+    lines = [line.strip().casefold() for line in text.splitlines() if line.strip()]
+    if required_labels and (
+        len(lines) != len(required_labels)
+        or any(not any(line.startswith(label) for line in lines) for label in required_labels)
+    ):
+        return False
+    if result.resolved and workflow in {"sector_opportunity", "company_deep_dive"}:
+        selected = _selected_resolved(result)
+        if selected is None:
+            return False
+        name = _company_name(result, selected).casefold()
+        first_line = text.splitlines()[0].casefold() if text.splitlines() else lower
+        identifiers = [selected.ric.casefold()]
+        if len(name.strip()) >= 3:
+            identifiers.append(name)
+        if len(selected.ticker.strip()) >= 2:
+            identifiers.append(selected.ticker.casefold())
+        if not any(
+            identifier
+            and re.search(rf"(?<![a-z0-9]){re.escape(identifier)}(?![a-z0-9])", first_line)
+            for identifier in identifiers
+        ):
+            return False
+    return True
+
+
 def _llm_report(result: ResearchResult, settings: Settings, cancel_event: Any | None = None) -> str | None:
-    if not settings.groq_api_key:
+    if not settings.groq_api_key or result.plan.workflow != "company_deep_dive":
         return None
     _raise_if_cancelled(cancel_event)
     try:
         from langchain_groq import ChatGroq
 
         llm = ChatGroq(model=settings.groq_model, temperature=0, max_retries=2, api_key=settings.groq_api_key)
-        evidence = json.dumps(_evidence_payload(result), default=str)
+        evidence = json.dumps(_evidence_payload(result), default=str, allow_nan=False)
         workflow = result.plan.workflow
         if workflow == "sector_opportunity":
             format_instruction = (
@@ -1827,7 +2727,8 @@ def _llm_report(result: ResearchResult, settings: Settings, cancel_event: Any | 
         )
         _raise_if_cancelled(cancel_event)
         draft = _plain_text_report(str(getattr(response, "content", response)).strip())
-        if not draft:
+        if not _llm_report_is_valid(result, draft):
+            result.warnings.append("Evidence synthesis draft failed deterministic schema/entity validation.")
             return None
 
         # A second constrained pass acts as a claim guard. It removes statements
@@ -1843,7 +2744,11 @@ def _llm_report(result: ResearchResult, settings: Settings, cancel_event: Any | 
             ]
         )
         _raise_if_cancelled(cancel_event)
-        return _plain_text_report(str(getattr(verification, "content", verification)).strip()) or draft
+        checked = _plain_text_report(str(getattr(verification, "content", verification)).strip())
+        if not _llm_report_is_valid(result, checked):
+            result.warnings.append("Evidence synthesis verification failed deterministic schema/entity validation.")
+            return None
+        return checked
     except ResearchCancelled:
         raise
     except Exception as exc:
@@ -1853,6 +2758,8 @@ def _llm_report(result: ResearchResult, settings: Settings, cancel_event: Any | 
 
 def concise_report(result: ResearchResult, settings: Settings, cancel_event: Any | None = None) -> str:
     _raise_if_cancelled(cancel_event)
+    if result.plan.workflow == "stock_screen":
+        return _deterministic_screen_report(result)
     generated = _llm_report(result, settings, cancel_event=cancel_event)
     if generated:
         return generated
@@ -1864,16 +2771,18 @@ def concise_report(result: ResearchResult, settings: Settings, cancel_event: Any
 
 
 def _deterministic_valuation_follow_up(result: ResearchResult) -> str:
-    if not result.resolved:
+    selected = _selected_resolved(result)
+    if selected is None:
         return "The prior research did not select a company, so there is no valuation case to explain."
 
-    selected = result.resolved[0]
     ric = selected.ric
     name = _company_name(result, selected)
-    comparisons: list[str] = []
+    discounts: list[str] = []
+    supporting_evidence: list[str] = []
     valuation_fields = (
         ("TR.PtoEPSMeanEst(Period=FY1)", "forward P/E"),
         ("TR.EVToEBITDA", "EV/EBITDA"),
+        ("TR.PriceToSalesPerShare", "price/sales"),
         ("TR.PricetoCFPerShare", "price/cash flow"),
         ("TR.PriceToBVPerShare", "price/book"),
     )
@@ -1882,32 +2791,38 @@ def _deterministic_valuation_follow_up(result: ResearchResult) -> str:
         if value is None:
             row = _screen_row(result, ric)
             value = _numeric(row.get(field_name)) if row is not None else None
-        median = _sector_median(result, field_name)
+        median = _sector_median(result, field_name, exclude_ric=ric)
+        comparison_label = "screened cohort"
+        if median is None:
+            median = _numeric(result.metrics.get(f"{ric}:peer_median:{field_name}"))
+            comparison_label = "direct-peer"
         if value is None or median is None or value <= 0 or median <= 0:
             continue
         difference = 1.0 - (value / median)
-        if difference > 0:
+        if difference >= 0.10:
             discount = _format_number(abs(difference), percent=True).lstrip("+")
-            comparisons.append(
-                f"Its {label} is {_format_number(value)} versus {_format_number(median)} for the screened "
-                f"peer median, about {discount} lower."
+            discounts.append(
+                f"Its {label} is {_format_number(value)} versus {_format_number(median)} for the "
+                f"{comparison_label} median, about {discount} lower."
             )
 
     upside = result.metrics.get(f"{ric}:target_upside")
     if isinstance(upside, (int, float)) and upside > 0:
-        comparisons.append(
+        supporting_evidence.append(
             f"The mean analyst price target implies {_format_number(upside, percent=True)} upside, "
-            "which supports the relative-value case but does not prove intrinsic value."
+            "but a target-price gap is expectations evidence, not proof that the shares are cheap."
         )
 
-    lines = [f"{name} ({ric}) looks relatively inexpensive rather than definitively undervalued."]
-    if comparisons:
-        lines.extend(comparisons[:3])
+    if discounts:
+        lines = [f"{name} ({ric}) looks relatively inexpensive on the retrieved multiples, not definitively undervalued."]
+        lines.extend(discounts[:3])
     else:
+        lines = [f"The retrieved evidence does not support calling {name} ({ric}) undervalued."]
         lines.append(
             "The retrieved evidence does not show a clear discount on the available valuation measures, "
             "so calling it undervalued would overstate the data."
         )
+    lines.extend(supporting_evidence[:1])
     lines.append(
         "The discount could reflect real risks, so the valuation case should be weighed against the reported "
         "earnings revisions, leverage, volatility, news, and filing evidence."
@@ -1915,14 +2830,78 @@ def _deterministic_valuation_follow_up(result: ResearchResult) -> str:
     return "\n".join(lines)
 
 
+def _deterministic_risk_follow_up(result: ResearchResult) -> str:
+    selected = _selected_resolved(result)
+    if selected is None:
+        return "The prior research did not select a company, so there is no company-specific risk case to explain."
+    name = _company_name(result, selected)
+    risks = _candidate_risks(result, selected)
+    if not risks:
+        return (
+            f"The retrieved evidence for {name} ({selected.ric}) did not identify a dominant quantitative risk. "
+            "That means risk evidence is incomplete—not that the company is risk-free. Review the retrieved Reuters headlines and filings."
+        )
+    return f"The main retrieved risks for {name} ({selected.ric}) are:\n" + "\n".join(
+        f"• {item}" for item in risks
+    )
+
+
+def _deterministic_catalyst_follow_up(result: ResearchResult) -> str:
+    selected = _selected_resolved(result)
+    if selected is None:
+        return "The prior research did not select a company, so there is no company-specific catalyst to explain."
+    titles = _latest_titles(result.tables.get(f"news:{selected.ric}", pd.DataFrame()), 2)
+    if not titles:
+        return (
+            f"No specific catalyst for {_company_name(result, selected)} ({selected.ric}) was supported by the "
+            "retrieved Reuters/LSEG evidence. The ranking should not be interpreted as catalyst-driven."
+        )
+    return f"The retrieved developments for {_company_name(result, selected)} ({selected.ric}) are:\n" + "\n".join(
+        f"• {title}" for title in titles
+    )
+
+
+def _deterministic_selection_follow_up(result: ResearchResult) -> str:
+    selected = _selected_resolved(result)
+    if selected is None:
+        return "The prior research did not select a company."
+    row = _screen_row(result, selected.ric)
+    score = _numeric(row.get("Research Score")) if row is not None else None
+    families = result.metrics.get(f"{selected.ric}:evidence_families", [])
+    parts = [
+        f"{_company_name(result, selected)} ({selected.ric}) was selected only after passing the requested "
+        "country/TRBC postconditions and the minimum screen and deep-evidence thresholds."
+    ]
+    if score is not None:
+        parts.append(f"Its final screen score was {_format_number(score)}.")
+    parts.append(f"The deep dive retained {len(families)} evidence families.")
+    alternatives = [item for item in result.resolved if item.ric != selected.ric][:2]
+    if alternatives:
+        parts.append(
+            "Other adequately covered finalists were "
+            + "; ".join(f"{_company_name(result, item)} ({item.ric})" for item in alternatives)
+            + "."
+        )
+    return " ".join(parts)
+
+
 def answer_follow_up(result: ResearchResult, question: str, settings: Settings) -> str:
     """Answer a contextual question using only the immediately prior research result."""
     lower = question.casefold()
     if "undervalu" in lower or "valuation" in lower:
-        fallback = _deterministic_valuation_follow_up(result)
-    else:
-        fallback = concise_report(result, replace(settings, groq_api_key=None))
+        return _deterministic_valuation_follow_up(result)
+    if re.search(r"\b(risks?|downside|concerns?|go wrong)\b", lower):
+        return _deterministic_risk_follow_up(result)
+    if re.search(r"\b(catalysts?|developments?|drivers?)\b", lower):
+        return _deterministic_catalyst_follow_up(result)
+    if re.search(r"\b(selected|selection|chosen|picked|why this|why it)\b", lower):
+        return _deterministic_selection_follow_up(result)
+    fallback = concise_report(result, replace(settings, groq_api_key=None))
 
+    # Contextual answers remain deterministic until claim-level generated-text
+    # validation can prove every company and numeric statement against evidence.
+    if result.plan.workflow in {"sector_opportunity", "stock_screen", "company_compare", "market_news"}:
+        return fallback
     if not settings.groq_api_key:
         return fallback
     try:

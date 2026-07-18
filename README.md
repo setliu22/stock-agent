@@ -4,11 +4,11 @@
 
 The executor now distinguishes three different outcomes correctly: a successful response with rows, a successful response with no rows, and an LSEG error. A valid empty response is no longer recursively split into smaller field requests. Field isolation is used only when LSEG explicitly reports invalid field syntax.
 
-Row-expanding content is also sequenced correctly. Sector research first completes the broad screen, core finalist data, histories, Reuters evidence, peer context, metrics, and finalist ranking. Only after a leading candidate exists does the application request optional guidance, events, ownership, and insider context for that one company. Fund ownership uses a narrow daily snapshot window rather than an unconstrained holder table. These optional datasets can enrich the report, but they cannot block the core investment research workflow.
+Row-expanding content is also sequenced correctly. Sector research first completes the broad screen, core finalist data, histories, Reuters evidence, peer context, metrics, and finalist ranking. Events, ownership, and insider tables are requested for the winner only when the user explicitly asks for them. Generic guidance expansion is rejected because the available fields do not expose a stable shared record key and can create a Cartesian response. Fund ownership uses a narrow daily snapshot window rather than an unconstrained holder table. These optional datasets can enrich the report, but they cannot block the core investment research workflow.
 
 ## Request timeout and stop control
 
-Each LSEG HTTP request now uses `LSEG_REQUEST_TIMEOUT`, defaulting to 20 seconds. Slow optional evidence such as ownership is skipped after one timeout rather than recursively generating more requests. Ownership is retrieved as a bounded current snapshot for the top finalist, and insider activity is limited to a one-year quarterly window.
+Each LSEG HTTP request now uses `LSEG_REQUEST_TIMEOUT`, defaulting to 20 seconds. Slow optional evidence such as ownership is skipped after one timeout rather than recursively generating more requests. When explicitly requested, ownership is retrieved as a bounded current snapshot for the top finalist, and insider activity is limited to a one-year quarterly window.
 
 During research, the Send button remains active. Hovering over `Researching...` changes it to `Stop research`; clicking it requests cancellation. The workflow stops at the next safe checkpoint, or when the current LSEG request returns or reaches its timeout. The progress footer shows the active request elapsed time against that timeout.
 
@@ -26,10 +26,7 @@ A local macOS stock-research application using LSEG Workspace, the LSEG Data Lib
 
 ## Research architecture
 
-The language model does not invent LSEG functions, fields, tickers, or research procedures. It performs two narrow tasks:
-
-1. Classify the request into a predefined workflow and extract constraints.
-2. Synthesize opportunities and risks from data already retrieved by the workflow.
+The language model does not choose workflows, entities, constraints, LSEG functions, fields, tickers, or research procedures. A deterministic compiler owns those decisions and rejects material wording it cannot represent safely. Sector screens, stock screens, comparisons, market news summaries, and contextual valuation/risk/catalyst answers are rendered deterministically from validated evidence. An optional model may help phrase a named-company deep dive, but malformed or misbound output is discarded.
 
 The deterministic workflow compiler supports:
 
@@ -46,11 +43,11 @@ For a request such as `research a promising industrials stock`, the application:
 3. Uses a coverage-aware multi-factor ranking.
 4. Deeply researches five finalists using comparable core data, histories, Reuters evidence, peers, filings, and ESG.
 5. Re-ranks finalists using deep-dive evidence coverage.
-6. Enriches only the selected leader with bounded guidance, event, ownership, and insider context when entitled.
-7. Gives the evidence package to the LLM to identify major opportunities, catalysts, risks, and contradictions.
-8. Runs a second claim-checking pass and returns a short plain-text report.
+6. Optionally enriches only the selected leader with explicitly requested, bounded event, ownership, or insider context.
+7. Produces a selected-RIC-bound deterministic report and follow-up answers from the validated evidence.
+8. Persists a sanitized JSONL trace with the normalized plan, exact screen, postcondition counts, request status/duration/rows, RICs, fields, parameters, currency, date windows, and adjustment policy.
 
-The deterministic fallback produces the same report structure when Groq is unavailable.
+The report remains available when Groq is unavailable.
 
 ## LSEG capability awareness
 
@@ -102,4 +99,5 @@ what LSEG functions are available for volatility surfaces?
 data/stock_agent_install.log
 data/stock_agent_gui.log
 data/lseg-data-lib.log
+data/research_runs.jsonl
 ```

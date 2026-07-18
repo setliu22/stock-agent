@@ -45,6 +45,8 @@ def test_screen_expression_and_local_filters() -> None:
     frame = pd.DataFrame(
         {
             "TR.CommonName": ["A", "B", "C"],
+            "TR.HQCountryCode": ["US", "US", "US"],
+            "TR.TRBCEconSectorCode": ["57", "57", "57"],
             "TR.CompanyMarketCap": [20e9, 9e9, 30e9],
             "TR.PtoEPSMeanEst(Period=FY1)": [30, 20, 50],
         }
@@ -272,7 +274,9 @@ def test_only_explicit_invalid_field_errors_trigger_isolation() -> None:
 def test_winner_context_uses_narrow_ownership_window(monkeypatch) -> None:
     import portfolio.lseg_research as module
 
-    plan = ResearchPlan(mode="screen", workflow="sector_opportunity")
+    plan = ResearchPlan(
+        mode="screen", workflow="sector_opportunity", raw_request="show ownership and insider activity"
+    )
     winner = ResolvedInstrument("A", "A", "A", "A.N", "A Corp")
     result = ResearchResult(plan=plan, resolved=[winner])
     client = module._LSEGClient(result, minimum_interval=0)

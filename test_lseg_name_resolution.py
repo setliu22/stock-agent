@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import traceback
 
@@ -23,13 +24,17 @@ def main() -> int:
         if result.metrics.get("screen_expression"):
             print(f"Screen expression: {result.metrics['screen_expression']}")
         print("Calls:")
-        for call in result.calls:
-            print(f"  - {call}")
+        for record in result.call_records:
+            print("  - " + json.dumps(record, default=str, sort_keys=True))
         print("\nConcise report:\n")
         print(concise_report(result, settings))
-        follow_up = "why is this company undervalued?"
-        print(f"\nFollow-up: {follow_up}\n")
-        print(answer_follow_up(result, follow_up, settings))
+        for follow_up in (
+            "why is this company undervalued?",
+            "what are the major risks?",
+            "what's the catalyst?",
+        ):
+            print(f"\nFollow-up: {follow_up}\n")
+            print(answer_follow_up(result, follow_up, settings))
         return 0
     except Exception as exc:
         print(f"FAILED: {type(exc).__name__}: {exc}", file=sys.stderr)

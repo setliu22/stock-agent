@@ -109,10 +109,11 @@ def test_contextual_follow_up_uses_prior_research(tmp_path, monkeypatch) -> None
     )
     import pandas as pd
 
-    result.tables["screen"] = pd.DataFrame({
-        "Instrument": ["UPS.N", "PAYX.O"],
-        "TR.PtoEPSMeanEst(Period=FY1)": [15.0, 25.0],
+    result.tables["screen_universe"] = pd.DataFrame({
+        "Instrument": ["UPS.N", "PAYX.O", "A.N", "B.N", "C.N", "D.N"],
+        "TR.PtoEPSMeanEst(Period=FY1)": [15.0, 20.0, 21.0, 22.0, 23.0, 24.0],
     })
+    result.tables["screen"] = result.tables["screen_universe"].head(2).copy()
     result.tables["profile"] = pd.DataFrame({"Instrument": ["UPS.N"], "TR.CommonName": ["United Parcel Service"]})
     result.tables["valuation"] = pd.DataFrame({
         "Instrument": ["UPS.N"],
@@ -126,5 +127,5 @@ def test_contextual_follow_up_uses_prior_research(tmp_path, monkeypatch) -> None
     follow_up = agent.handle("why is this company undervalued?")
     assert "United Parcel Service" in follow_up
     assert "forward P/E is 15" in follow_up
-    assert "versus 20" in follow_up
+    assert "versus 22" in follow_up
     assert "definitively undervalued" in follow_up

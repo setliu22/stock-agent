@@ -28,6 +28,7 @@ class WorkflowDefinition:
     screen_limit: int = 200
     deep_dive_candidates: int = 5
     news_stories_per_candidate: int = 2
+    minimum_screen_factor_families: int = 4
     minimum_evidence_families: int = 4
 
     def to_dict(self) -> dict[str, Any]:
@@ -74,6 +75,7 @@ WORKFLOWS: dict[str, WorkflowDefinition] = {
         screen_limit=200,
         deep_dive_candidates=5,
         news_stories_per_candidate=2,
+        minimum_screen_factor_families=5,
         minimum_evidence_families=5,
     ),
     "stock_screen": WorkflowDefinition(
