@@ -16,6 +16,7 @@ from portfolio.lseg_research import (
     _LSEGClient,
     _canonicalize,
     _combine_columns,
+    _combine_screen_core_and_enrichment,
     _deterministic_screen_report,
     _deterministic_company_report,
     _first_value,
@@ -80,6 +81,10 @@ def test_lower_level_trbc_requests_use_exact_codes(
         ("research Industrial Logistics Properties Trust as a bargain", "Industrial Logistics Properties Trust"),
         ("research British American Tobacco", "British American Tobacco"),
         ("find Apple stock", "Apple"),
+        ("study Apple stock", "Apple"),
+        ("study AAPL stock", "AAPL"),
+        ("study Energy Transfer stock", "Energy Transfer"),
+        ("study United States Steel stock", "United States Steel"),
     ],
 )
 def test_company_names_are_not_reinterpreted_as_taxonomy(
@@ -109,6 +114,8 @@ def test_comparison_parser_keeps_each_named_entity(tmp_path: Path) -> None:
         "find quantum computing stocks",
         "find stocks with P/E above 20",
         "find stocks with market cap above 10 bps",
+        "study us and Canadian stocks",
+        "study us large-cap stocks",
     ],
 )
 def test_material_unsupported_constraints_fail_before_lseg(tmp_path: Path, user_request: str) -> None:
@@ -180,6 +187,29 @@ def test_conflicting_identity_batches_fail_instead_of_masking_mismatch() -> None
     right = pd.DataFrame({"Instrument": ["A.N"], "TR.TRBCEconSectorCode": ["57"]})
     with pytest.raises(LSEGResearchError, match="conflicting"):
         _combine_columns([left, right])
+
+
+def test_usd_screen_enrichment_overrides_local_currency_core_value() -> None:
+    core = pd.DataFrame(
+        {
+            "Instrument": ["950160.KQ"],
+            "TR.CommonName": ["Kolon TissueGene Inc"],
+            "TR.HQCountryCode": ["US"],
+            "TR.CompanyMarketCap": [5_276_646_936_000],
+        }
+    )
+    enrichment = pd.DataFrame(
+        {
+            "Instrument": ["950160.KQ"],
+            "TR.HQCountryCode": ["US"],
+            "TR.CompanyMarketCap": [3_566_820_292.42],
+        }
+    )
+
+    combined = _combine_screen_core_and_enrichment(core, enrichment)
+
+    assert combined.loc[0, "TR.CompanyMarketCap"] == 3_566_820_292.42
+    assert combined.loc[0, "TR.CommonName"] == "Kolon TissueGene Inc"
 
 
 def test_scalar_get_data_discards_unrequested_instruments() -> None:

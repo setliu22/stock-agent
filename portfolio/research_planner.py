@@ -216,7 +216,7 @@ def _detected_values(text: str, aliases: dict[str, Any], value: Callable[[Any], 
             rf"(?<![a-z]){escaped}(?![a-z])(?:\s+|-)(?:economic\s+)?(?:sector|industry|space|stocks?|compan(?:y|ies)|equities)\b",
             rf"\b(?:sector|industry|space)\s+(?:for|of|in)?\s*(?<![a-z]){escaped}(?![a-z])",
             rf"\b(?:in|within|among|from)\s+(?:the\s+)?(?<![a-z]){escaped}(?![a-z])",
-            rf"\b(?:find|screen|list|show|research)\b[^.;,]{{0,45}}(?<![a-z]){escaped}(?![a-z])\s*$",
+            rf"\b(?:find|screen|list|show|research|study|examine|assess|evaluate)\b[^.;,]{{0,45}}(?<![a-z]){escaped}(?![a-z])\s*$",
         )
         return any(re.search(pattern, lower) for pattern in patterns)
 
@@ -265,6 +265,7 @@ class ResearchPlan:
     screen: ScreenFilters = field(default_factory=ScreenFilters)
     raw_request: str = ""
     planner: str = "deterministic"
+    context_parent_request: str | None = None
 
     def normalized(self) -> "ResearchPlan":
         self.mode = self.mode if self.mode in {"company", "compare", "screen", "market_news"} else "company"
@@ -387,7 +388,18 @@ class ResearchPlan:
         return self
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        payload["effective_request"] = self.effective_request
+        return payload
+
+    @property
+    def effective_request(self) -> str:
+        """Return the current turn plus inherited intent for policy checks."""
+        return " ".join(
+            part.strip()
+            for part in (self.context_parent_request, self.raw_request)
+            if isinstance(part, str) and part.strip()
+        )
 
 
 _SCALED_NUMBER_PATTERN = (
@@ -459,19 +471,58 @@ def _strip_topic_tail(value: str) -> str:
     return value.strip(" ,.;:")
 
 
+def _named_security_subject(text: str) -> str | None:
+    """Return an explicitly named company/ticker before parsing taxonomy words."""
+    match = re.search(
+        r"^\s*(?:(?:can|could|would)\s+you\s+)?(?:please\s+)?"
+        r"(?:analy[sz]e|research|study|examine|assess|review|investigate|evaluate|find|look\s+up)\s+"
+        r"(.+?)\s+(?:stock|shares?)\s*[?.!]*$",
+        text,
+        re.I,
+    )
+    if not match:
+        return None
+    subject = match.group(1).strip(" ,.;:")
+    lower = subject.casefold()
+    if not subject or re.match(
+        r"^(?:a|an|one|some|any)\b|"
+        r"\b(?:promising|undervalued|cheap|bargain|best|good|strong|attractive|value|candidate|opportunity)\b",
+        lower,
+    ):
+        return None
+    if canonicalize_sector(subject) or classification_definition(subject):
+        return None
+    country_subjects = {
+        "us", "u.s.", "united states", "american", "uk", "u.k.", "united kingdom",
+        "british", "canada", "canadian", "germany", "german", "france", "french",
+        "japan", "japanese", "china", "chinese", "india", "indian",
+    }
+    if lower in country_subjects:
+        return None
+    if lower in {
+        "quantum computing", "robotics", "cybersecurity", "fintech", "renewable energy",
+        "clean energy", "investment bank", "investment banks", "regional bank",
+        "regional banks", "mining", "steel",
+    }:
+        return None
+    return subject
+
+
 def _extract_entities(text: str, mode: str) -> list[str]:
     if mode in {"screen", "market_news"}:
         return []
     cleaned = text.strip()
     named_as = re.search(
-        r"\b(?:analy[sz]e|research|review|investigate|evaluate)\s+(?:a|an)\s+.+?\s+named\s+(.+)$",
+        r"\b(?:analy[sz]e|research|study|examine|assess|review|investigate|evaluate)\s+"
+        r"(?:a|an)\s+.+?\s+named\s+(.+)$",
         cleaned,
         re.I,
     )
     if named_as:
         return [_strip_topic_tail(named_as.group(1))]
     qualified = re.search(
-        r"\b(?:analy[sz]e|research|review|investigate|evaluate)\s+([^,]+),\s+(?:a|an)\s+.+?\s+company\b",
+        r"\b(?:analy[sz]e|research|study|examine|assess|review|investigate|evaluate)\s+"
+        r"([^,]+),\s+(?:a|an)\s+.+?\s+company\b",
         cleaned,
         re.I,
     )
@@ -501,7 +552,8 @@ def _extract_entities(text: str, mode: str) -> list[str]:
             if len(and_parts) == 2:
                 return and_parts
     match = re.search(
-        r"\b(?:analy[sz]e|research|review|investigate|evaluate|look\s+up|tell\s+me\s+about|show|find|deep\s+dive\s+(?:on|into)?)\s+(.+)$",
+        r"\b(?:analy[sz]e|research|study|examine|assess|review|investigate|evaluate|look\s+up|"
+        r"tell\s+me\s+about|show|find|deep\s+dive\s+(?:on|into)?)\s+(.+)$",
         cleaned, re.I,
     )
     if match:
@@ -530,9 +582,39 @@ def _validate_request_constraints(text: str) -> tuple[str | None, str | None, st
     sectors = _detected_values(lower, _SECTOR_ALIASES, str)
     industries = _detected_values(lower, _INDUSTRY_ALIASES, lambda item: item.label)
     countries: list[str] = []
+    taxonomy_terms = "|".join(
+        re.escape(item)
+        for item in sorted((*_SECTOR_ALIASES, *_INDUSTRY_ALIASES), key=len, reverse=True)
+    )
+    country_terms = "|".join(
+        re.escape(item)
+        for item in sorted(
+            (item for item in _COUNTRY_WORDS if item not in {"us", "u.s."}),
+            key=len,
+            reverse=True,
+        )
+    )
     for phrase, code in _COUNTRY_WORDS.items():
-        if phrase == "us" and not re.search(r"(?<![A-Za-z])US(?![A-Za-z])", text):
-            continue
+        if phrase == "us":
+            uppercase_us = bool(re.search(r"(?<![A-Za-z])US(?![A-Za-z])", text))
+            explicit_lowercase_us = bool(
+                re.search(
+                    rf"(?:^|\b(?:study|research|screen|analy[sz]e|review|investigate|examine|assess|evaluate|find|list|"
+                    rf"focus\s+on|narrow\s+to|filter\s+(?:for|to)|what\s+about)\s+)"
+                    rf"(?:(?:only|just|all)\s+)?(?:the\s+)?us\s+"
+                    rf"(?:(?:{taxonomy_terms})\s+)?(?:stocks?|companies|equities)\b|"
+                    rf"(?:^|\b(?:study|research|screen|analy[sz]e|review|investigate|examine|assess|evaluate|find|list)\s+)"
+                    rf"(?:(?:only|just|all)\s+)?(?:the\s+)?us\s+and\s+(?:{country_terms})\s+"
+                    rf"(?:(?:{taxonomy_terms})\s+)?(?:stocks?|companies|equities)\b|"
+                    r"\b(?:stocks?|companies|equities)\s+(?:in|from|headquartered\s+in)\s+(?:the\s+)?us\b",
+                    lower,
+                )
+            )
+            if not uppercase_us and not explicit_lowercase_us:
+                # In phrases such as "tell us about biotech stocks", "us" is
+                # a pronoun. Only explicit stock-geography grammar maps the
+                # lowercase token to the United States.
+                continue
         escaped = re.escape(phrase)
         contextual = (
             rf"(?<![a-z]){escaped}(?![a-z])[^.;,]{{0,40}}\b(?:stocks?|companies|equities)\b|"
@@ -558,6 +640,10 @@ def _validate_request_constraints(text: str) -> tuple[str | None, str | None, st
     if re.search(r"\b(?:north american|latin american|asia[- ]pacific|emea)\b", lower):
         raise UnsupportedResearchConstraint(
             "Regional geography is not equivalent to one headquarters-country code."
+        )
+    if re.search(r"\b(?:large|mid|small)[ -]cap\b[^.;,]{0,35}\b(?:stocks?|companies|equities)\b", lower):
+        raise UnsupportedResearchConstraint(
+            "Large-, mid-, and small-cap labels require an explicit numeric market-cap threshold and were not ignored."
         )
     unsupported_taxonomy = re.search(
         r"\b(quantum computing|robotics|cybersecurity|fintech|renewable energy|clean energy|"
@@ -694,7 +780,23 @@ def _validate_request_constraints(text: str) -> tuple[str | None, str | None, st
 
 def _deterministic_plan(text: str) -> ResearchPlan:
     lower = text.casefold()
-    detected_sector, detected_industry, detected_country = _validate_request_constraints(text)
+    named_security_subject = _named_security_subject(text)
+    constraint_text = text
+    if named_security_subject:
+        # Company names such as American Express, British American Tobacco,
+        # Industrial Logistics Properties, or United States Steel must not be
+        # reinterpreted as geography or taxonomy merely because the user adds
+        # the singular noun "stock".
+        constraint_text = re.sub(
+            re.escape(named_security_subject),
+            "named-security",
+            text,
+            count=1,
+            flags=re.I,
+        )
+    detected_sector, detected_industry, detected_country = _validate_request_constraints(
+        constraint_text
+    )
     opportunity_words = re.search(
         r"\b(good|best|strong|attractive|promising|undervalued|bargain|cheap|value|investment|investable|buy|pick|candidate|opportunity)\b",
         lower,
@@ -721,13 +823,14 @@ def _deterministic_plan(text: str) -> ResearchPlan:
     ) if named_find_subject else None
     explicitly_named_company = bool(
         re.search(
-            r"^\s*(?:analy[sz]e|research|review|investigate|evaluate)\s+(?:(?:a|an)\s+.+?\s+named\s+.+|[^,]+,\s+(?:a|an)\s+.+?\s+company)\b",
+            r"^\s*(?:analy[sz]e|research|study|examine|assess|review|investigate|evaluate)\s+"
+            r"(?:(?:a|an)\s+.+?\s+named\s+.+|[^,]+,\s+(?:a|an)\s+.+?\s+company)\b",
             text,
             re.I,
         )
     )
 
-    if explicitly_named_company:
+    if explicitly_named_company or named_security_subject:
         mode, workflow = "company", "company_deep_dive"
     elif unspecified_sector_company:
         mode, workflow = "screen", "sector_opportunity"
@@ -739,7 +842,14 @@ def _deterministic_plan(text: str) -> ResearchPlan:
         mode, workflow = "company", "company_deep_dive"
     elif (detected_sector or detected_industry) and classification_collection:
         mode, workflow = "screen", "stock_screen"
-    elif re.search(r"\b(screen|screener|find|show me|list)\b", lower) and re.search(r"\b(stocks?|companies|equities)\b", lower):
+    elif (
+        re.search(
+            r"\b(?:screen|screener|find|show(?:\s+me)?|list|research|study|examine|assess|evaluate|"
+            r"analy[sz]e|review|investigate|focus\s+on|narrow\s+to|filter\s+(?:for|to)|what\s+about)\b",
+            lower,
+        )
+        or re.search(r"\b(?:stocks?|companies|equities)\b[^.;,]{0,20}\binstead\b", lower)
+    ) and re.search(r"\b(stocks?|companies|equities)\b", lower):
         mode, workflow = "screen", "stock_screen"
     else:
         mode, workflow = "company", "company_deep_dive"
@@ -826,6 +936,139 @@ def _deterministic_plan(text: str) -> ResearchPlan:
     ).normalized()
 
 
+def _contextual_screen_plan(text: str, prior_plan: ResearchPlan) -> ResearchPlan:
+    """Overlay an explicit follow-up turn on a prior successful screen plan.
+
+    A geography-only turn such as ``study us stocks`` inherits the prior TRBC
+    classification. Any taxonomy or country stated in the new turn replaces
+    that dimension. Other omitted constraints remain intact, which makes the
+    effective LSEG request visible and deterministic instead of relying on an
+    LLM to reconstruct conversation state.
+    """
+    if prior_plan.mode != "screen":
+        raise UnsupportedResearchConstraint(
+            "Only a prior stock screen can be refined with an abbreviated universe request."
+        )
+
+    lower = re.sub(r"\s+", " ", text.casefold()).strip()
+    if re.search(
+        r"\b(?:remove|drop|clear|ignore)\b[^.;,]{0,35}"
+        r"\b(?:filter|constraint|limit|country|geography|sector|industry|market\s+cap|p/?e|ev/?ebitda)\b",
+        lower,
+    ):
+        raise UnsupportedResearchConstraint(
+            "Removing an inherited screen constraint requires a complete replacement request; "
+            "the constraint was not silently discarded."
+        )
+
+    explicit_fresh_screen = bool(
+        re.search(
+            r"\b(?:new|fresh)\s+screen\b|\bstart\s+(?:over|a\s+new\s+screen)\b|"
+            r"\bfrom\s+scratch\b|\b(?:just|only)\s+list\b|"
+            r"\b(?:global|worldwide|international)\b[^.;,]{0,30}\b(?:stocks|companies|equities)\b|"
+            r"\b(?:stocks|companies|equities)\b[^.;,]{0,20}\bglobally\b",
+            lower,
+        )
+    )
+    if explicit_fresh_screen:
+        return _deterministic_plan(text)
+
+    current = _deterministic_plan(text)
+    if current.mode != "screen":
+        raise UnsupportedResearchConstraint(
+            "The follow-up could not be compiled as a stock-screen refinement."
+        )
+
+    reset_all_filters = bool(
+        re.search(r"\ball\b[^.;,]{0,45}\b(?:stocks|companies|equities)\b", lower)
+    )
+    merged = (
+        ScreenFilters()
+        if reset_all_filters
+        else ScreenFilters(**asdict(prior_plan.screen))
+    )
+    clear_taxonomy = reset_all_filters or bool(
+        re.search(
+            r"\bacross\s+all\s+(?:sectors|industries)\b",
+            lower,
+        )
+    )
+    if clear_taxonomy:
+        merged.sector = None
+        merged.industry = None
+    if current.screen.industry:
+        # An explicit lower-level classification replaces both inherited TRBC
+        # dimensions; normalized() restores its exact parent sector.
+        merged.sector = None
+        merged.industry = current.screen.industry
+    elif current.screen.sector:
+        # An explicit economic sector broadens/replaces an inherited industry,
+        # rather than creating an impossible cross-taxonomy conjunction.
+        merged.sector = current.screen.sector
+        merged.industry = None
+
+    if current.screen.country_code:
+        merged.country_code = current.screen.country_code
+
+    numeric_fields = (
+        "market_cap_min", "market_cap_max", "pe_max", "forward_pe_max",
+        "ev_ebitda_max", "dividend_yield_min", "total_return_3m_min",
+    )
+    for field_name in numeric_fields:
+        value = getattr(current.screen, field_name)
+        if value is not None:
+            setattr(merged, field_name, value)
+
+    if current.screen.universe:
+        merged.universe = current.screen.universe
+    if re.search(r"\b(?:top|show|find|list)\s+-?\d", lower):
+        merged.limit = current.screen.limit
+
+    opportunity_requested = bool(
+        re.search(
+            r"\b(?:good|best|strong|attractive|promising|undervalued|bargain|cheap|value|"
+            r"investment|investable|buy|pick|candidate|opportunity)\b",
+            lower,
+        )
+    )
+    inherited_candidate_search = prior_plan.screen.candidate_search and not reset_all_filters
+    merged.candidate_search = bool(
+        inherited_candidate_search or current.screen.candidate_search or opportunity_requested
+    )
+    if merged.candidate_search and not (merged.sector or merged.industry):
+        raise UnsupportedResearchConstraint(
+            "A promising/value candidate refinement requires a supported sector or industry."
+        )
+    if merged.candidate_search:
+        merged.sort_by = "quality_value"
+    elif prior_plan.screen.candidate_search and (reset_all_filters or clear_taxonomy):
+        merged.sort_by = current.screen.sort_by
+
+    lookback_is_explicit = bool(
+        re.search(r"\b(?:last|past|over)\s+\d+\s*(?:days?|weeks?|months?|years?)\b", lower)
+        or re.search(r"\b(?:today|this\s+week|this\s+month|last\s+quarter)\b", lower)
+    )
+    horizon_is_explicit = bool(
+        re.search(r"\b(?:short[- ]term|next\s+few\s+weeks|next\s+quarter|long[- ]term|multi[- ]year|years)\b", lower)
+    )
+    topics = list(dict.fromkeys([*prior_plan.topics, *current.topics]))
+    workflow = "sector_opportunity" if merged.candidate_search else "stock_screen"
+    return ResearchPlan(
+        mode="screen",
+        workflow=workflow,
+        entities=[],
+        topics=topics,
+        lookback_days=current.lookback_days if lookback_is_explicit else prior_plan.lookback_days,
+        investment_horizon=(
+            current.investment_horizon if horizon_is_explicit else prior_plan.investment_horizon
+        ),
+        screen=merged,
+        raw_request=text,
+        planner="deterministic_contextual",
+        context_parent_request=prior_plan.effective_request,
+    ).normalized()
+
+
 def _extract_json(content: str) -> dict[str, Any]:
     text = content.strip()
     if text.startswith("```"):
@@ -891,8 +1134,16 @@ def _llm_plan(text: str, settings: Settings) -> ResearchPlan:
     ).normalized()
 
 
-def build_research_plan(text: str, settings: Settings) -> ResearchPlan:
-    fallback = _deterministic_plan(text)
+def build_research_plan(
+    text: str,
+    settings: Settings,
+    prior_plan: ResearchPlan | None = None,
+) -> ResearchPlan:
+    fallback = (
+        _contextual_screen_plan(text, prior_plan)
+        if prior_plan is not None
+        else _deterministic_plan(text)
+    )
     # User constraints, entities, and workflow selection are safety-critical.
     # The deterministic compiler is therefore authoritative; generated intent
     # output cannot add, remove, or reinterpret a screen constraint.

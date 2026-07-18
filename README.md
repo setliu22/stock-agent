@@ -18,6 +18,10 @@ Natural-language sector wording is now canonicalized before any LSEG request. Fo
 
 A request such as `Can you do some research on a potential bargain buy in the industrial sector?` now selects the `sector_opportunity` workflow rather than a company deep dive.
 
+Research verbs such as `study`, `examine`, and `assess` also enter the LSEG workflow rather than generic chat. Short, immediately adjacent screen refinements inherit only omitted constraints from the last successful screen: after `study biotech stocks`, `study us stocks` retains the exact biotech TRBC industry and adds U.S. headquarters, while an explicitly named new sector or country replaces the corresponding prior constraint. `all`, `global`, `new screen`, and `start over` requests begin fresh, and unrelated chat closes the refinement context. The normalized trace records the current request, parent request, effective request, and fully compiled screen.
+
+Screen enrichment is authoritative for overlapping value fields because it explicitly requests `Curn=USD`. This prevents a foreign listing's local-currency market capitalization returned by the initial Screener display from overriding the normalized USD value used for filtering, sorting, and reporting.
+
 ## Live deep-research progress
 
 Deep LSEG research now reports its actual workflow while it runs. The interface shows a 0 to 100 percent progress bar, the current stage, elapsed time, the active LSEG API request, screened-universe counts, shortlist creation, and finalist-by-finalist deep dives. The chat transcript contains one live status block that is updated in place rather than flooding the conversation with duplicate messages.

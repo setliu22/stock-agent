@@ -558,6 +558,22 @@ def _combine_columns(frames: list[pd.DataFrame]) -> pd.DataFrame:
     return output.loc[:, ~output.columns.duplicated()]
 
 
+def _combine_screen_core_and_enrichment(
+    core: pd.DataFrame,
+    enrichment: pd.DataFrame,
+) -> pd.DataFrame:
+    """Prefer explicitly USD-normalized enrichment over Screener display data.
+
+    ``discovery.Screener`` can return ``TR.CompanyMarketCap`` in the listing's
+    local currency even when the screen body contains ``CURN=USD``. The
+    enrichment call supplies ``parameters={"Curn": "USD"}``, so it must be the
+    authoritative source for overlapping value fields. Core identity fields
+    still fill enrichment gaps, and _combine_columns continues to reject
+    conflicting country, TRBC, ticker, or organization identities.
+    """
+    return _combine_columns([enrichment, core])
+
+
 def _call_get_data(ld: Any, universe: Any, fields: tuple[str, ...], parameters: dict[str, Any] | None) -> Any:
     kwargs = {"universe": universe, "fields": list(fields), "parameters": parameters}
     header_type = getattr(getattr(ld, "HeaderType", None), "NAME", None)
@@ -1111,14 +1127,15 @@ def _retrieve_screen(ld: Any, client: _LSEGClient, result: ResearchResult) -> No
             universe_label = universe_value if isinstance(universe_value, str) else type(universe_value).__name__
             response = client.call(
                 label,
-                lambda: _call_get_data(ld, universe_value, fields, None),
+                lambda: _call_get_data(ld, universe_value, fields, {"Curn": "USD"}),
                 warn=False,
                 capture_failure=True,
                 request_metadata={
                     "operation": "get_data",
                     "universe": universe_label,
                     "fields": list(fields),
-                    "parameters": {},
+                    "parameters": {"Curn": "USD"},
+                    "currency": "USD",
                 },
             )
             if isinstance(response, _CallFailure):
@@ -1219,7 +1236,7 @@ def _retrieve_screen(ld: Any, client: _LSEGClient, result: ResearchResult) -> No
         parameters={"Curn": "USD"},
         label="Stock-screen enrichment",
     )
-    frame = _combine_columns([core, enrichment])
+    frame = _combine_screen_core_and_enrichment(core, enrichment)
     full_ranked = apply_screen_filters(frame, filters, truncate=False, strict=True)
     if full_ranked.empty:
         raise LSEGNoMatches(
@@ -1301,7 +1318,7 @@ def _retrieve_screen(ld: Any, client: _LSEGClient, result: ResearchResult) -> No
                 f"The screen matched companies, but none had the required {workflow.minimum_screen_factor_families} "
                 "independent factor families for candidate selection."
             )
-        if re.search(r"\b(promising|good|attractive|strong|investable|best)\b", result.plan.raw_request.casefold()):
+        if re.search(r"\b(promising|good|attractive|strong|investable|best)\b", result.plan.effective_request.casefold()):
             if "Positive Signal Family Count" not in eligible.columns:
                 eligible = eligible.iloc[0:0]
             else:
@@ -1315,7 +1332,7 @@ def _retrieve_screen(ld: Any, client: _LSEGClient, result: ResearchResult) -> No
                     "The screen matched companies, but none had positive signals in at least two independent "
                     "quality, cash-flow, income, momentum, or expectations families."
                 )
-        if re.search(r"\b(undervalued|bargain|cheap|value)\b", result.plan.raw_request.casefold()):
+        if re.search(r"\b(undervalued|bargain|cheap|value)\b", result.plan.effective_request.casefold()):
             if "Value Discount Count" not in eligible.columns:
                 eligible = eligible.iloc[0:0]
             else:
@@ -1359,7 +1376,7 @@ def _retrieve_winner_optional_context(
     """
     if not result.resolved:
         return
-    lower_request = result.plan.raw_request.casefold()
+    lower_request = result.plan.effective_request.casefold()
     requested_optional = {
         topic
         for topic, pattern in {

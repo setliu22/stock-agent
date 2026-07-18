@@ -18,13 +18,14 @@ from .lseg_research import (
     concise_report,
     run_research,
 )
-from .research_planner import UnsupportedResearchConstraint, build_research_plan
+from .research_planner import ResearchPlan, UnsupportedResearchConstraint, build_research_plan
 from .market_data import current_price
 from .models import Purchase
 
 
 _RESEARCH_PATTERN = re.compile(
-    r"\b(analy[sz]e|research|investigate|review|look\s+up|tell\s+me\s+about|deep\s+dive|compare|screen|screener)\b",
+    r"\b(analy[sz]e|research|study|examine|assess|evaluate|investigate|review|look\s+up|"
+    r"tell\s+me\s+about|deep\s+dive|compare|screen|screener)\b",
     re.IGNORECASE,
 )
 
@@ -45,6 +46,7 @@ class StockAgent:
         self.settings = settings
         self.database = database
         self._last_research_result: ResearchResult | None = None
+        self._screen_refinement_available = False
 
     def handle(
         self,
@@ -57,15 +59,32 @@ class StockAgent:
             return "Enter a request."
 
         lower = text.casefold()
-        if self._last_research_result is not None and self._is_research_follow_up(text):
-            return answer_follow_up(self._last_research_result, text, self.settings)
         if (
             "lseg capabilities" in lower
             or "lseg functions" in lower
             or "what can lseg" in lower
             or "what does lseg" in lower
         ):
+            self._screen_refinement_available = False
+            self._last_research_result = None
             return capability_answer(text, self.settings.project_root / "data" / "lseg_capabilities.json")
+        if self._last_research_result is not None and self._is_research_follow_up(text):
+            return answer_follow_up(self._last_research_result, text, self.settings)
+        if (
+            self._last_research_result is not None
+            and self._screen_refinement_available
+            and self._is_screen_refinement(text, self._last_research_result.plan)
+        ):
+            # Capture the successful plan before research() deliberately clears
+            # stale result context. The planner will inherit only omitted screen
+            # constraints and will replace constraints stated in this turn.
+            prior_plan = self._last_research_result.plan
+            return self.research(
+                text,
+                progress_callback=progress_callback,
+                cancel_event=cancel_event,
+                prior_plan=prior_plan,
+            )
         if (
             _RESEARCH_PATTERN.search(text)
             or "market news" in lower
@@ -73,10 +92,16 @@ class StockAgent:
         ):
             return self.research(text, progress_callback=progress_callback, cancel_event=cancel_event)
         if "show holdings" in lower or lower in {"holdings", "portfolio"}:
+            self._screen_refinement_available = False
+            self._last_research_result = None
             return self.show_holdings()
         if "calculate return" in lower or "portfolio return" in lower:
+            self._screen_refinement_available = False
+            self._last_research_result = None
             return self.calculate_return()
         if match := _PURCHASE_PATTERN.search(text):
+            self._screen_refinement_available = False
+            self._last_research_result = None
             purchase = Purchase(
                 ticker=match.group("ticker").upper(),
                 quantity=float(match.group("quantity")),
@@ -89,6 +114,8 @@ class StockAgent:
                 f"Recorded {purchase.quantity:g} shares of {purchase.ticker} "
                 f"at ${purchase.price:,.2f} per share."
             )
+        self._screen_refinement_available = False
+        self._last_research_result = None
         return self._general_chat(text)
 
     def research(
@@ -96,6 +123,7 @@ class StockAgent:
         query: str,
         progress_callback: ProgressCallback | None = None,
         cancel_event: Any | None = None,
+        prior_plan: ResearchPlan | None = None,
     ) -> str:
         def progress(percent: int | None, stage: str, detail: str = "") -> None:
             if progress_callback is None:
@@ -110,10 +138,11 @@ class StockAgent:
         # If it fails or returns no matches, follow-ups must not discuss a stale
         # company from an earlier request.
         self._last_research_result = None
+        self._screen_refinement_available = False
         try:
             if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
                 raise ResearchCancelled("Research stopped by user.")
-            plan = build_research_plan(query, self.settings)
+            plan = build_research_plan(query, self.settings, prior_plan=prior_plan)
             if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
                 raise ResearchCancelled("Research stopped by user.")
             progress(4, "Research plan ready", f"Workflow: {plan.workflow or plan.mode}.")
@@ -123,6 +152,7 @@ class StockAgent:
             progress(97, "Synthesizing report", "Identifying the most important opportunities, catalysts, risks, and contradictions.")
             report = concise_report(result, self.settings, cancel_event=cancel_event)
             self._last_research_result = result
+            self._screen_refinement_available = plan.mode == "screen"
             request_count = result.metrics.get("lseg_request_count", len(getattr(result, "call_records", [])))
             progress(
                 100,
@@ -174,6 +204,40 @@ class StockAgent:
             )
         )
         return (refers_to_prior_result and research_question) or direct_follow_up
+
+    @staticmethod
+    def _is_screen_refinement(text: str, prior_plan: ResearchPlan) -> bool:
+        """Recognize a new screen turn that refines the last screen.
+
+        Evidence questions such as "why is this company undervalued?" are
+        handled separately. This path is only for plural-universe requests, so
+        "study Apple stock" remains a fresh company deep dive.
+        """
+        if prior_plan.mode != "screen":
+            return False
+        lower = re.sub(r"\s+", " ", text.casefold()).strip()
+        explicit_fresh_screen = bool(
+            re.search(
+                r"\b(?:new|fresh)\s+screen\b|\bstart\s+(?:over|a\s+new\s+screen)\b|"
+                r"\bfrom\s+scratch\b|\b(?:just|only)\s+list\b|"
+                r"\b(?:global|worldwide|international)\b[^.;,]{0,30}\b(?:stocks|companies|equities)\b|"
+                r"\b(?:stocks|companies|equities)\b[^.;,]{0,20}\bglobally\b|"
+                r"\ball\b[^.;,]{0,45}\b(?:stocks|companies|equities)\b",
+                lower,
+            )
+        )
+        if explicit_fresh_screen:
+            return False
+        action = bool(
+            re.search(
+                r"\b(?:study|research|screen|analy[sz]e|examine|assess|evaluate|review|investigate|"
+                r"find|list|focus\s+on|narrow\s+to|filter\s+(?:for|to)|what\s+about)\b",
+                lower,
+            )
+        )
+        plural_universe = bool(re.search(r"\b(?:stocks|companies|equities)\b", lower))
+        replacement = plural_universe and bool(re.search(r"\binstead\b", lower))
+        return (action and plural_universe) or replacement
 
     def show_holdings(self) -> str:
         holdings = self.database.holdings()

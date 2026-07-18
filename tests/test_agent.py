@@ -129,3 +129,115 @@ def test_contextual_follow_up_uses_prior_research(tmp_path, monkeypatch) -> None
     assert "forward P/E is 15" in follow_up
     assert "versus 22" in follow_up
     assert "definitively undervalued" in follow_up
+
+
+def test_study_geography_follow_up_reruns_lseg_with_prior_biotech_context(
+    tmp_path, monkeypatch
+) -> None:
+    from portfolio.lseg_research import ResearchResult, build_screen_expression
+
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", "fake-groq-key", "test-model", "desktop.workspace")
+    agent = StockAgent(settings, PortfolioDatabase(settings.database_path))
+    plans = []
+
+    def fake_run(plan, *_args, **_kwargs):
+        plans.append(plan)
+        return ResearchResult(plan=plan)
+
+    monkeypatch.setattr("portfolio.agent.run_research", fake_run)
+    monkeypatch.setattr(
+        "portfolio.agent.concise_report",
+        lambda result, *_args, **_kwargs: f"LSEG screen: {build_screen_expression(result.plan.screen)}",
+    )
+    monkeypatch.setattr(
+        agent,
+        "_general_chat",
+        lambda _text: (_ for _ in ()).throw(AssertionError("research must not use generic chat")),
+    )
+    monkeypatch.setattr(
+        "portfolio.agent.answer_follow_up",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("a constraint refinement must rerun LSEG")
+        ),
+    )
+
+    first = agent.handle("can you study biotech stocks")
+    second = agent.handle("study us stocks")
+
+    assert len(plans) == 2
+    assert 'IN(TR.TRBCIndustryCode,"56202010")' in first
+    assert 'IN(TR.HQCountryCode,"US")' in second
+    assert 'IN(TR.TRBCIndustryCode,"56202010")' in second
+    assert plans[1].screen.country_code == "US"
+    assert plans[1].screen.industry == "Biotechnology & Medical Research"
+    assert plans[1].context_parent_request == "can you study biotech stocks"
+
+
+def test_failed_contextual_refinement_discards_prior_result(tmp_path, monkeypatch) -> None:
+    from portfolio.lseg_research import LSEGNoMatches, ResearchResult
+
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
+    agent = StockAgent(settings, PortfolioDatabase(settings.database_path))
+    calls = 0
+
+    def fake_run(plan, *_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise LSEGNoMatches("No U.S. matches")
+        return ResearchResult(plan=plan)
+
+    monkeypatch.setattr("portfolio.agent.run_research", fake_run)
+    monkeypatch.setattr("portfolio.agent.concise_report", lambda *_args, **_kwargs: "Biotech screen")
+
+    assert agent.handle("can you study biotech stocks") == "Biotech screen"
+    failure = agent.handle("study us stocks")
+    assert failure.startswith("No adequately supported company was found")
+    assert agent._last_research_result is None
+
+
+def test_unrelated_turn_prevents_stale_screen_inheritance(tmp_path, monkeypatch) -> None:
+    from portfolio.lseg_research import ResearchResult
+
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
+    agent = StockAgent(settings, PortfolioDatabase(settings.database_path))
+    plans = []
+
+    def fake_run(plan, *_args, **_kwargs):
+        plans.append(plan)
+        return ResearchResult(plan=plan)
+
+    monkeypatch.setattr("portfolio.agent.run_research", fake_run)
+    monkeypatch.setattr("portfolio.agent.concise_report", lambda *_args, **_kwargs: "Screen")
+    monkeypatch.setattr(agent, "_general_chat", lambda _text: "General response")
+
+    assert agent.handle("study biotech stocks") == "Screen"
+    assert agent.handle("hello") == "General response"
+    assert agent.handle("study US stocks") == "Screen"
+
+    assert len(plans) == 2
+    assert plans[1].screen.country_code == "US"
+    assert plans[1].screen.sector is None
+    assert plans[1].screen.industry is None
+    assert plans[1].context_parent_request is None
+
+
+def test_lseg_capability_request_precedes_screen_refinement(tmp_path, monkeypatch) -> None:
+    from portfolio.lseg_research import ResearchResult
+
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
+    agent = StockAgent(settings, PortfolioDatabase(settings.database_path))
+    plans = []
+
+    def fake_run(plan, *_args, **_kwargs):
+        plans.append(plan)
+        return ResearchResult(plan=plan)
+
+    monkeypatch.setattr("portfolio.agent.run_research", fake_run)
+    monkeypatch.setattr("portfolio.agent.concise_report", lambda *_args, **_kwargs: "Screen")
+    monkeypatch.setattr("portfolio.agent.capability_answer", lambda *_args, **_kwargs: "Capabilities")
+
+    assert agent.handle("study biotech stocks") == "Screen"
+    assert agent.handle("research LSEG capabilities for stocks") == "Capabilities"
+    assert len(plans) == 1
+    assert agent._last_research_result is None
