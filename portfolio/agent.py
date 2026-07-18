@@ -18,7 +18,13 @@ from .lseg_research import (
     concise_report,
     run_research,
 )
-from .research_planner import ResearchPlan, UnsupportedResearchConstraint, build_research_plan
+from .research_planner import (
+    NotResearchRequest,
+    ResearchClarificationNeeded,
+    ResearchPlan,
+    UnsupportedResearchConstraint,
+    build_research_plan,
+)
 from .market_data import current_price
 from .models import Purchase
 
@@ -26,6 +32,19 @@ from .models import Purchase
 _RESEARCH_PATTERN = re.compile(
     r"\b(analy[sz]e|research|study|examine|assess|evaluate|investigate|review|look\s+up|"
     r"tell\s+me\s+about|deep\s+dive|compare|screen|screener)\b",
+    re.IGNORECASE,
+)
+
+_AMBIGUOUS_EQUITY_RESEARCH_PATTERN = re.compile(
+    r"^(?=[^\n]{1,180}$)"
+    r"(?=.*\b(?:find|hunt\s+for|scout|seek|identify|spot|look\s+for|surface|"
+    r"zero\s+in\s+on|pick\s+out|which)\b)"
+    r"(?=.*\b(?:stocks?|companies|equities|names?|plays?|picks?|candidates?|"
+    r"industrials?|biotech|chipmakers?|banks?)\b)"
+    r"(?=.*\b(?:good|best|strong|attractive|appealing|promising|compelling|standout|"
+    r"underappreciated|undervalued|overlooked|underpriced|mispriced|cheap|discounted|"
+    r"industrials?|biotech|technology|tech|healthcare|financials?|energy|utilities|"
+    r"chipmakers?|banks?)\b).*$",
     re.IGNORECASE,
 )
 
@@ -87,6 +106,7 @@ class StockAgent:
             )
         if (
             _RESEARCH_PATTERN.search(text)
+            or _AMBIGUOUS_EQUITY_RESEARCH_PATTERN.search(text)
             or "market news" in lower
             or (re.search(r"\b(find|show|list)\b", lower) and re.search(r"\b(stocks?|companies|equities)\b", lower))
         ):
@@ -137,6 +157,8 @@ class StockAgent:
         # A new research attempt invalidates pronoun-based context immediately.
         # If it fails or returns no matches, follow-ups must not discuss a stale
         # company from an earlier request.
+        previous_result = self._last_research_result
+        previous_refinement_available = self._screen_refinement_available
         self._last_research_result = None
         self._screen_refinement_available = False
         try:
@@ -164,6 +186,18 @@ class StockAgent:
         except ResearchCancelled:
             progress(None, "Research stopped", "Stopped by user.")
             return "Research stopped. Partial results were discarded."
+        except NotResearchRequest:
+            progress(None, "General question", "No LSEG research request was needed.")
+            return self._general_chat(query)
+        except ResearchClarificationNeeded as exc:
+            # A clarification is not a failed replacement screen. Preserve the
+            # exact prior screen so a concise answer such as "US-headquartered
+            # names" can complete the same contextual request.
+            if prior_plan is not None and previous_result is not None:
+                self._last_research_result = previous_result
+                self._screen_refinement_available = previous_refinement_available
+            progress(None, "Clarification needed", str(exc))
+            return f"I need one clarification before running LSEG research: {exc}"
         except UnsupportedResearchConstraint as exc:
             progress(None, "Request needs revision", str(exc))
             return f"I did not run an LSEG request because the research constraint could not be compiled safely: {exc}"
@@ -182,12 +216,13 @@ class StockAgent:
     def _is_research_follow_up(text: str) -> bool:
         lower = text.casefold()
         refers_to_prior_result = bool(
-            re.search(r"\b(this|that|the)\s+(company|stock|candidate|pick)\b", lower)
+            re.search(r"\b(this|that|the)\s+(company|stock|candidate|pick|one|name)\b", lower)
             or re.search(r"\b(it|its)\b", lower)
         )
         research_question = bool(
             re.search(
-                r"\b(why|how|what|explain|elaborate|undervalued|valuation|risk|catalyst|selected|promising)\b",
+                r"\b(why|how|what|explain|elaborate|undervalued|valuation|cheap|inexpensive|"
+                r"discount|relative\s+value|risk|catalyst|selected|chosen|promising)\b",
                 lower,
             )
         )
@@ -198,6 +233,11 @@ class StockAgent:
                 r"what(?:'s|\s+is)\s+(?:the\s+)?(?:risk|catalyst|downside)\??|"
                 r"what\s+could\s+go\s+wrong\??|"
                 r"why\s+(?:was\s+)?(?:it|this company|this stock)\s+selected\??|"
+                r"why\s+(?:this|that)\s+(?:one|name|pick|candidate)\??|"
+                r"how\s+was\s+(?:it|this|that)(?:\s+(?:one|name|pick|candidate))?\s+chosen\??|"
+                r"why\s+(?:does\s+)?(?:it|this company|this stock)?\s*(?:look|seem)\s+cheap\??|"
+                r"why\s+(?:the\s+)?discount\??|"
+                r"is\s+(?:the\s+)?valuation\s+(?:really\s+)?(?:attractive|cheap|inexpensive)\??|"
                 r"tell\s+me\s+more(?:\s+about\s+(?:it|this company|this stock))?\.?|"
                 r"explain\s+(?:the\s+)?valuation\.?)\s*",
                 lower,
@@ -231,13 +271,61 @@ class StockAgent:
         action = bool(
             re.search(
                 r"\b(?:study|research|screen|analy[sz]e|examine|assess|evaluate|review|investigate|"
-                r"find|list|focus\s+on|narrow\s+to|filter\s+(?:for|to)|what\s+about)\b",
+                r"find|list|show(?:\s+me)?|return|display|give\s+me|focus\s+on|narrow\s+to|"
+                r"filter\s+(?:for|to)|what\s+about)\b",
                 lower,
             )
         )
         plural_universe = bool(re.search(r"\b(?:stocks|companies|equities)\b", lower))
+        contextual_universe = bool(
+            re.search(r"\b(?:names|ones|candidates|picks)\b", lower)
+            or re.search(
+                r"\b(?:stateside|domestic|american|u\.?s\.?|united\s+states|canadian|"
+                r"british|u\.?k\.?|european|japanese|chinese|australian|indian)\b",
+                lower,
+            )
+        )
         replacement = plural_universe and bool(re.search(r"\binstead\b", lower))
-        return (action and plural_universe) or replacement
+        terse_contextual = bool(
+            re.fullmatch(
+                r"\s*(?:(?:what\s+about|maybe)\s+)?"
+                r"(?:stateside|domestic|american|u\.?s\.?|united\s+states|canadian|british|"
+                r"u\.?k\.?|japanese|chinese|indian)"
+                r"(?:[- ]headquartered)?\s+(?:names|ones|stocks|companies|equities|picks|candidates)"
+                r"(?:\s*,?\s*please)?\??\s*",
+                lower,
+            )
+        )
+        numeric_refinement = bool(
+            re.search(
+                r"\b(?:first|top|show(?:\s+me)?|give\s+me|return|display)\s+\d+\b"
+                r"[^.;,]{0,45}\b(?:stocks|companies|equities|names)\b",
+                lower,
+            )
+        )
+        contextual_geography = bool(
+            re.search(
+                r"\b(?:stateside|domestic|american|u\.?s\.?|united\s+states|canadian|"
+                r"british|u\.?k\.?|european|japanese|chinese|australian|indian)\b",
+                lower,
+            )
+            and (
+                contextual_universe
+                or plural_universe
+                or re.search(
+                    r"\b(?:same|those|them|that|only|headquartered|restrict|focus|"
+                    r"how\s+about|what\s+about)\b",
+                    lower,
+                )
+            )
+        )
+        return (
+            (action and (plural_universe or contextual_universe))
+            or replacement
+            or terse_contextual
+            or numeric_refinement
+            or contextual_geography
+        )
 
     def show_holdings(self) -> str:
         holdings = self.database.holdings()

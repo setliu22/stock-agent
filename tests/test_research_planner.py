@@ -1,8 +1,15 @@
 from pathlib import Path
 
+import pytest
+
 from portfolio.config import Settings
 from portfolio.lseg_research import build_screen_expression
-from portfolio.research_planner import ResearchPlan, ScreenFilters, build_research_plan
+from portfolio.research_planner import (
+    ResearchPlan,
+    ScreenFilters,
+    UnsupportedResearchConstraint,
+    build_research_plan,
+)
 
 
 def settings(tmp_path: Path) -> Settings:
@@ -38,6 +45,132 @@ def test_screen_request_extracts_filters(tmp_path) -> None:
     assert plan.screen.sector == "Technology"
     assert plan.screen.market_cap_min == 10_000_000_000
     assert plan.screen.forward_pe_max == 40
+
+
+@pytest.mark.parametrize(
+    "wording",
+    [
+        "P/E no higher than 15",
+        "maximum P/E of 15",
+        "max P/E 15",
+        "P/E capped at 15",
+        "P/E at or below 15",
+    ],
+)
+def test_common_maximum_pe_wording_is_not_dropped(tmp_path, wording) -> None:
+    plan = build_research_plan(
+        f"screen industrial stocks with {wording}",
+        settings(tmp_path),
+    )
+    assert plan.screen.pe_max == 15
+
+
+def test_result_limit_wording_is_compiled_and_enterprise_value_is_not_an_objective(tmp_path) -> None:
+    limited = build_research_plan(
+        "screen industrial stocks with P/E below 15 and return 7 results",
+        settings(tmp_path),
+    )
+    assert limited.screen.limit == 7
+
+    ev_screen = build_research_plan(
+        "list industrial stocks with enterprise value to EBITDA below 10",
+        settings(tmp_path),
+    )
+    assert ev_screen.screen.ev_ebitda_max == 10
+    assert ev_screen.selection_objectives == []
+    assert ev_screen.workflow == "stock_screen"
+
+    explicit_candidate = build_research_plan(
+        "find top 15 promising industrial stocks",
+        settings(tmp_path),
+    )
+    assert explicit_candidate.screen.limit == 15
+    assert explicit_candidate.screen.limit_explicit is True
+
+    show_me = build_research_plan(
+        "show me 7 industrial stocks",
+        settings(tmp_path),
+    )
+    assert show_me.screen.limit == 7
+
+
+@pytest.mark.parametrize(
+    "wording",
+    [
+        "list industrial stocks for a long-term investment horizon",
+        "list industrial stocks for investment research",
+    ],
+)
+def test_bare_investment_wording_is_not_candidate_intent(tmp_path, wording) -> None:
+    plan = build_research_plan(wording, settings(tmp_path))
+    assert plan.workflow == "stock_screen"
+    assert plan.selection_objectives == []
+
+
+@pytest.mark.parametrize(
+    "wording",
+    [
+        "list industrial stocks with investment-grade debt",
+        "list industrial stocks with institutional investment ownership",
+    ],
+)
+def test_unexecutable_screen_filters_or_topics_are_rejected(tmp_path, wording) -> None:
+    with pytest.raises(UnsupportedResearchConstraint, match="not ignored|cannot be executed"):
+        build_research_plan(wording, settings(tmp_path))
+
+
+@pytest.mark.parametrize(
+    "wording",
+    [
+        "find 10% dividend yield industrial stocks",
+        "find 10%-yielding industrial stocks",
+        "find 5 billion market cap industrial stocks",
+        "show 20 P/E industrial stocks",
+        "list 3-month return 7% industrial stocks",
+        "list industrial stocks sorted by P/E",
+        "show industrial stocks with the lowest forward P/E",
+        "find industrial stocks ranked by dividend yield",
+    ],
+)
+def test_unsupported_metric_shorthand_or_ordering_is_never_misread_as_limit(
+    tmp_path,
+    wording,
+) -> None:
+    with pytest.raises(UnsupportedResearchConstraint, match="shorthand|ordering"):
+        build_research_plan(wording, settings(tmp_path))
+
+
+def test_result_limit_and_supported_metric_can_coexist(tmp_path) -> None:
+    plan = build_research_plan(
+        "find 7 industrial stocks with 3-month return above 10%",
+        settings(tmp_path),
+    )
+
+    assert plan.screen.limit == 7
+    assert plan.screen.total_return_3m_min == 10
+
+
+@pytest.mark.parametrize(
+    "wording",
+    [
+        "what are best practices for researching industrial stocks?",
+        "research whether industrial stocks are a good hedge",
+        "study strong dollar risks for industrial stocks",
+        "analyze industrial stocks before I buy bonds",
+        "what makes an industrial stock attractive?",
+        "research the best way to value industrial stocks",
+    ],
+)
+def test_conceptual_sector_wording_is_not_compiled_as_candidate_screen(tmp_path, wording) -> None:
+    from portfolio.research_planner import NotResearchRequest
+
+    with pytest.raises(NotResearchRequest):
+        build_research_plan(wording, settings(tmp_path))
+
+
+def test_plain_screen_rejects_topics_it_would_not_retrieve(tmp_path) -> None:
+    with pytest.raises(UnsupportedResearchConstraint, match="cannot be executed"):
+        build_research_plan("study biotech stocks and recent news", settings(tmp_path))
 
 
 def test_unspecified_sector_investment_request_becomes_candidate_screen(tmp_path) -> None:
@@ -122,7 +255,7 @@ def test_contextual_screen_refinement_inherits_and_replaces_dimensions(tmp_path)
         "study Canadian stocks instead", settings(tmp_path), prior_plan=us_biotech
     )
     assert canadian.screen.country_code == "CA"
-    assert canadian.screen.industry == "Biotechnology & Medical Research"
+    assert canadian.screen.industry is None
 
     candidate = build_research_plan(
         "find a promising undervalued biotech stock under $500M market cap",
@@ -176,8 +309,11 @@ def test_contextual_screen_action_variants_compile(tmp_path) -> None:
         "narrow to US stocks",
         "filter for US stocks",
         "what about US stocks?",
-        "US stocks instead",
     ):
         plan = build_research_plan(text, settings(tmp_path), prior_plan=prior)
         assert plan.screen.country_code == "US", text
         assert plan.screen.industry == "Biotechnology & Medical Research", text
+
+    replacement = build_research_plan("US stocks instead", settings(tmp_path), prior_plan=prior)
+    assert replacement.screen.country_code == "US"
+    assert replacement.screen.industry is None

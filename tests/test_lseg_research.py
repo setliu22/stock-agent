@@ -275,7 +275,10 @@ def test_winner_context_uses_narrow_ownership_window(monkeypatch) -> None:
     import portfolio.lseg_research as module
 
     plan = ResearchPlan(
-        mode="screen", workflow="sector_opportunity", raw_request="show ownership and insider activity"
+        mode="screen",
+        workflow="sector_opportunity",
+        topics=["ownership", "insiders"],
+        raw_request="show ownership and insider activity",
     )
     winner = ResolvedInstrument("A", "A", "A", "A.N", "A Corp")
     result = ResearchResult(plan=plan, resolved=[winner])
@@ -291,3 +294,11 @@ def test_winner_context_uses_narrow_ownership_window(monkeypatch) -> None:
 
     assert seen["Winner ownership snapshot"] == {"SDate": -25, "EDate": -24, "Frq": "D"}
     assert seen["Winner insider activity"] == {"SDate": -365, "EDate": 0, "Frq": "Q"}
+
+
+def test_stock_screen_top_count_has_one_trace_authority() -> None:
+    import portfolio.lseg_research as module
+
+    filters = ScreenFilters(limit=15, candidate_search=False)
+    assert module._screen_top_count(filters) == 150
+    assert "TOP(TR.CompanyMarketCap,150,nnumber)" in module.build_screen_body(filters)

@@ -30,7 +30,11 @@ A local macOS stock-research application using LSEG Workspace, the LSEG Data Lib
 
 ## Research architecture
 
-The language model does not choose workflows, entities, constraints, LSEG functions, fields, tickers, or research procedures. A deterministic compiler owns those decisions and rejects material wording it cannot represent safely. Sector screens, stock screens, comparisons, market news summaries, and contextual valuation/risk/catalyst answers are rendered deterministically from validated evidence. An optional model may help phrase a named-company deep dive, but malformed or misbound output is discarded.
+Request interpretation is hybrid. A constrained Groq intent pass can resolve wording such as `stateside`, `stands out`, or `underappreciated`, classify a grounded company/universe mention, and recognize requested evidence topics. It returns a strict JSON schema with verbatim current-request evidence for every semantic value. It cannot choose LSEG functions, fields, RICs, screen syntax, API operations, numeric filters, limits, or lookback windows.
+
+The deterministic compiler remains authoritative for explicit country, TRBC sector/industry, company, numeric, horizon, and reset/inheritance constraints, and it derives the executable workflow after reconciliation. Listing-versus-headquarters ambiguity, exclusions, unsupported thresholds, multiple geographies, malformed model output, invented entities, and ungrounded model fields are stopped or discarded before LSEG runs. If the model is unavailable, a fully compiled deterministic request still runs; if neither path can resolve material wording safely, the agent asks a clarification question and makes zero LSEG requests. The normalized trace records accepted semantic fields, rejected generated fields, deterministic conflicts, and the final compiled screen.
+
+Sector screens, stock screens, comparisons, market news summaries, and contextual valuation/risk/catalyst answers are rendered deterministically from validated evidence. The optional model may also help phrase a named-company deep dive, but malformed or misbound report output is discarded.
 
 The deterministic workflow compiler supports:
 

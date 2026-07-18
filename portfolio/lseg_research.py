@@ -796,6 +796,10 @@ def _screen_number(value: float) -> str:
     return str(int(number)) if number.is_integer() else format(number, ".15g")
 
 
+def _screen_top_count(filters: ScreenFilters) -> int:
+    return 200 if filters.candidate_search else max(50, min(filters.limit * 10, 500))
+
+
 def build_screen_body(filters: ScreenFilters) -> str:
     """Build the body accepted by ``lseg.data.discovery.Screener``.
 
@@ -840,7 +844,7 @@ def build_screen_body(filters: ScreenFilters) -> str:
         clauses.append(f"TR.DividendYield>={_screen_number(filters.dividend_yield_min)}")
     if filters.total_return_3m_min is not None:
         clauses.append(f"TR.TotalReturn3Mo>={_screen_number(filters.total_return_3m_min)}")
-    top_count = 200 if filters.candidate_search else max(50, min(filters.limit * 10, 500))
+    top_count = _screen_top_count(filters)
     clauses.append(f"TOP(TR.CompanyMarketCap,{top_count},nnumber)")
     clauses.append("CURN=USD")
     return ", ".join(clauses)
@@ -1082,6 +1086,9 @@ def apply_screen_filters(
 def _retrieve_screen(ld: Any, client: _LSEGClient, result: ResearchResult) -> None:
     filters = result.plan.screen
     workflow = get_workflow(result.plan.workflow, result.plan.mode, candidate_search=filters.candidate_search)
+    requested_screen_top = (
+        workflow.screen_limit if filters.universe else _screen_top_count(filters)
+    )
     if filters.universe:
         from lseg.data.discovery import Chain
 
@@ -1222,9 +1229,11 @@ def _retrieve_screen(ld: Any, client: _LSEGClient, result: ResearchResult) -> No
         raise LSEGResearchError("The screen returned no usable RICs.")
     rics = rics[:workflow.screen_limit]
     result.metrics["screen_universe_count"] = len(rics)
-    result.metrics["screen_universe_cap"] = workflow.screen_limit
+    effective_screen_cap = min(requested_screen_top, workflow.screen_limit)
+    result.metrics["screen_universe_cap"] = effective_screen_cap
+    result.metrics["screen_requested_top"] = requested_screen_top
     result.metrics["screen_universe_scope"] = (
-        f"Top {workflow.screen_limit} active public primary equities by USD market capitalization "
+        f"Top {effective_screen_cap} active public primary equities by USD market capitalization "
         "after the compiled country/TRBC constraints."
     )
 
@@ -1318,7 +1327,7 @@ def _retrieve_screen(ld: Any, client: _LSEGClient, result: ResearchResult) -> No
                 f"The screen matched companies, but none had the required {workflow.minimum_screen_factor_families} "
                 "independent factor families for candidate selection."
             )
-        if re.search(r"\b(promising|good|attractive|strong|investable|best)\b", result.plan.effective_request.casefold()):
+        if "positive_signals" in result.plan.selection_objectives:
             if "Positive Signal Family Count" not in eligible.columns:
                 eligible = eligible.iloc[0:0]
             else:
@@ -1332,7 +1341,7 @@ def _retrieve_screen(ld: Any, client: _LSEGClient, result: ResearchResult) -> No
                     "The screen matched companies, but none had positive signals in at least two independent "
                     "quality, cash-flow, income, momentum, or expectations families."
                 )
-        if re.search(r"\b(undervalued|bargain|cheap|value)\b", result.plan.effective_request.casefold()):
+        if "relative_value" in result.plan.selection_objectives:
             if "Value Discount Count" not in eligible.columns:
                 eligible = eligible.iloc[0:0]
             else:
@@ -1376,16 +1385,8 @@ def _retrieve_winner_optional_context(
     """
     if not result.resolved:
         return
-    lower_request = result.plan.effective_request.casefold()
-    requested_optional = {
-        topic
-        for topic, pattern in {
-            "guidance": r"\bguidance\b",
-            "events": r"\b(?:events?|calendar)\b",
-            "ownership": r"\b(?:ownership|holders?|shareholders?)\b",
-            "insiders": r"\b(?:insiders?|insider transactions?)\b",
-        }.items()
-        if re.search(pattern, lower_request)
+    requested_optional = set(result.plan.topics) & {
+        "guidance", "events", "ownership", "insiders",
     }
     if not requested_optional:
         return
@@ -2905,13 +2906,19 @@ def _deterministic_selection_follow_up(result: ResearchResult) -> str:
 def answer_follow_up(result: ResearchResult, question: str, settings: Settings) -> str:
     """Answer a contextual question using only the immediately prior research result."""
     lower = question.casefold()
-    if "undervalu" in lower or "valuation" in lower:
+    if re.search(
+        r"\b(?:undervalu\w*|valuation|cheap|inexpensive|discount(?:ed)?|relative\s+value)\b",
+        lower,
+    ):
         return _deterministic_valuation_follow_up(result)
     if re.search(r"\b(risks?|downside|concerns?|go wrong)\b", lower):
         return _deterministic_risk_follow_up(result)
     if re.search(r"\b(catalysts?|developments?|drivers?)\b", lower):
         return _deterministic_catalyst_follow_up(result)
-    if re.search(r"\b(selected|selection|chosen|picked|why this|why it)\b", lower):
+    if re.search(
+        r"\b(?:selected|selection|chosen|picked|why\s+(?:this|that|it)|how\s+was\s+(?:this|that|it))\b",
+        lower,
+    ):
         return _deterministic_selection_follow_up(result)
     fallback = concise_report(result, replace(settings, groq_api_key=None))
 

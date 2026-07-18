@@ -116,6 +116,7 @@ def test_comparison_parser_keeps_each_named_entity(tmp_path: Path) -> None:
         "find stocks with market cap above 10 bps",
         "study us and Canadian stocks",
         "study us large-cap stocks",
+        "list industrial stocks that are not undervalued",
     ],
 )
 def test_material_unsupported_constraints_fail_before_lseg(tmp_path: Path, user_request: str) -> None:
@@ -135,10 +136,10 @@ def test_numeric_range_and_reverse_order_are_not_dropped(tmp_path: Path) -> None
     assert build_research_plan("find stocks with forward P/E at most 20", settings(tmp_path)).screen.forward_pe_max == 20
 
 
-def test_generated_intent_cannot_override_deterministic_plan(tmp_path: Path, monkeypatch) -> None:
+def test_generated_intent_failure_cannot_erase_deterministic_plan(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(
-        "portfolio.research_planner._llm_plan",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("LLM planner must not run")),
+        "portfolio.research_planner._llm_intent_draft",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("provider unavailable")),
     )
     plan = build_research_plan(
         "find US technology stocks with P/E below 20",
@@ -148,6 +149,7 @@ def test_generated_intent_cannot_override_deterministic_plan(tmp_path: Path, mon
     assert plan.screen.country_code == "US"
     assert plan.screen.sector == "Technology"
     assert plan.screen.pe_max == 20
+    assert plan.planner == "deterministic_llm_fallback"
 
 
 def test_malformed_normalized_plans_fail_closed() -> None:
@@ -310,6 +312,14 @@ def test_selected_ric_binds_report_and_valuation_follow_up(tmp_path: Path) -> No
     assert "Caterpillar (CAT.N)" in follow_up
     assert "forward P/E is 10" in follow_up
     assert "Morningstar" not in follow_up
+
+    cheap = answer_follow_up(result, "why does it look cheap?", settings(tmp_path))
+    assert "Caterpillar (CAT.N)" in cheap
+    assert "forward P/E is 10" in cheap
+    selection = answer_follow_up(result, "why this one?", settings(tmp_path))
+    assert "was selected only after passing" in selection
+    assert StockAgent._is_research_follow_up("why does it look cheap?")
+    assert StockAgent._is_research_follow_up("why this one?")
 
 
 def test_target_upside_alone_is_not_called_undervaluation(tmp_path: Path) -> None:
