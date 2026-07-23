@@ -229,6 +229,34 @@ def test_lowercase_us_is_country_only_in_explicit_stock_geography(tmp_path) -> N
     assert pronoun.screen.industry == "Biotechnology & Medical Research"
 
 
+@pytest.mark.parametrize(
+    "wording",
+    [
+        "do some research on a promising us industrials stock",
+        "find an undervalued us technology company",
+        "screen attractive us healthcare equities",
+        "research one well-covered us financial stock",
+    ],
+)
+def test_lowercase_us_as_noun_phrase_modifier_is_geography(tmp_path, wording) -> None:
+    plan = build_research_plan(wording, settings(tmp_path))
+    assert plan.screen.country_code == "US"
+
+
+@pytest.mark.parametrize(
+    "wording",
+    [
+        "show us biotech stocks",
+        "tell us about industrial stocks",
+        "help us find technology companies",
+        "give us an overview of healthcare equities",
+    ],
+)
+def test_lowercase_us_as_recipient_remains_a_pronoun(tmp_path, wording) -> None:
+    plan = build_research_plan(wording, settings(tmp_path))
+    assert plan.screen.country_code is None
+
+
 def test_contextual_screen_refinement_inherits_and_replaces_dimensions(tmp_path) -> None:
     biotech = build_research_plan("can you study biotech stocks", settings(tmp_path))
     us_biotech = build_research_plan("study us stocks", settings(tmp_path), prior_plan=biotech)

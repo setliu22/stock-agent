@@ -261,6 +261,8 @@ _COUNTRY_WORDS = {
     "china": "CN", "chinese": "CN", "india": "IN", "indian": "IN",
 }
 
+_FINANCIAL_SECURITY_NOUN_PATTERN = r"(?:stocks?|compan(?:y|ies)|equities)"
+
 
 @dataclass
 class ScreenFilters:
@@ -662,6 +664,42 @@ def _country_code(lower: str) -> str | None:
     return None
 
 
+def _lowercase_us_is_geography(text: str) -> bool:
+    """Distinguish attributive geography from the first-person pronoun.
+
+    This is based on the token's role rather than a list of complete prompts:
+    lowercase ``us`` is geographic when it modifies a nearby financial head
+    noun or follows an explicit geography preposition. It remains a pronoun
+    when a recipient-taking verb directly governs it.
+    """
+
+    lower = re.sub(r"\s+", " ", text.casefold())
+    financial_heads = {"stock", "stocks", "company", "companies", "equity", "equities"}
+    recipient_verb = re.compile(
+        r"\b(?:show|tell|give|help|send|teach|ask)(?:s|ed|ing)?\s*$"
+    )
+    prepositional_geography = re.compile(
+        rf"\b{_FINANCIAL_SECURITY_NOUN_PATTERN}\b[^.;,]{{0,40}}"
+        r"\b(?:in|from|headquartered\s+in)\s+(?:the\s+)?$"
+    )
+
+    for match in re.finditer(r"\bus\b", lower):
+        prefix = lower[: match.start()].rstrip()
+        suffix = lower[match.end() :]
+        if prepositional_geography.search(prefix):
+            return True
+        if recipient_verb.search(prefix):
+            continue
+
+        # A bounded modifier window handles phrases such as “us industrials
+        # stock” and “us large listed manufacturing companies” without
+        # depending on the request's opening verb or exact wording.
+        following_tokens = re.findall(r"[a-z]+(?:[-&][a-z]+)*", suffix[:100])
+        if any(token in financial_heads for token in following_tokens[:7]):
+            return True
+    return False
+
+
 def _validate_request_constraints(text: str) -> tuple[str | None, str | None, str | None]:
     """Detect ambiguity or unsupported constraints before any LSEG call."""
     lower = re.sub(r"\s+", " ", text.casefold())
@@ -672,30 +710,10 @@ def _validate_request_constraints(text: str) -> tuple[str | None, str | None, st
         re.escape(item)
         for item in sorted((*_SECTOR_ALIASES, *_INDUSTRY_ALIASES), key=len, reverse=True)
     )
-    country_terms = "|".join(
-        re.escape(item)
-        for item in sorted(
-            (item for item in _COUNTRY_WORDS if item not in {"us", "u.s."}),
-            key=len,
-            reverse=True,
-        )
-    )
     for phrase, code in _COUNTRY_WORDS.items():
         if phrase == "us":
             uppercase_us = bool(re.search(r"(?<![A-Za-z])US(?![A-Za-z])", text))
-            explicit_lowercase_us = bool(
-                re.search(
-                    rf"(?:^|\b(?:study|research|screen|analy[sz]e|review|investigate|examine|assess|evaluate|find|list|"
-                    rf"focus\s+on|narrow\s+to|filter\s+(?:for|to)|what\s+about)\s+)"
-                    rf"(?:(?:only|just|all)\s+)?(?:the\s+)?us\s+"
-                    rf"(?:(?:{taxonomy_terms})\s+)?(?:stocks?|companies|equities)\b|"
-                    rf"(?:^|\b(?:study|research|screen|analy[sz]e|review|investigate|examine|assess|evaluate|find|list)\s+)"
-                    rf"(?:(?:only|just|all)\s+)?(?:the\s+)?us\s+and\s+(?:{country_terms})\s+"
-                    rf"(?:(?:{taxonomy_terms})\s+)?(?:stocks?|companies|equities)\b|"
-                    r"\b(?:stocks?|companies|equities)\s+(?:in|from|headquartered\s+in)\s+(?:the\s+)?us\b",
-                    lower,
-                )
-            )
+            explicit_lowercase_us = _lowercase_us_is_geography(text)
             if not uppercase_us and not explicit_lowercase_us:
                 # In phrases such as "tell us about biotech stocks", "us" is
                 # a pronoun. Only explicit stock-geography grammar maps the
@@ -703,8 +721,8 @@ def _validate_request_constraints(text: str) -> tuple[str | None, str | None, st
                 continue
         escaped = re.escape(phrase)
         contextual = (
-            rf"(?<![a-z]){escaped}(?![a-z])[^.;,]{{0,40}}\b(?:stocks?|companies|equities)\b|"
-            rf"\b(?:stocks?|companies|equities)\b[^.;,]{{0,40}}\b(?:in|from|headquartered\s+in)\s+(?:the\s+)?"
+            rf"(?<![a-z]){escaped}(?![a-z])[^.;,]{{0,40}}\b{_FINANCIAL_SECURITY_NOUN_PATTERN}\b|"
+            rf"\b{_FINANCIAL_SECURITY_NOUN_PATTERN}\b[^.;,]{{0,40}}\b(?:in|from|headquartered\s+in)\s+(?:the\s+)?"
             rf"(?<![a-z]){escaped}(?![a-z])"
         )
         if re.search(contextual, lower):
