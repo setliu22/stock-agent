@@ -5,6 +5,7 @@ import pytest
 from portfolio.config import Settings
 from portfolio.lseg_research import build_screen_expression
 from portfolio.research_planner import (
+    ResearchClarificationNeeded,
     ResearchPlan,
     ScreenFilters,
     UnsupportedResearchConstraint,
@@ -255,6 +256,17 @@ def test_lowercase_us_as_noun_phrase_modifier_is_geography(tmp_path, wording) ->
 def test_lowercase_us_as_recipient_remains_a_pronoun(tmp_path, wording) -> None:
     plan = build_research_plan(wording, settings(tmp_path))
     assert plan.screen.country_code is None
+
+
+def test_candidate_request_without_peer_group_names_missing_constraint(tmp_path) -> None:
+    with pytest.raises(
+        ResearchClarificationNeeded,
+        match="supported sector or industry.*coherent peer group",
+    ):
+        build_research_plan(
+            "do some research on a promising us stock",
+            settings(tmp_path),
+        )
 
 
 def test_contextual_screen_refinement_inherits_and_replaces_dimensions(tmp_path) -> None:

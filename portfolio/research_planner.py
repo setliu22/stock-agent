@@ -1901,6 +1901,17 @@ def _semantic_planning_error(exc: UnsupportedResearchConstraint) -> bool:
     )
 
 
+def _actionable_semantic_clarification(exc: UnsupportedResearchConstraint) -> str | None:
+    """Translate a specific planner constraint into a useful next question."""
+    message = str(exc)
+    if "candidate-selection request requires a supported sector or industry" in message.casefold():
+        return (
+            "I understood this as a search for a promising stock, but I need a supported "
+            "sector or industry so the candidates can be compared against a coherent peer group."
+        )
+    return None
+
+
 def _clearly_conceptual_request(text: str) -> bool:
     """Bound conceptual prompts away from executable stock-screen semantics."""
     if _named_security_subject(text):
@@ -2365,6 +2376,7 @@ def build_research_plan(
             "The request asks for a concept or research method, not an executable LSEG company or universe study."
         )
     deterministic: ResearchPlan | None = None
+    deterministic_clarification: str | None = None
     unresolved_slots: set[str] = set()
     try:
         deterministic = (
@@ -2379,6 +2391,7 @@ def build_research_plan(
             # bounds, unsupported metrics, and multiple countries cannot be
             # reinterpreted by generated intent.
             raise
+        deterministic_clarification = _actionable_semantic_clarification(exc)
 
     # Required semantic postconditions are derived from the current wording
     # even when deterministic structural planning failed—the exact situation
@@ -2389,6 +2402,8 @@ def build_research_plan(
     if not settings.groq_api_key:
         if deterministic is not None and not unresolved_slots:
             return deterministic
+        if deterministic_clarification is not None:
+            raise ResearchClarificationNeeded(deterministic_clarification)
         raise ResearchClarificationNeeded(
             "I could not resolve the wording safely without semantic interpretation. "
             "Please name the company or describe the stock universe more explicitly."
@@ -2404,6 +2419,8 @@ def build_research_plan(
                 "fallback_reason": type(exc).__name__,
             }
             return deterministic
+        if deterministic_clarification is not None:
+            raise ResearchClarificationNeeded(deterministic_clarification) from exc
         raise ResearchClarificationNeeded(
             "I could not resolve the wording safely. Please name the company or describe the stock universe more explicitly."
         ) from exc
@@ -2430,6 +2447,22 @@ def build_research_plan(
         return reconciled
     except (ResearchClarificationNeeded, NotResearchRequest):
         raise
+    except UnsupportedResearchConstraint as exc:
+        actionable_clarification = _actionable_semantic_clarification(exc)
+        if actionable_clarification is not None:
+            raise ResearchClarificationNeeded(actionable_clarification) from exc
+        if deterministic is not None:
+            deterministic.planner = "deterministic_llm_fallback"
+            deterministic.intent_resolution = {
+                "llm_used": True,
+                "fallback_stage": "reconciliation",
+                "fallback_reason": type(exc).__name__,
+            }
+            return deterministic
+        raise ResearchClarificationNeeded(
+            "I could not validate the interpreted wording. Please name the company or describe the "
+            "stock universe more explicitly."
+        ) from exc
     except Exception as exc:
         if deterministic is not None:
             deterministic.planner = "deterministic_llm_fallback"

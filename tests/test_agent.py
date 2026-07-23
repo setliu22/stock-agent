@@ -325,6 +325,21 @@ def test_planner_clarification_returns_without_lseg_call(tmp_path, monkeypatch) 
     assert events[-1][1] == "Clarification needed"
 
 
+def test_missing_peer_group_clarification_is_actionable(tmp_path, monkeypatch) -> None:
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
+    agent = StockAgent(settings, PortfolioDatabase(settings.database_path))
+    monkeypatch.setattr(
+        "portfolio.agent.run_research",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("LSEG must not run")),
+    )
+
+    response = agent.handle("do some research on a promising us stock")
+
+    assert "supported sector or industry" in response
+    assert "coherent peer group" in response
+    assert "could not validate the interpreted wording" not in response
+
+
 def test_planner_general_route_uses_general_chat_without_lseg_call(tmp_path, monkeypatch) -> None:
     from portfolio.research_planner import NotResearchRequest
 
