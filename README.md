@@ -45,6 +45,11 @@ The installer adds a current trusted certificate bundle and configures the
 packaged application to use it. If the Account tab reports a certificate error,
 rerun `Install Stock Agent.command`. Do not disable certificate verification.
 
+The archive-backed cloud portfolio layer is documented in
+`README-CLOUD-PORTFOLIOS.md`. Run `supabase/schema.sql` once in the Supabase SQL
+Editor before using its REST client; the Account tab currently handles
+authentication while the cloud portfolio client remains a tested backend layer.
+
 After the first Git checkout or manual update, double-click:
 
 ```text
