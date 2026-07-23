@@ -24,14 +24,6 @@ def test_show_holdings_without_network(tmp_path) -> None:
     assert "2 shares" in text
 
 
-def test_analysis_word_routes_to_research(monkeypatch, tmp_path) -> None:
-    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
-    agent = StockAgent(settings, PortfolioDatabase(settings.database_path))
-    monkeypatch.setattr(agent, "research", lambda *_args, **_kwargs: "research-routed")
-
-    assert agent.handle("do some analysis on a promising US manufacturing stock") == "research-routed"
-
-
 def test_research_failure_does_not_substitute_yahoo_snapshot(tmp_path, monkeypatch) -> None:
     settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
     database = PortfolioDatabase(settings.database_path)

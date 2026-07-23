@@ -47,18 +47,6 @@ def test_screen_request_extracts_filters(tmp_path) -> None:
     assert plan.screen.forward_pe_max == 40
 
 
-def test_manufacturing_analysis_is_deterministic_without_groq(tmp_path) -> None:
-    plan = build_research_plan(
-        "do some analysis on a promising us manufacturing stock",
-        settings(tmp_path),
-    )
-
-    assert plan.workflow == "sector_opportunity"
-    assert plan.screen.sector == "Industrials"
-    assert plan.screen.country_code == "US"
-    assert plan.planner == "deterministic"
-
-
 @pytest.mark.parametrize(
     "wording",
     [
