@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+import json
 import os
 import re
 from typing import Any, Callable
@@ -17,6 +18,7 @@ from .lseg_research import (
     answer_follow_up,
     concise_report,
     is_request_diagnostics_follow_up,
+    research_context_payload,
     run_research,
 )
 from .research_planner import (
@@ -86,7 +88,6 @@ class StockAgent:
             or "what does lseg" in lower
         ):
             self._screen_refinement_available = False
-            self._last_research_result = None
             return capability_answer(text, self.settings.project_root / "data" / "lseg_capabilities.json")
         if self._last_research_result is not None and self._is_research_follow_up(text):
             return answer_follow_up(self._last_research_result, text, self.settings)
@@ -114,15 +115,12 @@ class StockAgent:
             return self.research(text, progress_callback=progress_callback, cancel_event=cancel_event)
         if "show holdings" in lower or lower in {"holdings", "portfolio"}:
             self._screen_refinement_available = False
-            self._last_research_result = None
             return self.show_holdings()
         if "calculate return" in lower or "portfolio return" in lower:
             self._screen_refinement_available = False
-            self._last_research_result = None
             return self.calculate_return()
         if match := _PURCHASE_PATTERN.search(text):
             self._screen_refinement_available = False
-            self._last_research_result = None
             purchase = Purchase(
                 ticker=match.group("ticker").upper(),
                 quantity=float(match.group("quantity")),
@@ -135,9 +133,9 @@ class StockAgent:
                 f"Recorded {purchase.quantity:g} shares of {purchase.ticker} "
                 f"at ${purchase.price:,.2f} per share."
             )
+        prior_result = self._last_research_result
         self._screen_refinement_available = False
-        self._last_research_result = None
-        return self._general_chat(text)
+        return self._general_chat(text, research_result=prior_result)
 
     def research(
         self,
@@ -413,7 +411,11 @@ class StockAgent:
         except Exception as exc:
             return f"Groq analysis was unavailable: {type(exc).__name__}: {exc}"
 
-    def _general_chat(self, text: str) -> str:
+    def _general_chat(
+        self,
+        text: str,
+        research_result: ResearchResult | None = None,
+    ) -> str:
         if not self.settings.groq_api_key:
             return (
                 "I can research a company, record a purchase, show holdings, or calculate return. "
@@ -433,9 +435,21 @@ class StockAgent:
                     (
                         "system",
                         "You are a concise stock research assistant. Explain uncertainty clearly. "
-                        "Do not claim access to live data unless data was supplied by a tool.",
+                        "Do not claim access to live data unless data was supplied by a tool. "
+                        "When prior LSEG research context is supplied, use it for any relevant "
+                        "follow-up and never claim the conversation just started or lacks context "
+                        "that is present there.",
                     ),
-                    ("human", text),
+                    (
+                        "human",
+                        (
+                            f"PRIOR LSEG RESEARCH CONTEXT:\n"
+                            f"{json.dumps(research_context_payload(research_result), default=str)}\n\n"
+                            f"CURRENT USER MESSAGE:\n{text}"
+                            if research_result is not None
+                            else text
+                        ),
+                    ),
                 ]
             )
             return str(getattr(response, "content", response)).strip()

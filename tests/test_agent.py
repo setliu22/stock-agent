@@ -173,6 +173,10 @@ def test_request_failure_follow_up_uses_prior_trace(tmp_path, monkeypatch) -> No
     assert "Reuters story urn:newsml:example" in follow_up
     assert "failed (LDError)" in follow_up
 
+    task_wording = agent.handle("1 succeeded which task failed")
+    assert "request #2" in task_wording
+    assert "Reuters story urn:newsml:example" in task_wording
+
 
 def test_study_geography_follow_up_reruns_lseg_with_prior_biotech_context(
     tmp_path, monkeypatch
@@ -252,10 +256,17 @@ def test_unrelated_turn_prevents_stale_screen_inheritance(tmp_path, monkeypatch)
 
     monkeypatch.setattr("portfolio.agent.run_research", fake_run)
     monkeypatch.setattr("portfolio.agent.concise_report", lambda *_args, **_kwargs: "Screen")
-    monkeypatch.setattr(agent, "_general_chat", lambda _text: "General response")
+    monkeypatch.setattr(
+        agent,
+        "_general_chat",
+        lambda _text, research_result=None: (
+            "Contextual response" if research_result is not None else "General response"
+        ),
+    )
 
     assert agent.handle("study biotech stocks") == "Screen"
-    assert agent.handle("hello") == "General response"
+    assert agent.handle("hello") == "Contextual response"
+    assert agent._last_research_result is not None
     assert agent.handle("study US stocks") == "Screen"
 
     assert len(plans) == 2
@@ -283,7 +294,7 @@ def test_lseg_capability_request_precedes_screen_refinement(tmp_path, monkeypatc
     assert agent.handle("study biotech stocks") == "Screen"
     assert agent.handle("research LSEG capabilities for stocks") == "Capabilities"
     assert len(plans) == 1
-    assert agent._last_research_result is None
+    assert agent._last_research_result is not None
 
 
 def test_ambiguous_screen_shorthand_reaches_contextual_planner(tmp_path, monkeypatch) -> None:

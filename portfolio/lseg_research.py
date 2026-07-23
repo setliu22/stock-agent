@@ -2630,8 +2630,14 @@ def _evidence_payload(result: ResearchResult) -> dict[str, Any]:
         "tables": tables,
         "unavailable": result.warnings[:20],
         "research_trace": result.calls,
+        "request_trace": result.call_records,
     }
     return _json_safe(payload)
+
+
+def research_context_payload(result: ResearchResult) -> dict[str, Any]:
+    """Return the validated prior-result context used for conversational follow-ups."""
+    return _evidence_payload(result)
 
 
 def _json_safe(value: Any) -> Any:
@@ -2938,8 +2944,17 @@ def _deterministic_request_diagnostics_follow_up(result: ResearchResult) -> str:
 def is_request_diagnostics_follow_up(question: str) -> bool:
     """Recognize questions about the immediately prior LSEG request trace."""
     lower = question.casefold()
+    contrasts_success_and_failure = bool(
+        re.search(r"\b(?:succeed\w*|complete\w*)\b", lower)
+        and re.search(
+            r"\b(?:fail\w*|unsuccessful|time(?:d)?\s*out|did(?:n't|\s+not)|"
+            r"which|what)\b",
+            lower,
+        )
+    )
     return bool(
-        re.search(
+        contrasts_success_and_failure
+        or re.search(
             r"\b(?:lseg|api)\s+(?:requests?|calls?)\b|"
             r"\b(?:requests?|calls?)\b.{0,60}\b(?:succeed\w*|fail\w*|"
             r"time(?:d)?\s*out|complete\w*|did(?:n't|\s+not))\b",
