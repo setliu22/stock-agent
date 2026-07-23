@@ -55,7 +55,7 @@ find_system_python() {
 }
 
 clear
-print "${BLUE}Stock Agent Timeout and Stop Installer${RESET}"
+print "${BLUE}Stock Agent Installer${RESET}"
 print
 print "Project folder:"
 print "  $PROJECT_ROOT"
@@ -123,13 +123,17 @@ success "Local package installed"
 step "[7/10] Verifying imports"
 "$PYTHON" - <<'PYTHON_CHECK' 2>&1 | tee -a "$INSTALL_LOG"
 modules = [
+    "certifi",
     "tkinter",
     "dotenv",
     "pandas",
     "yfinance",
     "langchain_groq",
     "lseg.data",
+    "supabase",
     "portfolio",
+    "portfolio.certificates",
+    "portfolio.supabase_auth",
     "portfolio.controller",
     "portfolio.company_resolver",
     "portfolio.lseg_research",
@@ -140,6 +144,8 @@ modules = [
 for module_name in modules:
     __import__(module_name)
     print(f"OK  {module_name}")
+from portfolio.certificates import configure_ssl_certificates
+print(f"CA  {configure_ssl_certificates()}")
 print("All required imports succeeded.")
 PYTHON_CHECK
 if [[ ${pipestatus[1]} -ne 0 ]]; then

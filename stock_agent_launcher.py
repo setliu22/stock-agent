@@ -12,6 +12,10 @@ os.chdir(PROJECT_ROOT)
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from portfolio.certificates import configure_ssl_certificates
+
+configure_ssl_certificates()
+
 from gui import main
 
 

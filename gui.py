@@ -11,7 +11,9 @@ from tkinter import messagebox, simpledialog, ttk
 from tkinter.scrolledtext import ScrolledText
 from typing import Any
 
+from portfolio.config import save_supabase_settings
 from portfolio.controller import StockAgentController
+from portfolio.supabase_auth import AuthResult, SupabaseAuth, friendly_auth_error
 
 
 class PurchaseDialog(tk.Toplevel):
@@ -78,6 +80,8 @@ class StockAgentApp(tk.Tk):
         self.geometry("1180x760")
         self.minsize(900, 620)
         self.controller = StockAgentController()
+        self.supabase_auth: SupabaseAuth | None = None
+        self.auth_busy = False
         self.results: queue.Queue[tuple[str, Any]] = queue.Queue()
         self.research_started_at: float | None = None
         self.current_progress = 0
@@ -115,10 +119,13 @@ class StockAgentApp(tk.Tk):
         notebook.pack(fill="both", expand=True)
         self.chat_tab = ttk.Frame(notebook, padding=16)
         self.holdings_tab = ttk.Frame(notebook, padding=16)
+        self.account_tab = ttk.Frame(notebook, padding=16)
         notebook.add(self.chat_tab, text="Chat")
         notebook.add(self.holdings_tab, text="Portfolio Snapshot")
+        notebook.add(self.account_tab, text="Account")
         self._build_chat_tab()
         self._build_holdings_tab()
+        self._build_account_tab()
 
     def _build_chat_tab(self) -> None:
         actions = ttk.Frame(self.chat_tab)
@@ -225,6 +232,173 @@ class StockAgentApp(tk.Tk):
         scrollbar.pack(side="right", fill="y")
         self.refresh_holdings()
 
+    def _build_account_tab(self) -> None:
+        settings = self.controller.settings
+        self.supabase_url = tk.StringVar(value=settings.supabase_url or "")
+        self.supabase_key = tk.StringVar(value=settings.supabase_publishable_key or "")
+        self.auth_email = tk.StringVar()
+        self.auth_password = tk.StringVar()
+        self.show_supabase_key = tk.BooleanVar(value=False)
+        self.account_status = tk.StringVar(
+            value="Enter your Supabase project settings, then create an account or sign in."
+        )
+
+        panel = ttk.Frame(self.account_tab, padding=20)
+        panel.pack(fill="both", expand=True)
+        panel.columnconfigure(1, weight=1)
+
+        ttk.Label(panel, text="Supabase account", style="Title.TLabel").grid(
+            row=0, column=0, columnspan=3, sticky="w", pady=(0, 8)
+        )
+        ttk.Label(
+            panel,
+            text=(
+                "Use the Project URL and publishable key from Supabase Project Settings. "
+                "The publishable key is safe for a desktop client; never paste a secret "
+                "or service-role key here."
+            ),
+            wraplength=850,
+            justify="left",
+        ).grid(row=1, column=0, columnspan=3, sticky="ew", pady=(0, 20))
+
+        ttk.Label(panel, text="Project URL").grid(row=2, column=0, sticky="w", padx=(0, 12), pady=6)
+        self.supabase_url_entry = ttk.Entry(panel, textvariable=self.supabase_url)
+        self.supabase_url_entry.grid(row=2, column=1, columnspan=2, sticky="ew", pady=6)
+
+        ttk.Label(panel, text="Publishable key").grid(
+            row=3, column=0, sticky="w", padx=(0, 12), pady=6
+        )
+        self.supabase_key_entry = ttk.Entry(panel, textvariable=self.supabase_key, show="•")
+        self.supabase_key_entry.grid(row=3, column=1, sticky="ew", pady=6)
+        ttk.Checkbutton(
+            panel,
+            text="Show",
+            variable=self.show_supabase_key,
+            command=self._toggle_supabase_key,
+        ).grid(row=3, column=2, sticky="w", padx=(10, 0))
+
+        self.save_supabase_button = ttk.Button(
+            panel, text="Save connection", command=self._save_supabase_connection
+        )
+        self.save_supabase_button.grid(row=4, column=1, sticky="w", pady=(8, 22))
+
+        ttk.Separator(panel).grid(row=5, column=0, columnspan=3, sticky="ew", pady=(0, 18))
+
+        ttk.Label(panel, text="Email").grid(row=6, column=0, sticky="w", padx=(0, 12), pady=6)
+        ttk.Entry(panel, textvariable=self.auth_email).grid(
+            row=6, column=1, columnspan=2, sticky="ew", pady=6
+        )
+        ttk.Label(panel, text="Password").grid(row=7, column=0, sticky="w", padx=(0, 12), pady=6)
+        password_entry = ttk.Entry(panel, textvariable=self.auth_password, show="•")
+        password_entry.grid(row=7, column=1, columnspan=2, sticky="ew", pady=6)
+        password_entry.bind("<Return>", lambda _event: self._start_auth("sign_in"))
+
+        buttons = ttk.Frame(panel)
+        buttons.grid(row=8, column=1, columnspan=2, sticky="w", pady=(12, 16))
+        self.create_account_button = ttk.Button(
+            buttons, text="Create account", command=lambda: self._start_auth("sign_up")
+        )
+        self.create_account_button.pack(side="left")
+        self.sign_in_button = ttk.Button(
+            buttons, text="Sign in", command=lambda: self._start_auth("sign_in")
+        )
+        self.sign_in_button.pack(side="left", padx=8)
+        self.sign_out_button = ttk.Button(
+            buttons, text="Sign out", command=lambda: self._start_auth("sign_out")
+        )
+        self.sign_out_button.pack(side="left")
+
+        self.account_status_label = ttk.Label(
+            panel,
+            textvariable=self.account_status,
+            wraplength=850,
+            justify="left",
+        )
+        self.account_status_label.grid(row=9, column=0, columnspan=3, sticky="ew")
+
+        if settings.supabase_url and settings.supabase_publishable_key:
+            try:
+                self.supabase_auth = SupabaseAuth(
+                    settings.supabase_url, settings.supabase_publishable_key
+                )
+                self.account_status.set(
+                    "Connection settings loaded. Create an account or sign in."
+                )
+            except Exception as exc:
+                self.account_status.set(friendly_auth_error(exc))
+
+    def _toggle_supabase_key(self) -> None:
+        self.supabase_key_entry.configure(show="" if self.show_supabase_key.get() else "•")
+
+    def _set_auth_busy(self, busy: bool) -> None:
+        self.auth_busy = busy
+        state = "disabled" if busy else "normal"
+        for button in (
+            self.save_supabase_button,
+            self.create_account_button,
+            self.sign_in_button,
+            self.sign_out_button,
+        ):
+            button.configure(state=state)
+
+    def _save_supabase_connection(self) -> bool:
+        if self.auth_busy:
+            return False
+        try:
+            url = self.supabase_url.get().strip()
+            key = self.supabase_key.get().strip()
+            save_supabase_settings(url, key)
+            self.supabase_auth = SupabaseAuth(url, key)
+        except Exception as exc:
+            self.account_status.set(friendly_auth_error(exc))
+            return False
+        self.supabase_url.set(url.rstrip("/"))
+        self.account_status.set(
+            "Connection settings saved locally. Create an account or sign in to verify them."
+        )
+        return True
+
+    def _start_auth(self, action: str) -> None:
+        if self.auth_busy:
+            return
+        if action != "sign_out" and not self._save_supabase_connection():
+            return
+        if self.supabase_auth is None:
+            self.account_status.set("Save your Supabase connection settings first.")
+            return
+
+        email = self.auth_email.get().strip()
+        password = self.auth_password.get()
+        if action != "sign_out" and (not email or not password):
+            self.account_status.set("Enter both an email address and password.")
+            return
+
+        labels = {
+            "sign_up": "Creating account…",
+            "sign_in": "Signing in…",
+            "sign_out": "Signing out…",
+        }
+        self.account_status.set(labels[action])
+        self._set_auth_busy(True)
+        threading.Thread(
+            target=self._auth_worker,
+            args=(action, email, password),
+            daemon=True,
+        ).start()
+
+    def _auth_worker(self, action: str, email: str, password: str) -> None:
+        assert self.supabase_auth is not None
+        try:
+            if action == "sign_up":
+                result = self.supabase_auth.sign_up(email, password)
+            elif action == "sign_in":
+                result = self.supabase_auth.sign_in(email, password)
+            else:
+                result = self.supabase_auth.sign_out()
+            self.results.put(("auth", result))
+        except Exception as exc:
+            self.results.put(("auth_error", friendly_auth_error(exc)))
+
     def _send_event(self, _event: tk.Event) -> str:
         self._send_or_stop()
         return "break"
@@ -319,6 +493,18 @@ class StockAgentApp(tk.Tk):
                         stage,
                         str(payload.get("detail") or ""),
                     )
+                    continue
+                if kind == "auth":
+                    result = payload
+                    assert isinstance(result, AuthResult)
+                    self.account_status.set(result.message)
+                    self.auth_password.set("")
+                    self._set_auth_busy(False)
+                    continue
+                if kind == "auth_error":
+                    self.account_status.set(str(payload))
+                    self.auth_password.set("")
+                    self._set_auth_busy(False)
                     continue
                 response = str(payload)
                 self._finish_progress(response)

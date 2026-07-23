@@ -28,6 +28,34 @@ Deep LSEG research now reports its actual workflow while it runs. The interface 
 
 A local macOS stock-research application using LSEG Workspace, the LSEG Data Library for Python, and an optional Groq model.
 
+## Supabase account
+
+The Account tab supports Supabase email signup, sign-in, and sign-out. Enter the
+Project URL and publishable key from Supabase Project Settings, then choose
+**Save connection**. The settings are stored in the local `.env` file; account
+passwords are never saved by Stock Agent.
+
+Email authentication and new-user signup must be enabled in the Supabase
+project. When email confirmation is enabled, follow the confirmation link
+before signing in. Supabase authentication does not by itself upload portfolio
+or research data: database tables, Row Level Security policies, and an explicit
+sync feature are still required before the app can store data remotely.
+
+The installer adds a current trusted certificate bundle and configures the
+packaged application to use it. If the Account tab reports a certificate error,
+rerun `Install Stock Agent.command`. Do not disable certificate verification.
+
+After the first Git checkout or manual update, double-click:
+
+```text
+Update Stock Agent.command
+```
+
+The updater refuses to overwrite local source edits, downloads a safe
+fast-forward of the current branch, then reinstalls dependencies, runs the test
+suite, and rebuilds `Stock Agent.app`. Existing `.env` settings and portfolio
+data are preserved.
+
 ## Research architecture
 
 Request interpretation is hybrid. A constrained Groq intent pass can resolve wording such as `stateside`, `stands out`, or `underappreciated`, classify a grounded company/universe mention, and recognize requested evidence topics. It returns a strict JSON schema with verbatim current-request evidence for every semantic value. It cannot choose LSEG functions, fields, RICs, screen syntax, API operations, numeric filters, limits, or lookback windows.
