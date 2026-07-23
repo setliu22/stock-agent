@@ -16,6 +16,7 @@ from .lseg_research import (
     ResearchResult,
     answer_follow_up,
     concise_report,
+    is_request_diagnostics_follow_up,
     run_research,
 )
 from .research_planner import (
@@ -215,6 +216,8 @@ class StockAgent:
     @staticmethod
     def _is_research_follow_up(text: str) -> bool:
         lower = text.casefold()
+        if is_request_diagnostics_follow_up(text):
+            return True
         refers_to_prior_result = bool(
             re.search(r"\b(this|that|the)\s+(company|stock|candidate|pick|one|name)\b", lower)
             or re.search(r"\b(it|its)\b", lower)

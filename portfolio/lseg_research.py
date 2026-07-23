@@ -2903,9 +2903,61 @@ def _deterministic_selection_follow_up(result: ResearchResult) -> str:
     return " ".join(parts)
 
 
+def _deterministic_request_diagnostics_follow_up(result: ResearchResult) -> str:
+    records = result.call_records
+    unsuccessful = [
+        record for record in records if str(record.get("status", "")).casefold() != "succeeded"
+    ]
+    succeeded = sum(
+        str(record.get("status", "")).casefold() == "succeeded" for record in records
+    )
+    if not records:
+        return (
+            "The prior result does not contain per-request trace records, so I cannot identify "
+            "which LSEG request was unsuccessful."
+        )
+    if not unsuccessful:
+        return f"All {len(records)} recorded LSEG requests succeeded."
+
+    details: list[str] = []
+    for record in unsuccessful:
+        number = record.get("request_number", "?")
+        label = str(record.get("label") or "unlabeled request")
+        status = str(record.get("status") or "unsuccessful").replace("_", " ")
+        error_type = record.get("error_type")
+        suffix = f" ({error_type})" if error_type else ""
+        details.append(f"request #{number}, {label}: {status}{suffix}")
+    return (
+        f"{succeeded} of {len(records)} recorded LSEG requests succeeded. "
+        f"The unsuccessful {'request was' if len(details) == 1 else 'requests were'} "
+        + "; ".join(details)
+        + "."
+    )
+
+
+def is_request_diagnostics_follow_up(question: str) -> bool:
+    """Recognize questions about the immediately prior LSEG request trace."""
+    lower = question.casefold()
+    return bool(
+        re.search(
+            r"\b(?:lseg|api)\s+(?:requests?|calls?)\b|"
+            r"\b(?:requests?|calls?)\b.{0,60}\b(?:succeed\w*|fail\w*|"
+            r"time(?:d)?\s*out|complete\w*|did(?:n't|\s+not))\b",
+            lower,
+        )
+        or re.fullmatch(
+            r"\s*(?:which|what)\s+(?:one|request|call)(?:\s+(?:was|is))?\s+"
+            r"(?:not\s+successful|unsuccessful|failed|time(?:d)?\s*out|did(?:n't|\s+not))\??\s*",
+            lower,
+        )
+    )
+
+
 def answer_follow_up(result: ResearchResult, question: str, settings: Settings) -> str:
     """Answer a contextual question using only the immediately prior research result."""
     lower = question.casefold()
+    if is_request_diagnostics_follow_up(question):
+        return _deterministic_request_diagnostics_follow_up(result)
     if re.search(
         r"\b(?:undervalu\w*|valuation|cheap|inexpensive|discount(?:ed)?|relative\s+value)\b",
         lower,

@@ -131,6 +131,49 @@ def test_contextual_follow_up_uses_prior_research(tmp_path, monkeypatch) -> None
     assert "definitively undervalued" in follow_up
 
 
+def test_request_failure_follow_up_uses_prior_trace(tmp_path, monkeypatch) -> None:
+    from portfolio.lseg_research import ResearchResult
+    from portfolio.research_planner import ResearchPlan, ScreenFilters
+
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
+    agent = StockAgent(settings, PortfolioDatabase(settings.database_path))
+    plan = ResearchPlan(
+        mode="screen",
+        workflow="sector_opportunity",
+        screen=ScreenFilters(sector="Industrials", country_code="US", candidate_search=True),
+    ).normalized()
+    result = ResearchResult(
+        plan=plan,
+        call_records=[
+            {"request_number": 1, "label": "Screen universe", "status": "succeeded"},
+            {
+                "request_number": 2,
+                "label": "Reuters story urn:newsml:example",
+                "status": "failed",
+                "error_type": "LDError",
+            },
+        ],
+    )
+    monkeypatch.setattr("portfolio.agent.build_research_plan", lambda *_args, **_kwargs: plan)
+    monkeypatch.setattr("portfolio.agent.run_research", lambda *_args, **_kwargs: result)
+    monkeypatch.setattr("portfolio.agent.concise_report", lambda *_args, **_kwargs: "Candidate: Example")
+    monkeypatch.setattr(
+        agent,
+        "_general_chat",
+        lambda _text: (_ for _ in ()).throw(AssertionError("general chat must not run")),
+    )
+
+    assert agent.handle("find a promising us stock in the industrial sector") == "Candidate: Example"
+    follow_up = agent.handle(
+        "you said 1 lseg request completed do you know which one didn't"
+    )
+
+    assert "1 of 2 recorded LSEG requests succeeded" in follow_up
+    assert "request #2" in follow_up
+    assert "Reuters story urn:newsml:example" in follow_up
+    assert "failed (LDError)" in follow_up
+
+
 def test_study_geography_follow_up_reruns_lseg_with_prior_biotech_context(
     tmp_path, monkeypatch
 ) -> None:
