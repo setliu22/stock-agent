@@ -82,6 +82,9 @@ _SECTOR_ALIASES: dict[str, str] = {
     "industrials": "Industrials",
     "industrial": "Industrials",
     "industrial sector": "Industrials",
+    "manufacturing": "Industrials",
+    "manufacturing sector": "Industrials",
+    "manufacturers": "Industrials",
     "consumer discretionary": "Consumer Cyclicals",
     "consumer cyclicals": "Consumer Cyclicals",
     "consumer cyclical": "Consumer Cyclicals",
@@ -242,7 +245,7 @@ def _detected_values(text: str, aliases: dict[str, Any], value: Callable[[Any], 
             rf"(?<![a-z]){escaped}(?![a-z])(?:\s+|-)(?:economic\s+)?(?:sector|industry|space|stocks?|compan(?:y|ies)|equities)\b",
             rf"\b(?:sector|industry|space)\s+(?:for|of|in)?\s*(?<![a-z]){escaped}(?![a-z])",
             rf"\b(?:in|within|among|from)\s+(?:the\s+)?(?<![a-z]){escaped}(?![a-z])",
-            rf"\b(?:find|screen|list|show|research|study|examine|assess|evaluate)\b[^.;,]{{0,45}}(?<![a-z]){escaped}(?![a-z])\s*$",
+            rf"\b(?:find|screen|list|show|analysis|research|study|examine|assess|evaluate)\b[^.;,]{{0,45}}(?<![a-z]){escaped}(?![a-z])\s*$",
         )
         return any(re.search(pattern, lower) for pattern in patterns)
 
@@ -638,7 +641,7 @@ def _extract_entities(text: str, mode: str) -> list[str]:
             if len(and_parts) == 2:
                 return and_parts
     match = re.search(
-        r"\b(?:analy[sz]e|research|study|examine|assess|review|investigate|evaluate|look\s+up|"
+        r"\b(?:analysis\s+(?:on|of)|analy[sz]e|research|study|examine|assess|review|investigate|evaluate|look\s+up|"
         r"tell\s+me\s+about|show|find|deep\s+dive\s+(?:on|into)?)\s+(.+)$",
         cleaned, re.I,
     )
@@ -685,17 +688,25 @@ def _validate_request_constraints(text: str) -> tuple[str | None, str | None, st
             uppercase_us = bool(re.search(r"(?<![A-Za-z])US(?![A-Za-z])", text))
             explicit_lowercase_us = bool(
                 re.search(
-                    rf"(?:^|\b(?:study|research|screen|analy[sz]e|review|investigate|examine|assess|evaluate|find|list|"
+                    rf"(?:^|\b(?:analysis|study|research|screen|analy[sz]e|review|investigate|examine|assess|evaluate|find|list|"
                     rf"focus\s+on|narrow\s+to|filter\s+(?:for|to)|what\s+about)\s+)"
                     rf"(?:(?:only|just|all)\s+)?(?:the\s+)?us\s+"
                     rf"(?:(?:{taxonomy_terms})\s+)?(?:stocks?|companies|equities)\b|"
-                    rf"(?:^|\b(?:study|research|screen|analy[sz]e|review|investigate|examine|assess|evaluate|find|list)\s+)"
+                    rf"(?:^|\b(?:analysis|study|research|screen|analy[sz]e|review|investigate|examine|assess|evaluate|find|list)\s+)"
                     rf"(?:(?:only|just|all)\s+)?(?:the\s+)?us\s+and\s+(?:{country_terms})\s+"
                     rf"(?:(?:{taxonomy_terms})\s+)?(?:stocks?|companies|equities)\b|"
                     r"\b(?:stocks?|companies|equities)\s+(?:in|from|headquartered\s+in)\s+(?:the\s+)?us\b",
                     lower,
                 )
             )
+            if not uppercase_us and not explicit_lowercase_us:
+                explicit_lowercase_us = bool(
+                    re.search(
+                        r"\b(?:analysis|research|study|screen|analy[sz]e|review|investigate|examine|assess|evaluate)\b"
+                        r"[^.;,]{0,55}\bus\b[^.;,]{0,35}\b(?:stocks?|companies|equities)\b",
+                        lower,
+                    )
+                )
             if not uppercase_us and not explicit_lowercase_us:
                 # In phrases such as "tell us about biotech stocks", "us" is
                 # a pronoun. Only explicit stock-geography grammar maps the
@@ -1152,7 +1163,7 @@ def _deterministic_plan(text: str) -> ResearchPlan:
         mode, workflow = "screen", "stock_screen"
     elif (
         re.search(
-            r"\b(?:screen|screener|find|show(?:\s+me)?|list|research|study|examine|assess|evaluate|"
+            r"\b(?:screen|screener|find|show(?:\s+me)?|list|analysis|research|study|examine|assess|evaluate|"
             r"analy[sz]e|review|investigate|focus\s+on|narrow\s+to|filter\s+(?:for|to)|what\s+about)\b",
             lower,
         )

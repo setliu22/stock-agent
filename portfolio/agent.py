@@ -30,7 +30,7 @@ from .models import Purchase
 
 
 _RESEARCH_PATTERN = re.compile(
-    r"\b(analy[sz]e|research|study|examine|assess|evaluate|investigate|review|look\s+up|"
+    r"\b(analysis|analy[sz]e|research|study|examine|assess|evaluate|investigate|review|look\s+up|"
     r"tell\s+me\s+about|deep\s+dive|compare|screen|screener)\b",
     re.IGNORECASE,
 )
@@ -437,6 +437,12 @@ class StockAgent:
             )
             return str(getattr(response, "content", response)).strip()
         except Exception as exc:
+            message = str(exc)
+            if "401" in message or "invalid_api_key" in message.casefold():
+                return (
+                    "Groq rejected the API key in .env. Update GROQ_API_KEY and restart Stock Agent. "
+                    "LSEG research can still run when the request is explicit."
+                )
             return f"Groq request failed: {type(exc).__name__}: {exc}"
 
     @staticmethod
