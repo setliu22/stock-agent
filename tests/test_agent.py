@@ -446,11 +446,32 @@ def test_terse_reply_completes_pending_research_clarification(
 
 def test_misspelled_research_action_still_starts_pending_pipeline(tmp_path, monkeypatch) -> None:
     from portfolio.lseg_research import ResearchResult
+    from portfolio.research_planner import (
+        ResearchClarificationNeeded,
+        ResearchPlan,
+        ScreenFilters,
+    )
 
-    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", "fake-key", "test-model", "desktop.workspace")
     agent = StockAgent(settings, PortfolioDatabase(settings.database_path))
     plans = []
 
+    def fake_build(query, *_args, **_kwargs):
+        if "User clarification:" not in query:
+            raise ResearchClarificationNeeded("Please describe the stock universe.")
+        return ResearchPlan(
+            mode="screen",
+            workflow="sector_opportunity",
+            screen=ScreenFilters(
+                country_code="US",
+                sector="Healthcare",
+                industry="Biotechnology & Medical Research",
+                candidate_search=True,
+            ),
+            raw_request=query,
+        ).normalized()
+
+    monkeypatch.setattr("portfolio.agent.build_research_plan", fake_build)
     monkeypatch.setattr(
         "portfolio.agent.run_research",
         lambda plan, *_args, **_kwargs: plans.append(plan) or ResearchResult(plan=plan),
@@ -488,7 +509,7 @@ def test_research_action_typo_variants_reach_research_router(
     monkeypatch,
     wording,
 ) -> None:
-    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", "fake-key", "test-model", "desktop.workspace")
     agent = StockAgent(settings, PortfolioDatabase(settings.database_path))
     seen = []
     monkeypatch.setattr(
