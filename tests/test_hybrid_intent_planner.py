@@ -570,6 +570,30 @@ def test_grounded_pronoun_is_not_accepted_as_a_company_entity(
         build_research_plan("take a closer look at this stock", settings(tmp_path))
 
 
+def test_generated_generic_candidate_cannot_become_company_entity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "portfolio.research_planner._llm_intent_draft",
+        lambda *_args, **_kwargs: intent_draft(
+            subject_kind="company",
+            entities=("most promising one",),
+            interpretation="Incorrectly treat a candidate description as a company.",
+        ),
+    )
+
+    plan = build_research_plan(
+        "find most promising one in US biotech industry",
+        settings(tmp_path),
+    )
+
+    assert plan.mode == "screen"
+    assert plan.entities == []
+    assert plan.screen.country_code == "US"
+    assert plan.screen.industry == "Biotechnology & Medical Research"
+
+
 def test_generated_general_route_cannot_veto_explicit_screen_anchors(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

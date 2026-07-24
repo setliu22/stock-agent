@@ -431,12 +431,7 @@ class ResearchPlan:
                 raise UnsupportedResearchConstraint(
                     "A generic company description cannot be resolved as a named security. Specify a supported industry or a company name."
                 )
-            if re.fullmatch(
-                r"(?:it|this|that|this\s+(?:stock|company|one|name)|that\s+(?:stock|company|one|name)|"
-                r"the\s+(?:stock|company|one|name|candidate|pick|standout)|whichever\s+one)",
-                self.entities[0].strip(),
-                re.I,
-            ):
+            if _entity_is_generic_reference(self.entities[0]):
                 raise UnsupportedResearchConstraint(
                     "A pronoun or generic result reference cannot be resolved as a named security."
                 )
@@ -674,7 +669,16 @@ def _lowercase_us_is_geography(text: str) -> bool:
     """
 
     lower = re.sub(r"\s+", " ", text.casefold())
-    financial_heads = {"stock", "stocks", "company", "companies", "equity", "equities"}
+    financial_heads = {
+        "stock",
+        "stocks",
+        "company",
+        "companies",
+        "equity",
+        "equities",
+        "sector",
+        "industry",
+    }
     recipient_verb = re.compile(
         r"\b(?:show|tell|give|help|send|teach|ask)(?:s|ed|ing)?\s*$"
     )
@@ -710,6 +714,7 @@ def _validate_request_constraints(text: str) -> tuple[str | None, str | None, st
         re.escape(item)
         for item in sorted((*_SECTOR_ALIASES, *_INDUSTRY_ALIASES), key=len, reverse=True)
     )
+    geography_head = rf"(?:{_FINANCIAL_SECURITY_NOUN_PATTERN}|sector|industry)"
     for phrase, code in _COUNTRY_WORDS.items():
         if phrase == "us":
             uppercase_us = bool(re.search(r"(?<![A-Za-z])US(?![A-Za-z])", text))
@@ -721,8 +726,8 @@ def _validate_request_constraints(text: str) -> tuple[str | None, str | None, st
                 continue
         escaped = re.escape(phrase)
         contextual = (
-            rf"(?<![a-z]){escaped}(?![a-z])[^.;,]{{0,40}}\b{_FINANCIAL_SECURITY_NOUN_PATTERN}\b|"
-            rf"\b{_FINANCIAL_SECURITY_NOUN_PATTERN}\b[^.;,]{{0,40}}\b(?:in|from|headquartered\s+in)\s+(?:the\s+)?"
+            rf"(?<![a-z]){escaped}(?![a-z])[^.;,]{{0,40}}\b{geography_head}\b|"
+            rf"\b{geography_head}\b[^.;,]{{0,40}}\b(?:in|from|headquartered\s+in)\s+(?:the\s+)?"
             rf"(?<![a-z]){escaped}(?![a-z])"
         )
         if re.search(contextual, lower):
@@ -1108,7 +1113,7 @@ def _deterministic_plan(text: str) -> ResearchPlan:
     )
     screen_overrides = _deterministic_screen_overrides(text)
     _validate_explicit_screen_numbers(text, screen_overrides)
-    candidate_noun = r"(?:stocks?|companies|equities|names?|plays?|picks?|candidates?|opportunities)"
+    candidate_noun = r"(?:stocks?|companies|equities|names?|ones?|plays?|picks?|candidates?|opportunities)"
     positive_signal_words = re.search(
         rf"\b(?:good|best|strong|attractive|promising|investable|compelling|standout)\b"
         rf"(?:[\s,-]+[a-z][a-z-]*){{0,3}}[\s,-]+\b{candidate_noun}\b|"
@@ -1495,6 +1500,8 @@ def _parse_intent_draft(payload: dict[str, Any]) -> LLMIntentDraft:
         raise ValueError("Planner returned too many entities.")
     if len({_normalized_grounding(item) for item in entities}) != len(entities):
         raise ValueError("Planner returned duplicate entities.")
+    if any(_entity_is_generic_reference(item) for item in entities):
+        raise ValueError("Planner returned a generic candidate description as a named entity.")
 
     def string_or_null(key: str) -> str | None:
         value = payload[key]
@@ -1794,6 +1801,24 @@ def _entity_is_grounded(entity: str, text: str) -> bool:
     return bool(entity_text and re.search(rf"(?:^| ){re.escape(entity_text)}(?: |$)", request_text))
 
 
+def _entity_is_generic_reference(entity: str) -> bool:
+    normalized = _normalized_grounding(entity)
+    if re.fullmatch(
+        r"(?:it|this|that|this (?:stock|company|one|name)|that (?:stock|company|one|name)|"
+        r"the (?:stock|company|one|name|candidate|pick|standout)|whichever one)",
+        normalized,
+    ):
+        return True
+    return bool(
+        re.fullmatch(
+            r"(?:(?:the|a|an|some|any|most|best|top|strongest)\s+)*"
+            r"(?:promising|attractive|compelling|undervalued|overlooked|strong|strongest|best|top)\s+"
+            r"(?:stock|company|one|name|candidate|pick|standout)",
+            normalized,
+        )
+    )
+
+
 def _evidence_is_grounded(evidence: Any, text: str) -> bool:
     """Require a model's evidence to be a verbatim current-turn span."""
     if not isinstance(evidence, str) or not evidence.strip():
@@ -1935,7 +1960,11 @@ def _clearly_conceptual_request(text: str) -> bool:
 def _explicit_entity_plan(plan: ResearchPlan, text: str) -> bool:
     if not plan.entities or not all(_entity_is_grounded(entity, text) for entity in plan.entities):
         return False
-    return not any(re.match(r"^(?:a|an|some|any)\b", entity, re.I) for entity in plan.entities)
+    return not any(
+        re.match(r"^(?:a|an|some|any)\b", entity, re.I)
+        or _entity_is_generic_reference(entity)
+        for entity in plan.entities
+    )
 
 
 def _explicit_list_only(text: str, plan: ResearchPlan) -> bool:
@@ -2026,7 +2055,7 @@ def _unresolved_semantic_slots(
         wording = colloquial_country.group("first") or colloquial_country.group("second")
         unresolved.add("country_code:US" if wording == "stateside" else "country_code")
     known_objectives = plan.selection_objectives if plan is not None else []
-    semantic_target = r"(?:stocks?|companies|equities|names?|plays?|picks?|candidates?|opportunities)"
+    semantic_target = r"(?:stocks?|companies|equities|names?|ones?|plays?|picks?|candidates?|opportunities)"
     if "positive_signals" not in known_objectives and re.search(
         rf"\b(?:good|best|strong|attractive|promising|compelling|standout|high[- ]conviction|"
         rf"worthwhile|appealing)\b(?=[^.;,]{{0,55}}\b{semantic_target}\b)|"

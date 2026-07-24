@@ -269,6 +269,26 @@ def test_candidate_request_without_peer_group_names_missing_constraint(tmp_path)
         )
 
 
+@pytest.mark.parametrize(
+    "wording",
+    [
+        "do analyses of stocc. find most promising one in us biotech industry",
+        "do analysis of stoc. select best one in us biotech industry",
+        "take a look and find the strongest candidate in us biotech industry",
+    ],
+)
+def test_generic_candidate_description_compiles_as_taxonomy_screen(tmp_path, wording) -> None:
+    plan = build_research_plan(wording, settings(tmp_path))
+
+    assert plan.mode == "screen"
+    assert plan.workflow == "sector_opportunity"
+    assert plan.entities == []
+    assert plan.screen.country_code == "US"
+    assert plan.screen.industry == "Biotechnology & Medical Research"
+    assert plan.screen.candidate_search is True
+    assert "positive_signals" in plan.selection_objectives
+
+
 def test_contextual_screen_refinement_inherits_and_replaces_dimensions(tmp_path) -> None:
     biotech = build_research_plan("can you study biotech stocks", settings(tmp_path))
     us_biotech = build_research_plan("study us stocks", settings(tmp_path), prior_plan=biotech)
