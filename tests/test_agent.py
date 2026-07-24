@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import date
 
+import pytest
+
 from portfolio.agent import StockAgent
 from portfolio.config import Settings
 from portfolio.database import PortfolioDatabase
@@ -392,6 +394,54 @@ def test_missing_peer_group_clarification_is_actionable(tmp_path, monkeypatch) -
     assert "supported sector or industry" in response
     assert "coherent peer group" in response
     assert "could not validate the interpreted wording" not in response
+
+
+@pytest.mark.parametrize(
+    ("reply", "expected_sector", "expected_industry"),
+    [
+        ("biotech", "Healthcare", "Biotechnology & Medical Research"),
+        ("industrials", "Industrials", None),
+        ("semiconductor equipment", "Technology", "Semiconductor Equipment"),
+    ],
+)
+def test_terse_reply_completes_pending_research_clarification(
+    tmp_path,
+    monkeypatch,
+    reply,
+    expected_sector,
+    expected_industry,
+) -> None:
+    from portfolio.lseg_research import ResearchResult
+
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
+    agent = StockAgent(settings, PortfolioDatabase(settings.database_path))
+    plans = []
+
+    def fake_run(plan, *_args, **_kwargs):
+        plans.append(plan)
+        return ResearchResult(plan=plan)
+
+    monkeypatch.setattr("portfolio.agent.run_research", fake_run)
+    monkeypatch.setattr("portfolio.agent.concise_report", lambda *_args, **_kwargs: "Candidate")
+    monkeypatch.setattr(
+        agent,
+        "_general_chat",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("a clarification reply must not use general chat")
+        ),
+    )
+
+    first = agent.handle("research a promising us stock")
+    second = agent.handle(reply)
+
+    assert "need a supported sector or industry" in first
+    assert second == "Candidate"
+    assert len(plans) == 1
+    assert plans[0].screen.country_code == "US"
+    assert plans[0].screen.sector == expected_sector
+    assert plans[0].screen.industry == expected_industry
+    assert plans[0].screen.candidate_search is True
+    assert agent._pending_research_query is None
 
 
 def test_planner_general_route_uses_general_chat_without_lseg_call(tmp_path, monkeypatch) -> None:

@@ -63,12 +63,27 @@ _PURCHASE_PATTERN = re.compile(
 ProgressCallback = Callable[[int | None, str, str], None]
 
 
+def _is_research_request(text: str) -> bool:
+    lower = text.casefold()
+    return bool(
+        _RESEARCH_PATTERN.search(text)
+        or _AMBIGUOUS_EQUITY_RESEARCH_PATTERN.search(text)
+        or "market news" in lower
+        or (
+            re.search(r"\b(find|show|list)\b", lower)
+            and re.search(r"\b(stocks?|companies|equities)\b", lower)
+        )
+    )
+
+
 class StockAgent:
     def __init__(self, settings: Settings, database: PortfolioDatabase) -> None:
         self.settings = settings
         self.database = database
         self._last_research_result: ResearchResult | None = None
         self._screen_refinement_available = False
+        self._pending_research_query: str | None = None
+        self._pending_research_prior_plan: ResearchPlan | None = None
 
     def handle(
         self,
@@ -81,6 +96,43 @@ class StockAgent:
             return "Enter a request."
 
         lower = text.casefold()
+        operational_command = bool(
+            "lseg capabilities" in lower
+            or "lseg functions" in lower
+            or "what can lseg" in lower
+            or "what does lseg" in lower
+            or "show holdings" in lower
+            or lower in {"holdings", "portfolio"}
+            or "calculate return" in lower
+            or "portfolio return" in lower
+            or _PURCHASE_PATTERN.search(text)
+        )
+        if self._pending_research_query is not None:
+            if re.fullmatch(
+                r"\s*(?:cancel|never\s+mind|nevermind|forget\s+it|start\s+over)\s*[.!]?\s*",
+                lower,
+            ):
+                self._pending_research_query = None
+                self._pending_research_prior_plan = None
+                return "Okay, I discarded the pending research request."
+            if _is_research_request(text):
+                # An explicit new research instruction replaces the unfinished
+                # request. A terse reply instead fills the requested slot.
+                self._pending_research_query = None
+                self._pending_research_prior_plan = None
+            elif not operational_command:
+                pending_query = self._pending_research_query
+                pending_prior_plan = self._pending_research_prior_plan
+                self._pending_research_query = None
+                self._pending_research_prior_plan = None
+                completed_query = f"{pending_query}\nUser clarification: {text}"
+                return self.research(
+                    completed_query,
+                    progress_callback=progress_callback,
+                    cancel_event=cancel_event,
+                    prior_plan=pending_prior_plan,
+                )
+
         if (
             "lseg capabilities" in lower
             or "lseg functions" in lower
@@ -106,12 +158,7 @@ class StockAgent:
                 cancel_event=cancel_event,
                 prior_plan=prior_plan,
             )
-        if (
-            _RESEARCH_PATTERN.search(text)
-            or _AMBIGUOUS_EQUITY_RESEARCH_PATTERN.search(text)
-            or "market news" in lower
-            or (re.search(r"\b(find|show|list)\b", lower) and re.search(r"\b(stocks?|companies|equities)\b", lower))
-        ):
+        if _is_research_request(text):
             return self.research(text, progress_callback=progress_callback, cancel_event=cancel_event)
         if "show holdings" in lower or lower in {"holdings", "portfolio"}:
             self._screen_refinement_available = False
@@ -158,6 +205,8 @@ class StockAgent:
         # company from an earlier request.
         previous_result = self._last_research_result
         previous_refinement_available = self._screen_refinement_available
+        self._pending_research_query = None
+        self._pending_research_prior_plan = None
         self._last_research_result = None
         self._screen_refinement_available = False
         try:
@@ -189,6 +238,8 @@ class StockAgent:
             progress(None, "General question", "No LSEG research request was needed.")
             return self._general_chat(query)
         except ResearchClarificationNeeded as exc:
+            self._pending_research_query = query
+            self._pending_research_prior_plan = prior_plan
             # A clarification is not a failed replacement screen. Preserve the
             # exact prior screen so a concise answer such as "US-headquartered
             # names" can complete the same contextual request.
