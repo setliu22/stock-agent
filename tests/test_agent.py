@@ -444,6 +444,63 @@ def test_terse_reply_completes_pending_research_clarification(
     assert agent._pending_research_query is None
 
 
+def test_misspelled_research_action_still_starts_pending_pipeline(tmp_path, monkeypatch) -> None:
+    from portfolio.lseg_research import ResearchResult
+
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
+    agent = StockAgent(settings, PortfolioDatabase(settings.database_path))
+    plans = []
+
+    monkeypatch.setattr(
+        "portfolio.agent.run_research",
+        lambda plan, *_args, **_kwargs: plans.append(plan) or ResearchResult(plan=plan),
+    )
+    monkeypatch.setattr("portfolio.agent.concise_report", lambda *_args, **_kwargs: "Candidate")
+    monkeypatch.setattr(
+        agent,
+        "_general_chat",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("a typo-tolerant research request must not use general chat")
+        ),
+    )
+
+    first = agent.handle("reserach promising stock")
+    second = agent.handle("us stock in biotech")
+
+    assert "clarification" in first.casefold()
+    assert second == "Candidate"
+    assert len(plans) == 1
+    assert plans[0].screen.country_code == "US"
+    assert plans[0].screen.industry == "Biotechnology & Medical Research"
+
+
+@pytest.mark.parametrize(
+    "wording",
+    [
+        "reseach a promising stock",
+        "anlyze an undervalued company",
+        "reviwe a stock",
+        "scren biotech companies",
+    ],
+)
+def test_research_action_typo_variants_reach_research_router(
+    tmp_path,
+    monkeypatch,
+    wording,
+) -> None:
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
+    agent = StockAgent(settings, PortfolioDatabase(settings.database_path))
+    seen = []
+    monkeypatch.setattr(
+        agent,
+        "research",
+        lambda query, **_kwargs: seen.append(query) or "Research routed",
+    )
+
+    assert agent.handle(wording) == "Research routed"
+    assert seen == [wording]
+
+
 def test_planner_general_route_uses_general_chat_without_lseg_call(tmp_path, monkeypatch) -> None:
     from portfolio.research_planner import NotResearchRequest
 

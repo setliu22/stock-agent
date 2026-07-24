@@ -63,11 +63,76 @@ _PURCHASE_PATTERN = re.compile(
 ProgressCallback = Callable[[int | None, str, str], None]
 
 
+_RESEARCH_ACTION_WORDS = (
+    "analyze",
+    "analyse",
+    "research",
+    "study",
+    "examine",
+    "assess",
+    "evaluate",
+    "investigate",
+    "review",
+    "compare",
+    "screen",
+)
+
+_EQUITY_CONTEXT_PATTERN = re.compile(
+    r"\b(?:stocks?|companies|company|equities|equity|shares?|tickers?|securities|"
+    r"investments?|sector|industry|market|valuation|financials?|portfolio|"
+    r"promising|undervalued|biotech|industrials?)\b",
+    re.IGNORECASE,
+)
+
+
+def _within_one_typo(token: str, target: str) -> bool:
+    """Accept one insertion, deletion, substitution, or adjacent transposition."""
+    if token == target:
+        return True
+    if abs(len(token) - len(target)) > 1:
+        return False
+    if len(token) == len(target):
+        mismatches = [index for index, pair in enumerate(zip(token, target)) if pair[0] != pair[1]]
+        if len(mismatches) == 1:
+            return True
+        return bool(
+            len(mismatches) == 2
+            and mismatches[1] == mismatches[0] + 1
+            and token[mismatches[0]] == target[mismatches[1]]
+            and token[mismatches[1]] == target[mismatches[0]]
+        )
+
+    shorter, longer = (token, target) if len(token) < len(target) else (target, token)
+    short_index = long_index = differences = 0
+    while short_index < len(shorter) and long_index < len(longer):
+        if shorter[short_index] == longer[long_index]:
+            short_index += 1
+            long_index += 1
+            continue
+        differences += 1
+        long_index += 1
+        if differences > 1:
+            return False
+    return True
+
+
+def _has_typo_tolerant_research_action(text: str) -> bool:
+    if not _EQUITY_CONTEXT_PATTERN.search(text):
+        return False
+    tokens = re.findall(r"[a-z]+", text.casefold())
+    return any(
+        _within_one_typo(token, action)
+        for token in tokens
+        for action in _RESEARCH_ACTION_WORDS
+    )
+
+
 def _is_research_request(text: str) -> bool:
     lower = text.casefold()
     return bool(
         _RESEARCH_PATTERN.search(text)
         or _AMBIGUOUS_EQUITY_RESEARCH_PATTERN.search(text)
+        or _has_typo_tolerant_research_action(text)
         or "market news" in lower
         or (
             re.search(r"\b(find|show|list)\b", lower)
