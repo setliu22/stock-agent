@@ -2941,9 +2941,30 @@ def _deterministic_request_diagnostics_follow_up(result: ResearchResult) -> str:
     )
 
 
-def is_request_diagnostics_follow_up(question: str) -> bool:
+def is_request_diagnostics_follow_up(
+    question: str,
+    result: ResearchResult | None = None,
+) -> bool:
     """Recognize questions about the immediately prior LSEG request trace."""
     lower = question.casefold()
+    if result is not None:
+        total = len(result.call_records) or int(result.metrics.get("lseg_request_count", 0) or 0)
+        succeeded = sum(
+            str(record.get("status", "")).casefold() == "succeeded"
+            for record in result.call_records
+        )
+        if not result.call_records:
+            succeeded = int(result.metrics.get("lseg_request_succeeded", 0) or 0)
+        referenced_counts = {int(value) for value in re.findall(r"\b\d+\b", lower)}
+        asks_about_gap = bool(
+            re.search(
+                r"\b(?:why|what|which|only|missing|fail\w*|unsuccessful|"
+                r"time(?:d)?\s*out|did(?:n't|\s+not)|not\s+run)\b",
+                lower,
+            )
+        )
+        if total > succeeded and {total, succeeded}.issubset(referenced_counts) and asks_about_gap:
+            return True
     contrasts_success_and_failure = bool(
         re.search(r"\b(?:succeed\w*|complete\w*)\b", lower)
         and re.search(
@@ -2971,7 +2992,7 @@ def is_request_diagnostics_follow_up(question: str) -> bool:
 def answer_follow_up(result: ResearchResult, question: str, settings: Settings) -> str:
     """Answer a contextual question using only the immediately prior research result."""
     lower = question.casefold()
-    if is_request_diagnostics_follow_up(question):
+    if is_request_diagnostics_follow_up(question, result):
         return _deterministic_request_diagnostics_follow_up(result)
     if re.search(
         r"\b(?:undervalu\w*|valuation|cheap|inexpensive|discount(?:ed)?|relative\s+value)\b",

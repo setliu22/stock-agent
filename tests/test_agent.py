@@ -179,6 +179,11 @@ def test_request_failure_follow_up_uses_prior_trace(tmp_path, monkeypatch) -> No
     assert "request #2" in task_wording
     assert "Reuters story urn:newsml:example" in task_wording
 
+    analysis_wording = agent.handle("why did only 1 out of 2 analyses run")
+    assert "1 of 2 recorded LSEG requests succeeded" in analysis_wording
+    assert "request #2" in analysis_wording
+    assert "Reuters story urn:newsml:example" in analysis_wording
+
 
 def test_study_geography_follow_up_reruns_lseg_with_prior_biotech_context(
     tmp_path, monkeypatch

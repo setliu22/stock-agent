@@ -150,7 +150,10 @@ class StockAgent:
         ):
             self._screen_refinement_available = False
             return capability_answer(text, self.settings.project_root / "data" / "lseg_capabilities.json")
-        if self._last_research_result is not None and self._is_research_follow_up(text):
+        if self._last_research_result is not None and self._is_research_follow_up(
+            text,
+            self._last_research_result,
+        ):
             return answer_follow_up(self._last_research_result, text, self.settings)
         if (
             self._last_research_result is not None
@@ -275,9 +278,12 @@ class StockAgent:
             )
 
     @staticmethod
-    def _is_research_follow_up(text: str) -> bool:
+    def _is_research_follow_up(
+        text: str,
+        result: ResearchResult | None = None,
+    ) -> bool:
         lower = text.casefold()
-        if is_request_diagnostics_follow_up(text):
+        if is_request_diagnostics_follow_up(text, result):
             return True
         refers_to_prior_result = bool(
             re.search(r"\b(this|that|the)\s+(company|stock|candidate|pick|one|name)\b", lower)
