@@ -184,8 +184,36 @@ def test_timeout_does_not_recursively_split_fields() -> None:
     client = _LSEGClient(result, minimum_interval=0)
     frame = _safe_get_data(ld, client, ["AAPL.O"], ("TR.PE", "TR.PriceClose"), label="Slow topic")
     assert frame.empty
-    assert ld.calls == 1
+    assert ld.calls == 2
+    record = result.call_records[0]
+    assert record["status"] == "timed_out"
+    assert record["retry_count"] == 1
+    assert [attempt["status"] for attempt in record["attempts"]] == ["timed_out", "timed_out"]
     assert any("timed out" in warning for warning in result.warnings)
+
+
+def test_lseg_client_retries_timeout_once_and_records_recovery() -> None:
+    from portfolio.lseg_research import ResearchResult, _LSEGClient
+
+    result = ResearchResult(plan=ResearchPlan(mode="company", entities=["AAPL"]))
+    client = _LSEGClient(result, minimum_interval=0)
+    calls = 0
+
+    def eventually_succeeds():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise TimeoutError("temporary timeout")
+        return 42
+
+    assert client.call("Transient request", eventually_succeeds) == 42
+    assert calls == 2
+    assert len(result.call_records) == 1
+    record = result.call_records[0]
+    assert record["status"] == "succeeded"
+    assert record["retry_count"] == 1
+    assert [attempt["status"] for attempt in record["attempts"]] == ["timed_out", "succeeded"]
+    assert result.warnings == []
 
 
 def test_lseg_http_timeout_is_configured(tmp_path) -> None:

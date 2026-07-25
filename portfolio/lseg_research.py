@@ -250,11 +250,13 @@ class _LSEGClient:
         minimum_interval: float = 0.27,
         progress_callback: ProgressCallback | None = None,
         cancel_event: Any | None = None,
+        timeout_retries: int = 1,
     ) -> None:
         self.result = result
         self.minimum_interval = minimum_interval
         self.progress_callback = progress_callback
         self.cancel_event = cancel_event
+        self.timeout_retries = max(0, int(timeout_retries))
         self._last_call = 0.0
 
     def call(
@@ -293,46 +295,90 @@ class _LSEGClient:
         if request_metadata:
             record["request"] = _json_safe(request_metadata)
         self.result.call_records.append(record)
-        try:
-            value = function()
-            _raise_if_cancelled(self.cancel_event)
-            frame = _frame_from_response(value)
-            record.update({
-                "status": "succeeded",
-                "duration_ms": round((time.monotonic() - started) * 1000, 1),
-                "rows": len(frame) if not frame.empty else 0 if isinstance(value, pd.DataFrame) else None,
-            })
-            return value
-        except ResearchCancelled:
-            record.update({
-                "status": "cancelled",
-                "duration_ms": round((time.monotonic() - started) * 1000, 1),
-            })
-            raise
-        except Exception as exc:
-            if _looks_like_timeout(exc):
+        attempts: list[dict[str, Any]] = []
+        for attempt_index in range(self.timeout_retries + 1):
+            attempt_started = time.monotonic()
+            self._last_call = attempt_started
+            try:
+                value = function()
+                _raise_if_cancelled(self.cancel_event)
+                frame = _frame_from_response(value)
+                attempt = {
+                    "attempt": attempt_index + 1,
+                    "status": "succeeded",
+                    "duration_ms": round((time.monotonic() - attempt_started) * 1000, 1),
+                }
+                if attempt_index:
+                    attempts.append(attempt)
+                    record["attempts"] = attempts
+                    record["retry_count"] = attempt_index
                 record.update({
-                    "status": "timed_out",
+                    "status": "succeeded",
+                    "duration_ms": round((time.monotonic() - started) * 1000, 1),
+                    "rows": len(frame) if not frame.empty else 0 if isinstance(value, pd.DataFrame) else None,
+                })
+                return value
+            except ResearchCancelled:
+                if attempts:
+                    record["attempts"] = [
+                        *attempts,
+                        {
+                            "attempt": attempt_index + 1,
+                            "status": "cancelled",
+                            "duration_ms": round((time.monotonic() - attempt_started) * 1000, 1),
+                        },
+                    ]
+                    record["retry_count"] = attempt_index
+                record.update({
+                    "status": "cancelled",
+                    "duration_ms": round((time.monotonic() - started) * 1000, 1),
+                })
+                raise
+            except Exception as exc:
+                error_message = re.sub(r"\s+", " ", str(exc)).strip()[:1000]
+                attempt_status = "timed_out" if _looks_like_timeout(exc) else "failed"
+                attempt = {
+                    "attempt": attempt_index + 1,
+                    "status": attempt_status,
+                    "duration_ms": round((time.monotonic() - attempt_started) * 1000, 1),
+                    "error_type": type(exc).__name__,
+                    "error_message": error_message,
+                }
+                if attempt_status == "timed_out" and attempt_index < self.timeout_retries:
+                    attempts.append(attempt)
+                    _emit_progress(
+                        self.progress_callback,
+                        None,
+                        "Retrying slow LSEG request",
+                        f"{label} timed out; retrying the read-only request before it is skipped.",
+                    )
+                    continue
+                if attempts:
+                    attempts.append(attempt)
+                    record["attempts"] = attempts
+                    record["retry_count"] = attempt_index
+                record.update({
+                    "status": attempt_status,
                     "duration_ms": round((time.monotonic() - started) * 1000, 1),
                     "error_type": type(exc).__name__,
+                    "error_message": error_message,
                 })
-                message = f"{label}: timed out and was skipped"
-                self.result.warnings.append(message)
-                _emit_progress(
-                    self.progress_callback,
-                    None,
-                    "Skipping slow LSEG request",
-                    f"{label} exceeded the configured request timeout; the workflow will verify whether enough evidence remains.",
-                )
-                return _CALL_TIMED_OUT
-            record.update({
-                "status": "failed",
-                "duration_ms": round((time.monotonic() - started) * 1000, 1),
-                "error_type": type(exc).__name__,
-            })
-            if warn:
-                self.result.warnings.append(f"{label}: {type(exc).__name__}: {exc}")
-            return _CallFailure(exc) if capture_failure else None
+                if attempt_status == "timed_out":
+                    self.result.warnings.append(
+                        f"{label}: timed out after {self.timeout_retries} "
+                        f"{'retry' if self.timeout_retries == 1 else 'retries'} and was skipped"
+                    )
+                    _emit_progress(
+                        self.progress_callback,
+                        None,
+                        "Skipping slow LSEG request",
+                        f"{label} exceeded the configured request timeout after "
+                        f"{attempt_index + 1} attempts; the workflow will verify whether enough evidence remains.",
+                    )
+                    return _CALL_TIMED_OUT
+                if warn:
+                    self.result.warnings.append(f"{label}: {type(exc).__name__}: {exc}")
+                return _CallFailure(exc) if capture_failure else None
 
 
 def _session_state_text(session: Any) -> str:
@@ -2931,8 +2977,29 @@ def _deterministic_request_diagnostics_follow_up(result: ResearchResult) -> str:
         label = str(record.get("label") or "unlabeled request")
         status = str(record.get("status") or "unsuccessful").replace("_", " ")
         error_type = record.get("error_type")
-        suffix = f" ({error_type})" if error_type else ""
-        details.append(f"request #{number}, {label}: {status}{suffix}")
+        error_message = str(record.get("error_message") or "").strip()
+        if not error_message:
+            warning_prefix = f"{label}:"
+            matching_warning = next(
+                (
+                    warning[len(warning_prefix):].strip()
+                    for warning in result.warnings
+                    if warning.startswith(warning_prefix)
+                    and "disabling further" not in warning.casefold()
+                ),
+                "",
+            )
+            error_message = matching_warning
+        if error_type and error_message.casefold().startswith(f"{str(error_type).casefold()}:"):
+            error_message = error_message.split(":", 1)[1].strip()
+        cause = ""
+        if error_type and error_message:
+            cause = f" ({error_type}: {error_message})"
+        elif error_type:
+            cause = f" ({error_type})"
+        elif error_message:
+            cause = f" ({error_message})"
+        details.append(f"request #{number}, {label}: {status}{cause}")
     return (
         f"{succeeded} of {len(records)} recorded LSEG requests succeeded. "
         f"The unsuccessful {'request was' if len(details) == 1 else 'requests were'} "

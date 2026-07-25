@@ -155,6 +155,10 @@ def test_request_failure_follow_up_uses_prior_trace(tmp_path, monkeypatch) -> No
                 "error_type": "LDError",
             },
         ],
+        warnings=[
+            "Reuters story urn:newsml:example: LDError: Error code 403 | access denied. "
+            "Missing scope: trapi.data.esg.views-basic.read."
+        ],
     )
     monkeypatch.setattr("portfolio.agent.build_research_plan", lambda *_args, **_kwargs: plan)
     monkeypatch.setattr("portfolio.agent.run_research", lambda *_args, **_kwargs: result)
@@ -173,7 +177,8 @@ def test_request_failure_follow_up_uses_prior_trace(tmp_path, monkeypatch) -> No
     assert "1 of 2 recorded LSEG requests succeeded" in follow_up
     assert "request #2" in follow_up
     assert "Reuters story urn:newsml:example" in follow_up
-    assert "failed (LDError)" in follow_up
+    assert "failed (LDError:" in follow_up
+    assert "access denied" in follow_up
 
     task_wording = agent.handle("1 succeeded which task failed")
     assert "request #2" in task_wording
