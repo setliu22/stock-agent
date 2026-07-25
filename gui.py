@@ -87,6 +87,7 @@ class StockAgentApp(tk.Tk):
         self.current_progress = 0
         self.current_stage = "Idle"
         self.current_detail = ""
+        self.research_progress_seen = False
         self._last_elapsed_second = -1
         self.current_step_started_at: float | None = None
         self.is_busy = False
@@ -485,6 +486,7 @@ class StockAgentApp(tk.Tk):
             while True:
                 kind, payload = self.results.get_nowait()
                 if kind == "progress":
+                    self.research_progress_seen = True
                     stage = str(payload.get("stage") or "Researching")
                     if self.stop_requested and stage != "Research stopped":
                         continue
@@ -534,8 +536,9 @@ class StockAgentApp(tk.Tk):
             self.current_step_started_at = self.research_started_at
             self._last_elapsed_second = -1
             self.current_progress = 0
-            self.current_stage = "Starting"
-            self.current_detail = "Preparing the research worker."
+            self.current_stage = "Thinking"
+            self.current_detail = "Preparing a response."
+            self.research_progress_seen = False
             self._update_progress(0, self.current_stage, self.current_detail)
         else:
             self.research_started_at = None
@@ -554,9 +557,14 @@ class StockAgentApp(tk.Tk):
         if self.stop_requested:
             self.send_button.configure(text="Stopping...", state="disabled")
         elif self.current_task_cancellable and self._send_button_hovered:
-            self.send_button.configure(text="Stop research", state="normal")
-        elif self.current_task_cancellable:
+            self.send_button.configure(
+                text="Stop research" if self.research_progress_seen else "Stop",
+                state="normal",
+            )
+        elif self.current_task_cancellable and self.research_progress_seen:
             self.send_button.configure(text=f"Researching... {self.current_progress}%", state="normal")
+        elif self.current_task_cancellable:
+            self.send_button.configure(text="Working...", state="normal")
         else:
             self.send_button.configure(text="Working...", state="disabled")
 
@@ -571,7 +579,8 @@ class StockAgentApp(tk.Tk):
         self.current_detail = next_detail
         self.progress_bar.configure(value=self.current_progress)
         self.progress_percent.configure(text=f"{self.current_progress}%")
-        self.progress_status.configure(text=f"Research status: {self.current_stage}")
+        status_kind = "Research" if self.research_progress_seen else "Response"
+        self.progress_status.configure(text=f"{status_kind} status: {self.current_stage}")
         self.progress_detail.configure(text=self.current_detail or "Working...")
         self._refresh_send_button_text()
         self._replace_live_progress_message()
@@ -585,9 +594,10 @@ class StockAgentApp(tk.Tk):
 
     def _replace_live_progress_message(self) -> None:
         elapsed = self._elapsed_text()
+        progress_kind = "Research" if self.research_progress_seen else "Response"
         block = (
             "Agent:\n"
-            f"Research progress: {self.current_progress}%\n"
+            f"{progress_kind} progress: {self.current_progress}%\n"
             f"Stage: {self.current_stage}\n"
             f"Current task: {self.current_detail or 'Working...'}\n"
             + (f"{self._current_request_text()}\n" if self._current_request_text() else "")
@@ -615,13 +625,20 @@ class StockAgentApp(tk.Tk):
             self.current_stage = "Research failed"
             self.progress_status.configure(text="Research status: failed")
             self.progress_detail.configure(text="The final error is shown below.")
-        else:
+        elif self.research_progress_seen:
             self.current_progress = 100
             self.current_stage = "Research complete"
             self.progress_bar.configure(value=100)
             self.progress_percent.configure(text="100%")
             self.progress_status.configure(text="Research status: complete")
             self.progress_detail.configure(text="The concise findings are shown below.")
+        else:
+            self.current_progress = 100
+            self.current_stage = "Response ready"
+            self.progress_bar.configure(value=100)
+            self.progress_percent.configure(text="100%")
+            self.progress_status.configure(text="Response status: complete")
+            self.progress_detail.configure(text="The response is shown below.")
         self._replace_live_progress_message()
         self.transcript.configure(state="normal")
         self.transcript.tag_remove("live_progress", "1.0", "end")

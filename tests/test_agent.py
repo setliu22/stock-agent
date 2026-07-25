@@ -132,6 +132,11 @@ def test_contextual_follow_up_uses_prior_research(tmp_path, monkeypatch) -> None
     assert "versus 22" in follow_up
     assert "definitively undervalued" in follow_up
 
+    metric_follow_up = agent.handle("what is the forward pe of this company")
+    assert metric_follow_up == (
+        "The retrieved forward P/E for United Parcel Service (UPS.N) is 15."
+    )
+
 
 def test_request_failure_follow_up_uses_prior_trace(tmp_path, monkeypatch) -> None:
     from portfolio.lseg_research import ResearchResult

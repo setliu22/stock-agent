@@ -8,7 +8,7 @@ report.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import html
 import json
@@ -2930,6 +2930,99 @@ def _deterministic_selection_follow_up(result: ResearchResult) -> str:
     return " ".join(parts)
 
 
+def _deterministic_metric_follow_up(result: ResearchResult, question: str) -> str | None:
+    selected = _selected_resolved(result)
+    if selected is None:
+        return None
+    lower = question.casefold()
+    metric_specs = (
+        (
+            r"\b(?:forward|fwd)\s+p\s*/?\s*e\b|\bp\s*/?\s*e\s+(?:forward|fy1)\b",
+            "forward P/E",
+            "TR.PtoEPSMeanEst(Period=FY1)",
+            ("valuation",),
+            "multiple",
+        ),
+        (r"\b(?:trailing\s+)?p\s*/?\s*e\b", "trailing P/E", "TR.PE", ("valuation",), "multiple"),
+        (r"\bev\s*/?\s*ebitda\b", "EV/EBITDA", "TR.EVToEBITDA", ("valuation",), "multiple"),
+        (
+            r"\b(?:price\s*(?:to|/)\s*book|p\s*/?\s*b)\b",
+            "price/book",
+            "TR.PriceToBVPerShare",
+            ("valuation",),
+            "multiple",
+        ),
+        (
+            r"\b(?:price\s*(?:to|/)\s*sales|p\s*/?\s*s)\b",
+            "price/sales",
+            "TR.PriceToSalesPerShare",
+            ("valuation",),
+            "multiple",
+        ),
+        (
+            r"\b(?:return\s+on\s+equity|roe)\b",
+            "ROE",
+            "TR.ReturnonAvgTotEqtyPctNetIncomeBeforeExtraItemsTTM",
+            ("profitability",),
+            "percent",
+        ),
+        (
+            r"\b(?:return\s+on\s+assets?|roa)\b",
+            "ROA",
+            "TR.ROAPercentTrailing12M",
+            ("profitability",),
+            "percent",
+        ),
+        (
+            r"\b(?:market\s+cap(?:italization)?)\b",
+            "market capitalization",
+            "TR.CompanyMarketCap",
+            ("profile",),
+            "number",
+        ),
+        (
+            r"\b(?:mean\s+)?price\s+target\b",
+            "mean analyst price target",
+            "TR.PriceTargetMean",
+            ("recommendations",),
+            "number",
+        ),
+        (
+            r"\b(?:dividend\s+yield|yield)\b",
+            "dividend yield",
+            "TR.DividendYield",
+            ("valuation",),
+            "percent",
+        ),
+    )
+    matched = next((spec for spec in metric_specs if re.search(spec[0], lower)), None)
+    if matched is None:
+        return None
+    _pattern, label, field_name, table_names, value_kind = matched
+    value: float | None = None
+    for table_name in table_names:
+        value = _numeric(_first_value(result, table_name, field_name, selected.ric))
+        if value is not None:
+            break
+    if value is None:
+        row = _screen_row(result, selected.ric)
+        value = _numeric(row.get(field_name)) if row is not None else None
+
+    name = _company_name(result, selected)
+    if value is None or (value_kind == "multiple" and value <= 0):
+        qualifier = (
+            " as a meaningful positive multiple"
+            if value_kind == "multiple"
+            else ""
+        )
+        return (
+            f"The prior LSEG evidence does not provide a usable {label}{qualifier} for "
+            f"{name} ({selected.ric})."
+        )
+    formatted = _format_number(value) + ("%" if value_kind == "percent" else "")
+    return f"The retrieved {label} for {name} ({selected.ric}) is {formatted}."
+
+
 def _deterministic_request_diagnostics_follow_up(result: ResearchResult) -> str:
     records = result.call_records
     unsuccessful = [
@@ -3036,6 +3129,9 @@ def answer_follow_up(result: ResearchResult, question: str, settings: Settings) 
     lower = question.casefold()
     if is_request_diagnostics_follow_up(question, result):
         return _deterministic_request_diagnostics_follow_up(result)
+    metric_answer = _deterministic_metric_follow_up(result, question)
+    if metric_answer is not None:
+        return metric_answer
     if re.search(
         r"\b(?:undervalu\w*|valuation|cheap|inexpensive|discount(?:ed)?|relative\s+value)\b",
         lower,
@@ -3050,12 +3146,11 @@ def answer_follow_up(result: ResearchResult, question: str, settings: Settings) 
         lower,
     ):
         return _deterministic_selection_follow_up(result)
-    fallback = concise_report(result, replace(settings, groq_api_key=None))
-
-    # Contextual answers remain deterministic until claim-level generated-text
-    # validation can prove every company and numeric statement against evidence.
-    if result.plan.workflow in {"sector_opportunity", "stock_screen", "company_compare", "market_news"}:
-        return fallback
+    fallback = (
+        "I could not answer that specific follow-up from the validated prior evidence. "
+        "Try asking for a retrieved metric, valuation, risk, catalyst, selection rationale, "
+        "or request diagnostic."
+    )
     if not settings.groq_api_key:
         return fallback
     try:
