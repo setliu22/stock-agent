@@ -289,6 +289,14 @@ def test_generic_candidate_description_compiles_as_taxonomy_screen(tmp_path, wor
     assert "positive_signals" in plan.selection_objectives
 
 
+def test_esg_request_is_rejected_before_lseg_when_entitlement_is_disabled(tmp_path) -> None:
+    with pytest.raises(
+        UnsupportedResearchConstraint,
+        match="ESG retrieval is disabled.*required entitlement",
+    ):
+        build_research_plan("analyze Apple's ESG profile", settings(tmp_path))
+
+
 def test_contextual_screen_refinement_inherits_and_replaces_dimensions(tmp_path) -> None:
     biotech = build_research_plan("can you study biotech stocks", settings(tmp_path))
     us_biotech = build_research_plan("study us stocks", settings(tmp_path), prior_plan=biotech)

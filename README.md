@@ -82,7 +82,7 @@ For a request such as `research a promising industrials stock`, the application:
 1. Builds a broad LSEG industrials universe.
 2. Retrieves value, quality, cash-flow, expectations, analyst-target, momentum, and risk fields.
 3. Uses a coverage-aware multi-factor ranking.
-4. Deeply researches five finalists using comparable core data, histories, Reuters evidence, peers, filings, and ESG.
+4. Deeply researches five finalists using comparable core data, histories, Reuters evidence, peers, and filings.
 5. Re-ranks finalists using deep-dive evidence coverage.
 6. Optionally enriches only the selected leader with explicitly requested, bounded event, ownership, or insider context.
 7. Produces a selected-RIC-bound deterministic report and follow-up answers from the validated evidence.

@@ -57,7 +57,6 @@ EXECUTABLE_OPERATIONS: tuple[OperationSpec, ...] = (
     OperationSpec("news.headlines", "lseg.data.news.get_headlines", "Retrieve Reuters/LSEG headlines by instrument, query, and date.", "_retrieve_news", ("query",), entitlement="news"),
     OperationSpec("news.story", "lseg.data.news.get_story", "Retrieve selected full Reuters/LSEG stories for evidence synthesis.", "_retrieve_news_stories", ("story_id",), entitlement="news", response="text", limitations="Story retrieval is one story per request; history and archive access depend on entitlement."),
     OperationSpec("content.filings", "lseg.data.content.filings.search.Definition", "Search entitled company filings.", "_retrieve_filings", ("org_id", "start_date", "end_date"), entitlement="filings"),
-    OperationSpec("content.esg", "lseg.data.content.esg.basic_overview.Definition", "Retrieve an ESG overview.", "_retrieve_esg", ("universe",), entitlement="esg"),
     OperationSpec("local.multifactor_rank", "portfolio.lseg_research._rank_candidate_screen", "Rank candidates using value, quality, cash flow, expectations, momentum, target, risk, and data coverage.", "_rank_candidate_screen", ("screen_frame",), access_points=("local",), entitlement="none"),
     OperationSpec("local.metrics", "portfolio.lseg_research._derive_metrics", "Derive revisions, margins, returns, volatility, peer medians, and evidence coverage.", "_derive_metrics", ("research_result",), access_points=("local",), entitlement="none"),
     OperationSpec("llm.evidence_synthesis", "portfolio.lseg_research._llm_report", "Identify major opportunities, catalysts, risks, and contradictions from retrieved evidence only.", "_llm_report", ("evidence_payload",), access_points=("local",), entitlement="groq-key", response="plain text"),
@@ -124,7 +123,7 @@ CAPABILITIES: tuple[Capability, ...] = (
     Capability("content.filings.search.Definition", "Filings", "Search EDGAR and other entitled filing feeds by form, organization, date, text, and section.", ("10-K", "10-Q", "filings", "risk factors"), "core", "implemented"),
     Capability("content.filings.retrieval.Definition", "Filings", "Retrieve a filing by filename, DCN, document ID, or filing ID."),
     # ESG
-    Capability("content.esg.basic_overview.Definition", "ESG", "Retrieve a compact ESG overview for instruments.", ("ESG overview",), "core", "implemented"),
+    Capability("content.esg.basic_overview.Definition", "ESG", "Retrieve a compact ESG overview for instruments; disabled in this application because the configured account lacks entitlement."),
     Capability("content.esg.full_scores.Definition", "ESG", "Retrieve historical full ESG scores."),
     Capability("content.esg.full_measures.Definition", "ESG", "Retrieve detailed ESG measures."),
     Capability("content.esg.standard_scores.Definition", "ESG", "Retrieve standard ESG scores."),
@@ -248,7 +247,7 @@ def concise_capability_summary() -> str:
         [
             "LSEG capabilities recognized by this application:",
             "• Predefined research workflows: company deep dive, consistent company comparison, multi-factor sector opportunity research, explicit stock screens, and market news.",
-            "• Research evidence: company data, financials, quality, valuation, estimate histories and revisions, SmartEstimate, recommendations, prices, Reuters news and stories, events, guidance, ownership, insiders, ESG, filings, peers, suppliers, and customers when entitled.",
+            "• Research evidence: company data, financials, quality, valuation, estimate histories and revisions, SmartEstimate, recommendations, prices, Reuters news and stories, events, guidance, ownership, insiders, filings, peers, suppliers, and customers when entitled.",
             "• The LLM only classifies intent and synthesizes retrieved evidence. It cannot invent LSEG calls, fields, tickers, or workflows.",
             "• Specialized functions such as real-time streams, Tradefeedr, custom-instrument writes, derivative pricing, curves, surfaces, low-level endpoints, and bulk delivery are catalogued but not autonomously invoked.",
             "• Exact installed-package function and class inventory: data/lseg_capabilities.json.",

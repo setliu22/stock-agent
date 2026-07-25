@@ -1567,11 +1567,10 @@ def _retrieve_candidate_deep_dive(
         progress_callback,
         55,
         "Researching finalist evidence",
-        "Core finalist data is complete. Retrieving price, revisions, Reuters news, peers, filings, and ESG.",
+        "Core finalist data is complete. Retrieving price, revisions, Reuters news, peers, and filings.",
     )
 
     total_candidates = max(len(resolved), 1)
-    esg_enabled = True
     for index, item in enumerate(resolved):
         candidate_percent = 62 + int((index / total_candidates) * 24)
         _emit_progress(
@@ -1586,8 +1585,6 @@ def _retrieve_candidate_deep_dive(
         _retrieve_news_stories(ld, client, result, item, workflow.news_stories_per_candidate)
         _retrieve_peers(ld, client, result, item)
         _retrieve_filings(client, result, item)
-        if esg_enabled:
-            esg_enabled = _retrieve_esg(client, result, item)
     _emit_progress(
         progress_callback,
         86,
@@ -1909,25 +1906,6 @@ def _retrieve_stakeholders(client: _LSEGClient, result: ResearchResult, resolved
         result.tables[f"{kind}:{resolved.ric}"] = frame
 
 
-def _retrieve_esg(client: _LSEGClient, result: ResearchResult, resolved: ResolvedInstrument) -> bool:
-    from lseg.data.content import esg
-
-    response = client.call(
-        f"ESG overview {resolved.ric}",
-        lambda: esg.basic_overview.Definition(universe=resolved.ric).get_data(),
-        request_metadata={"operation": "content.esg.basic_overview", "ric": resolved.ric},
-    )
-    frame = _frame_from_response(response)
-    if not frame.empty:
-        result.tables[f"esg:{resolved.ric}"] = frame
-    if result.call_records and result.call_records[-1].get("status") == "failed":
-        result.warnings.append(
-            f"ESG overview {resolved.ric}: disabling further ESG calls after the optional content endpoint failed."
-        )
-        return False
-    return True
-
-
 def _retrieve_filings(client: _LSEGClient, result: ResearchResult, resolved: ResolvedInstrument) -> None:
     from lseg.data.content import filings
 
@@ -2037,7 +2015,7 @@ def _derive_evidence_coverage(result: ResearchResult) -> None:
         for family, table_name in (
             ("price_history", f"price:{ric}"), ("estimate_history", f"estimate_history:{ric}"),
             ("news", f"news:{ric}"), ("stories", f"stories:{ric}"), ("peers", f"peers:{ric}"),
-            ("filings", f"filings:{ric}"), ("esg", f"esg:{ric}"),
+            ("filings", f"filings:{ric}"),
         ):
             frame = result.tables.get(table_name)
             if frame is not None and not frame.empty:
@@ -2289,18 +2267,17 @@ def run_research(
                 progress_callback,
                 45,
                 "Researching company evidence",
-                "Core data is complete. Retrieving price history, estimate revisions, Reuters news, peers, filings, and ESG.",
+                "Core data is complete. Retrieving price history, estimate revisions, Reuters news, peers, and filings.",
             )
 
             total_companies = max(len(result.resolved), 1)
-            esg_enabled = True
             for index, resolved in enumerate(result.resolved):
                 company_percent = 58 + int((index / total_companies) * 28)
                 _emit_progress(
                     progress_callback,
                     company_percent,
                     f"Researching company {index + 1}/{len(result.resolved)}",
-                    f"{resolved.company_name} ({resolved.ric}): price, revisions, Reuters news, peers, filings, and ESG.",
+                    f"{resolved.company_name} ({resolved.ric}): price, revisions, Reuters news, peers, and filings.",
                 )
                 _retrieve_price_history(ld, client, result, resolved)
                 _retrieve_estimate_history(ld, client, result, resolved)
@@ -2308,8 +2285,6 @@ def run_research(
                 _retrieve_news_stories(ld, client, result, resolved, workflow.news_stories_per_candidate)
                 _retrieve_peers(ld, client, result, resolved)
                 _retrieve_filings(client, result, resolved)
-                if esg_enabled:
-                    esg_enabled = _retrieve_esg(client, result, resolved)
                 if "suppliers" in plan.topics:
                     _retrieve_stakeholders(client, result, resolved, "suppliers")
                 if "customers" in plan.topics:

@@ -20,14 +20,14 @@ from .research_workflows import WORKFLOWS, get_workflow
 VALID_TOPICS = {
     "profile", "fundamentals", "profitability", "valuation", "estimates",
     "recommendations", "guidance", "price", "risk", "news", "events",
-    "ownership", "insiders", "esg", "filings", "peers", "suppliers", "customers",
+    "ownership", "insiders", "filings", "peers", "suppliers", "customers",
 }
 
 VALID_SELECTION_OBJECTIVES = {"positive_signals", "relative_value"}
 
 DEFAULT_TOPICS = [
     "profile", "fundamentals", "profitability", "valuation", "estimates",
-    "recommendations", "price", "risk", "news", "peers", "filings", "esg",
+    "recommendations", "price", "risk", "news", "peers", "filings",
 ]
 
 _TOPIC_WORDS = {
@@ -41,7 +41,7 @@ _TOPIC_WORDS = {
     "volatility": "risk", "risk": "risk", "news": "news", "catalyst": "news",
     "event": "events", "events": "events", "ownership": "ownership", "holder": "ownership",
     "holders": "ownership", "insider": "insiders", "insiders": "insiders",
-    "esg": "esg", "filing": "filings", "filings": "filings", "10-k": "filings", "10-q": "filings",
+    "filing": "filings", "filings": "filings", "10-k": "filings", "10-q": "filings",
     "peer": "peers", "peers": "peers", "competitor": "peers", "competitors": "peers",
     "supplier": "suppliers", "suppliers": "suppliers", "customer": "customers", "customers": "customers",
 }
@@ -707,6 +707,10 @@ def _lowercase_us_is_geography(text: str) -> bool:
 def _validate_request_constraints(text: str) -> tuple[str | None, str | None, str | None]:
     """Detect ambiguity or unsupported constraints before any LSEG call."""
     lower = re.sub(r"\s+", " ", text.casefold())
+    if re.search(r"\besg\b", lower):
+        raise UnsupportedResearchConstraint(
+            "ESG retrieval is disabled because the configured LSEG account does not have the required entitlement."
+        )
     sectors = _detected_values(lower, _SECTOR_ALIASES, str)
     industries = _detected_values(lower, _INDUSTRY_ALIASES, lambda item: item.label)
     countries: list[str] = []
