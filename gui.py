@@ -400,12 +400,25 @@ class StockAgentApp(tk.Tk):
         try:
             if action == "sign_up":
                 result = self.supabase_auth.sign_up(email, password)
+                if result.signed_in:
+                    self.controller.account_sign_in(email, password)
             elif action == "sign_in":
                 result = self.supabase_auth.sign_in(email, password)
+                self.controller.account_sign_in(email, password)
             else:
+                self.controller.account_sign_out()
                 result = self.supabase_auth.sign_out()
             self.results.put(("auth", result))
         except Exception as exc:
+            if action in {"sign_in", "sign_up"}:
+                try:
+                    self.controller.account_sign_out()
+                except Exception:
+                    pass
+                try:
+                    self.supabase_auth.sign_out()
+                except Exception:
+                    pass
             self.results.put(("auth_error", friendly_auth_error(exc)))
 
     def _send_event(self, _event: tk.Event) -> str:
@@ -510,11 +523,13 @@ class StockAgentApp(tk.Tk):
                     self.account_status.set(result.message)
                     self.auth_password.set("")
                     self._set_auth_busy(False)
+                    self.refresh_holdings(refresh_prices=False)
                     continue
                 if kind == "auth_error":
                     self.account_status.set(str(payload))
                     self.auth_password.set("")
                     self._set_auth_busy(False)
+                    self.refresh_holdings(refresh_prices=False)
                     continue
                 response = str(payload)
                 self._finish_progress(response)
