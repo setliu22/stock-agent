@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+from dataclasses import dataclass
 import json
 import os
 import re
@@ -10,6 +11,7 @@ from typing import Any, Callable
 
 from .config import Settings
 from .database import PortfolioDatabase
+from .event_risk import run_portfolio_event_risk_review
 from .lseg_capabilities import capability_answer
 from .lseg_research import (
     LSEGNoMatches,
@@ -30,6 +32,7 @@ from .research_planner import (
 )
 from .market_data import current_price
 from .models import Purchase
+from .portfolio_import import PortfolioImportError, parse_portfolio_json_message
 
 
 _RESEARCH_PATTERN = re.compile(
@@ -59,8 +62,23 @@ _PURCHASE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+_PORTFOLIO_IMPORT_INTENT = re.compile(
+    r"\b(?:add|import|upload|load|enter|paste|bring|sync)\b.*"
+    r"\b(?:my\s+)?(?:portfolio|holdings?|positions?)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
 
 ProgressCallback = Callable[[int | None, str, str], None]
+
+
+@dataclass(slots=True)
+class PendingTask:
+    """Conversation state for a multi-turn operation."""
+
+    kind: str
+    original_request: str
+    payload: Any = None
 
 
 _EQUITY_CONTEXT_PATTERN = re.compile(
@@ -93,6 +111,7 @@ class StockAgent:
         self._screen_refinement_available = False
         self._pending_research_query: str | None = None
         self._pending_research_prior_plan: ResearchPlan | None = None
+        self._pending_task: PendingTask | None = None
 
     def handle(
         self,
@@ -105,6 +124,50 @@ class StockAgent:
             return "Enter a request."
 
         lower = text.casefold()
+        if _PORTFOLIO_IMPORT_INTENT.search(text) and self._pending_research_query is not None:
+            self._clear_pending_task()
+        if self._pending_portfolio_import and re.fullmatch(
+            r"\s*(?:cancel|never\s+mind|nevermind|forget\s+it)\s*[.!]?\s*", lower
+        ):
+            self._clear_pending_task()
+            return "Okay, I cancelled the portfolio import."
+        try:
+            portfolio_import = parse_portfolio_json_message(text)
+        except PortfolioImportError as exc:
+            self._screen_refinement_available = False
+            return str(exc)
+        if portfolio_import is not None:
+            self._clear_pending_task()
+            self._screen_refinement_available = False
+            count = self.database.record_purchases(portfolio_import.purchases)
+            return (
+                f"Imported {count} portfolio position(s) into the local portfolio. "
+                "Positions without a purchase date were recorded with today's date; "
+                "no LSEG research request was run."
+            )
+        if self._pending_portfolio_import and (
+            _is_research_request(text)
+            or lower in {"holdings", "portfolio"}
+            or "show holdings" in lower
+            or "calculate return" in lower
+            or "portfolio return" in lower
+            or "event risk" in lower
+            or "earnings risk" in lower
+        ):
+            self._clear_pending_task()
+
+        if self._pending_portfolio_import:
+            return (
+                "I’m ready to import your portfolio. Paste the JSON positions now, or say cancel. "
+                "Each position needs a ticker/symbol, shares/quantity, and purchase price or average cost."
+            )
+        if _PORTFOLIO_IMPORT_INTENT.search(text):
+            self._set_pending_task("portfolio_import", text)
+            self._screen_refinement_available = False
+            return (
+                "Paste the portfolio JSON in your next message. Each position needs a ticker/symbol, "
+                "shares/quantity, and purchase price or average cost. Say cancel to stop."
+            )
         operational_command = bool(
             "lseg capabilities" in lower
             or "lseg functions" in lower
@@ -114,6 +177,10 @@ class StockAgent:
             or lower in {"holdings", "portfolio"}
             or "calculate return" in lower
             or "portfolio return" in lower
+            or "event risk" in lower
+            or "earnings risk" in lower
+            or "review portfolio" in lower
+            or "should be sold" in lower
             or _PURCHASE_PATTERN.search(text)
         )
         if self._pending_research_query is not None:
@@ -123,17 +190,20 @@ class StockAgent:
             ):
                 self._pending_research_query = None
                 self._pending_research_prior_plan = None
+                self._clear_pending_task()
                 return "Okay, I discarded the pending research request."
             if _is_research_request(text):
                 # An explicit new research instruction replaces the unfinished
                 # request. A terse reply instead fills the requested slot.
                 self._pending_research_query = None
                 self._pending_research_prior_plan = None
+                self._clear_pending_task()
             elif not operational_command:
                 pending_query = self._pending_research_query
                 pending_prior_plan = self._pending_research_prior_plan
                 self._pending_research_query = None
                 self._pending_research_prior_plan = None
+                self._clear_pending_task()
                 completed_query = f"{pending_query}\nUser clarification: {text}"
                 return self.research(
                     completed_query,
@@ -181,6 +251,14 @@ class StockAgent:
         if "calculate return" in lower or "portfolio return" in lower:
             self._screen_refinement_available = False
             return self.calculate_return()
+        if (
+            "event risk" in lower
+            or "earnings risk" in lower
+            or "review portfolio" in lower
+            or "should be sold" in lower
+        ):
+            self._screen_refinement_available = False
+            return self.review_event_risk(progress_callback, cancel_event)
         if match := _PURCHASE_PATTERN.search(text):
             self._screen_refinement_available = False
             purchase = Purchase(
@@ -222,6 +300,7 @@ class StockAgent:
         previous_refinement_available = self._screen_refinement_available
         self._pending_research_query = None
         self._pending_research_prior_plan = None
+        self._clear_pending_task()
         self._last_research_result = None
         self._screen_refinement_available = False
         try:
@@ -255,6 +334,7 @@ class StockAgent:
         except ResearchClarificationNeeded as exc:
             self._pending_research_query = query
             self._pending_research_prior_plan = prior_plan
+            self._set_pending_task("research_clarification", query, prior_plan)
             # A clarification is not a failed replacement screen. Preserve the
             # exact prior screen so a concise answer such as "US-headquartered
             # names" can complete the same contextual request.
@@ -448,6 +528,35 @@ class StockAgent:
         if unavailable:
             lines.append(f"Prices unavailable for: {', '.join(unavailable)}")
         return "\n".join(lines)
+
+    def review_event_risk(
+        self,
+        progress_callback: ProgressCallback | None = None,
+        cancel_event: Any | None = None,
+    ) -> str:
+        review = run_portfolio_event_risk_review(
+            self.settings,
+            self.database.holdings(),
+            progress_callback=progress_callback,
+            cancel_event=cancel_event,
+        )
+        return review.to_text()
+
+    @property
+    def _pending_portfolio_import(self) -> bool:
+        return self._pending_task is not None and self._pending_task.kind == "portfolio_import"
+
+    def _set_pending_task(self, kind: str, original_request: str, payload: Any = None) -> None:
+        self._pending_task = PendingTask(
+            kind=kind,
+            original_request=original_request,
+            payload=payload,
+        )
+
+    def _clear_pending_task(self) -> None:
+        self._pending_task = None
+        self._pending_research_query = None
+        self._pending_research_prior_plan = None
 
     def _analyze_with_groq(self, data_text: str) -> str | None:
         if not self.settings.groq_api_key:

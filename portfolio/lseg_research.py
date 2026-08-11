@@ -1460,7 +1460,7 @@ def _retrieve_winner_optional_context(
                 client,
                 [ric],
                 TOPIC_FIELDS[topic],
-                parameters={"SDate": -365, "EDate": 0},
+                parameters={"SDate": 0, "EDate": 90},
                 label=f"Winner {topic}",
                 universe_chunk_size=1,
                 field_batch_size=None,
@@ -1514,6 +1514,33 @@ def _retrieve_winner_optional_context(
             insiders = pd.DataFrame()
     if not insiders.empty:
         result.tables["insiders"] = _limit_per_instrument(insiders, 15)
+
+
+def _retrieve_upcoming_events(
+    ld: Any,
+    client: _LSEGClient,
+    result: ResearchResult,
+    resolved: ResolvedInstrument,
+) -> None:
+    """Retrieve a bounded future event window for every portfolio-review holding."""
+    try:
+        frame = _safe_get_data(
+            ld,
+            client,
+            [resolved.ric],
+            TOPIC_FIELDS["events"],
+            parameters={"SDate": 0, "EDate": 90},
+            label=f"Upcoming events {resolved.ric}",
+            universe_chunk_size=1,
+            field_batch_size=None,
+            isolate_invalid_fields=True,
+        )
+    except LSEGResearchError as exc:
+        result.warnings.append(f"Upcoming events {resolved.ric}: data was skipped: {exc}")
+        return
+    if not frame.empty:
+        existing = result.tables.get("events", pd.DataFrame())
+        result.tables["events"] = pd.concat([existing, frame], ignore_index=True)
 
 
 def _retrieve_candidate_deep_dive(
@@ -2283,6 +2310,8 @@ def run_research(
                 _retrieve_estimate_history(ld, client, result, resolved)
                 _retrieve_news(ld, client, result, resolved)
                 _retrieve_news_stories(ld, client, result, resolved, workflow.news_stories_per_candidate)
+                if "events" in plan.topics and workflow.workflow_id != "company_deep_dive":
+                    _retrieve_upcoming_events(ld, client, result, resolved)
                 _retrieve_peers(ld, client, result, resolved)
                 _retrieve_filings(client, result, resolved)
                 if "suppliers" in plan.topics:

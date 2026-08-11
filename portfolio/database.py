@@ -64,6 +64,36 @@ class PortfolioDatabase:
             )
             return int(cursor.lastrowid)
 
+    def record_purchases(self, purchases: Iterable[Purchase]) -> int:
+        """Validate and append an import atomically, returning inserted rows."""
+        purchases = list(purchases)
+        for purchase in purchases:
+            ticker = purchase.ticker.strip().upper()
+            if not ticker:
+                raise ValueError("Ticker cannot be empty.")
+            if purchase.quantity <= 0:
+                raise ValueError("Quantity must be greater than zero.")
+            if purchase.price < 0:
+                raise ValueError("Price cannot be negative.")
+        with self._connect() as connection:
+            connection.executemany(
+                """
+                INSERT INTO purchases(ticker, quantity, price, purchased_at, note)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        purchase.ticker.strip().upper(),
+                        float(purchase.quantity),
+                        float(purchase.price),
+                        purchase.purchased_at.isoformat(),
+                        purchase.note.strip(),
+                    )
+                    for purchase in purchases
+                ],
+            )
+        return len(purchases)
+
     def list_purchases(self) -> list[Purchase]:
         with self._connect() as connection:
             rows = connection.execute(

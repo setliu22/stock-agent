@@ -10,6 +10,7 @@ from .agent import StockAgent
 from .company_resolver import company_name_to_ticker, extract_security_reference, is_explicit_ticker
 from .config import Settings, get_settings
 from .database import PortfolioDatabase
+from .event_risk import run_portfolio_event_risk_review
 from .models import Holding, Purchase
 
 
@@ -60,3 +61,12 @@ class StockAgentController:
 
     def return_text(self) -> str:
         return self.agent.calculate_return()
+
+    def review_event_risk(self, progress_callback=None, cancel_event=None) -> str:
+        review = run_portfolio_event_risk_review(
+            self.settings,
+            self.holdings(),
+            progress_callback=progress_callback,
+            cancel_event=cancel_event,
+        )
+        return review.to_text()

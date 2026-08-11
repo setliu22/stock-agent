@@ -135,6 +135,7 @@ class StockAgentApp(tk.Tk):
             ("Record purchase", self.record_purchase),
             ("Show holdings", lambda: self._run_direct("holdings", self.controller.holdings_text)),
             ("Calculate return", lambda: self._run_direct("return", self.controller.return_text)),
+            ("Review event risk", lambda: self._run_direct("event_risk", self.controller.review_event_risk)),
             ("Deep research", self.research_stock),
             ("LSEG capabilities", lambda: self._submit_prompt("What can LSEG do?")),
         ):
@@ -214,6 +215,11 @@ class StockAgentApp(tk.Tk):
         toolbar.pack(fill="x", pady=(0, 12))
         ttk.Button(toolbar, text="Refresh", command=self.refresh_holdings).pack(side="left")
         ttk.Button(toolbar, text="Record purchase", command=self.record_purchase).pack(side="left", padx=8)
+        ttk.Button(
+            toolbar,
+            text="Review event risk",
+            command=lambda: self._run_direct("event_risk", self.controller.review_event_risk),
+        ).pack(side="left")
 
         columns = ("ticker", "quantity", "average_cost", "total_cost")
         self.holdings_tree = ttk.Treeview(self.holdings_tab, columns=columns, show="headings")
