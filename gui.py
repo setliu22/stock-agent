@@ -118,6 +118,7 @@ class StockAgentApp(tk.Tk):
 
         notebook = ttk.Notebook(outer)
         notebook.pack(fill="both", expand=True)
+        self.notebook = notebook
         self.chat_tab = ttk.Frame(notebook, padding=16)
         self.holdings_tab = ttk.Frame(notebook, padding=16)
         self.account_tab = ttk.Frame(notebook, padding=16)
@@ -135,7 +136,7 @@ class StockAgentApp(tk.Tk):
             ("Record purchase", self.record_purchase),
             ("Show holdings", lambda: self._run_direct("holdings", self.controller.holdings_text)),
             ("Calculate return", lambda: self._run_direct("return", self.controller.return_text)),
-            ("Review event risk", lambda: self._run_direct("event_risk", self.controller.review_event_risk)),
+            ("Review event risk", self.prepare_event_risk_prompt),
             ("Deep research", self.research_stock),
             ("LSEG capabilities", lambda: self._submit_prompt("What can LSEG do?")),
         ):
@@ -218,18 +219,19 @@ class StockAgentApp(tk.Tk):
         ttk.Button(
             toolbar,
             text="Review event risk",
-            command=lambda: self._run_direct("event_risk", self.controller.review_event_risk),
+            command=self.prepare_event_risk_prompt,
         ).pack(side="left")
 
-        columns = ("ticker", "quantity", "average_cost", "total_cost")
+        columns = ("ticker", "quantity", "average_cost", "total_cost", "gain_loss")
         self.holdings_tree = ttk.Treeview(self.holdings_tab, columns=columns, show="headings")
         headings = {
             "ticker": "Ticker",
             "quantity": "Shares",
             "average_cost": "Average cost",
             "total_cost": "Total cost",
+            "gain_loss": "Gain/loss",
         }
-        widths = {"ticker": 130, "quantity": 150, "average_cost": 180, "total_cost": 180}
+        widths = {"ticker": 130, "quantity": 120, "average_cost": 160, "total_cost": 160, "gain_loss": 160}
         for column in columns:
             self.holdings_tree.heading(column, text=headings[column])
             self.holdings_tree.column(column, width=widths[column], anchor="center")
@@ -518,7 +520,7 @@ class StockAgentApp(tk.Tk):
                 self._finish_progress(response)
                 self._append("Agent", response)
                 self._set_busy(False)
-                self.refresh_holdings()
+                self.refresh_holdings(refresh_prices=False)
         except queue.Empty:
             pass
         self._refresh_elapsed()
@@ -692,12 +694,23 @@ class StockAgentApp(tk.Tk):
             "Agent",
             f"Recorded {purchase.quantity:g} shares of {purchase.ticker} at ${purchase.price:,.2f}.",
         )
-        self.refresh_holdings()
+        self.refresh_holdings(refresh_prices=False)
 
     def _submit_prompt(self, prompt: str) -> None:
         self.input_box.delete("1.0", "end")
         self.input_box.insert("1.0", prompt)
         self.send_message()
+
+    def prepare_event_risk_prompt(self) -> None:
+        if self.is_busy:
+            return
+        self.notebook.select(self.chat_tab)
+        self.input_box.delete("1.0", "end")
+        self.input_box.insert(
+            "1.0",
+            "Review my portfolio for stocks I should review before upcoming earnings or events.",
+        )
+        self.input_box.focus_set()
 
     def research_stock(self) -> None:
         query = simpledialog.askstring(
@@ -710,11 +723,15 @@ class StockAgentApp(tk.Tk):
         prompt = query if len(query.split()) > 2 else f"Analyze {query} using LSEG"
         self._submit_prompt(prompt)
 
-    def refresh_holdings(self) -> None:
+    def refresh_holdings(self, *, refresh_prices: bool = True) -> None:
         for item in self.holdings_tree.get_children():
             self.holdings_tree.delete(item)
         try:
-            holdings = self.controller.holdings()
+            holdings = (
+                self.controller.holding_snapshots()
+                if refresh_prices
+                else self.controller.holdings()
+            )
         except Exception:
             return
         for holding in holdings:
@@ -726,6 +743,11 @@ class StockAgentApp(tk.Tk):
                     f"{holding.quantity:g}",
                     f"${holding.average_cost:,.2f}",
                     f"${holding.total_cost:,.2f}",
+                    (
+                        f"${holding.gain_loss:+,.2f}"
+                        if getattr(holding, "gain_loss", None) is not None
+                        else "N/A"
+                    ),
                 ),
             )
 

@@ -21,3 +21,13 @@ class Holding:
     quantity: float
     total_cost: float
     average_cost: float
+
+
+@dataclass(frozen=True)
+class HoldingSnapshot:
+    ticker: str
+    quantity: float
+    average_cost: float
+    total_cost: float
+    current_price: float | None
+    gain_loss: float | None

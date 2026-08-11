@@ -11,7 +11,8 @@ from .company_resolver import company_name_to_ticker, extract_security_reference
 from .config import Settings, get_settings
 from .database import PortfolioDatabase
 from .event_risk import run_portfolio_event_risk_review
-from .models import Holding, Purchase
+from .market_data import current_price
+from .models import Holding, HoldingSnapshot, Purchase
 
 
 class StockAgentController:
@@ -55,6 +56,30 @@ class StockAgentController:
 
     def holdings(self) -> list[Holding]:
         return self.database.holdings()
+
+    def holding_snapshots(self) -> list[HoldingSnapshot]:
+        snapshots: list[HoldingSnapshot] = []
+        for holding in self.holdings():
+            try:
+                price = current_price(holding.ticker)
+            except Exception:
+                price = None
+            gain_loss = (
+                (price - holding.average_cost) * holding.quantity
+                if price is not None
+                else None
+            )
+            snapshots.append(
+                HoldingSnapshot(
+                    ticker=holding.ticker,
+                    quantity=holding.quantity,
+                    average_cost=holding.average_cost,
+                    total_cost=holding.total_cost,
+                    current_price=price,
+                    gain_loss=gain_loss,
+                )
+            )
+        return snapshots
 
     def holdings_text(self) -> str:
         return self.agent.show_holdings()
