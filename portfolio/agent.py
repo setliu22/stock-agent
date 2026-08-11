@@ -68,6 +68,13 @@ _PORTFOLIO_IMPORT_INTENT = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+_EVENT_RISK_INTENT = re.compile(
+    r"\b(?:review|check|assess|scan|flag|identify)\b.*"
+    r"\b(?:my\s+)?(?:portfolio|holdings?|positions?)\b.*"
+    r"\b(?:earnings?|events?|catalysts?)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
 
 ProgressCallback = Callable[[int | None, str, str], None]
 
@@ -100,6 +107,16 @@ def _is_research_request(text: str, *, semantic_fallback: bool = False) -> bool:
             and re.search(r"\b(stocks?|companies|equities)\b", lower)
         )
         or (semantic_fallback and _EQUITY_CONTEXT_PATTERN.search(text))
+    )
+
+
+def _is_event_risk_request(text: str) -> bool:
+    lower = text.casefold()
+    return bool(
+        _EVENT_RISK_INTENT.search(text)
+        or "event risk" in lower
+        or "earnings risk" in lower
+        or "should be sold" in lower
     )
 
 
@@ -151,8 +168,7 @@ class StockAgent:
             or "show holdings" in lower
             or "calculate return" in lower
             or "portfolio return" in lower
-            or "event risk" in lower
-            or "earnings risk" in lower
+            or _is_event_risk_request(text)
         ):
             self._clear_pending_task()
 
@@ -177,8 +193,7 @@ class StockAgent:
             or lower in {"holdings", "portfolio"}
             or "calculate return" in lower
             or "portfolio return" in lower
-            or "event risk" in lower
-            or "earnings risk" in lower
+            or _is_event_risk_request(text)
             or "review portfolio" in lower
             or "should be sold" in lower
             or _PURCHASE_PATTERN.search(text)
@@ -240,6 +255,9 @@ class StockAgent:
                 cancel_event=cancel_event,
                 prior_plan=prior_plan,
             )
+        if _is_event_risk_request(text):
+            self._screen_refinement_available = False
+            return self.review_event_risk(progress_callback, cancel_event)
         if _is_research_request(
             text,
             semantic_fallback=bool(self.settings.groq_api_key) and not operational_command,
@@ -252,10 +270,7 @@ class StockAgent:
             self._screen_refinement_available = False
             return self.calculate_return()
         if (
-            "event risk" in lower
-            or "earnings risk" in lower
-            or "review portfolio" in lower
-            or "should be sold" in lower
+            _is_event_risk_request(text)
         ):
             self._screen_refinement_available = False
             return self.review_event_risk(progress_callback, cancel_event)

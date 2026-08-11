@@ -3,7 +3,10 @@ from types import SimpleNamespace
 
 import pandas as pd
 
+from portfolio.agent import StockAgent
 from portfolio.company_resolver import ResolvedInstrument
+from portfolio.config import Settings
+from portfolio.database import PortfolioDatabase
 from portfolio.event_risk import build_portfolio_review_plan, score_portfolio_event_risk
 from portfolio.models import Holding
 
@@ -76,3 +79,15 @@ def test_event_risk_does_not_call_missing_event_a_sell_signal():
     assert item.rating == "Insufficient data"
     assert item.score == 0
     assert "upcoming LSEG event date" in item.missing
+
+
+def test_prefilled_event_risk_prompt_routes_to_event_review(tmp_path, monkeypatch):
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
+    agent = StockAgent(settings, PortfolioDatabase(settings.database_path))
+    monkeypatch.setattr(agent, "review_event_risk", lambda *_args: "event review invoked")
+
+    response = agent.handle(
+        "Review my portfolio for stocks I should review before upcoming earnings or events."
+    )
+
+    assert response == "event review invoked"
