@@ -67,7 +67,17 @@ def _records(payload: Any) -> list[dict[str, Any]] | None:
     elif isinstance(payload, dict):
         normalized = {_key(key): value for key, value in payload.items()}
         records = None
-        for key in ("holdings", "positions", "purchases", "assets", "portfolio", "data"):
+        for key in (
+            "holdings",
+            "positions",
+            "purchases",
+            "assets",
+            "stocks",
+            "securities",
+            "equities",
+            "portfolio",
+            "data",
+        ):
             candidate = normalized.get(key)
             if isinstance(candidate, list):
                 records = candidate
@@ -91,7 +101,9 @@ def _purchase_from_record(record: dict[str, Any], index: int) -> Purchase:
         _first(
             values,
             "purchaseprice",
+            "purchasepricepershare",
             "averagecost",
+            "averagecostpershare",
             "avgcost",
             "costbasis",
             "entryprice",

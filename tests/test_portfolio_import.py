@@ -20,6 +20,21 @@ def test_imports_portfolio_json_without_research_fields(tmp_path):
     assert imported.purchases[1].purchased_at == date(2026, 1, 5)
 
 
+def test_imports_brokerage_export_with_stocks_container():
+    imported = parse_portfolio_json_message(
+        '{"account": {"institution": "Chase"}, "summary": {"winner_count": 1}, '
+        '"stocks": [{"ticker": "ZBRA", "quantity": 0.12, '
+        '"average_cost_per_share": 271.5833, "purchase_date": null, '
+        '"current_price": 378.08}]}'
+    )
+
+    assert imported is not None
+    assert imported.source_position_count == 1
+    assert imported.purchases[0].ticker == "ZBRA"
+    assert imported.purchases[0].quantity == 0.12
+    assert imported.purchases[0].price == 271.5833
+
+
 def test_import_requires_cost_basis(tmp_path):
     with pytest.raises(PortfolioImportError, match="purchase price/average cost"):
         parse_portfolio_json_message('{"positions": [{"ticker": "AAPL", "shares": 2}]}')
