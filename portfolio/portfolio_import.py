@@ -30,6 +30,7 @@ class PortfolioUpdate:
     purchased_at: date | None = None
     note: str | None = None
     fields: frozenset[str] = frozenset()
+    replacement_lots: tuple[Purchase, ...] | None = None
 
 
 def parse_portfolio_update_json_message(message: str) -> list[PortfolioUpdate] | None:
@@ -37,6 +38,26 @@ def parse_portfolio_update_json_message(message: str) -> list[PortfolioUpdate] |
     payload = _extract_json(message)
     if payload is None:
         return None
+    grouped = _grouped_lot_records(payload)
+    if grouped is not None:
+        updates: list[PortfolioUpdate] = []
+        for ticker, records in grouped.items():
+            lots: list[Purchase] = []
+            for index, record in enumerate(records, start=1):
+                try:
+                    lots.append(_purchase_from_record({"ticker": ticker, **record}, index))
+                except PortfolioImportError as exc:
+                    raise PortfolioImportError(f"Could not update {ticker}: {exc}") from exc
+            if not lots:
+                raise PortfolioImportError(f"Could not update {ticker}: no purchase lots were provided.")
+            updates.append(
+                PortfolioUpdate(
+                    ticker=ticker.upper(),
+                    fields=frozenset({"replacement_lots"}),
+                    replacement_lots=tuple(lots),
+                )
+            )
+        return updates
     records = _records(payload, require_quantity=False)
     if records is None:
         return None
@@ -50,6 +71,28 @@ def parse_portfolio_update_json_message(message: str) -> list[PortfolioUpdate] |
     if errors:
         raise PortfolioImportError("Could not update the portfolio JSON: " + " ".join(errors))
     return updates
+
+
+def _grouped_lot_records(payload: Any) -> dict[str, list[dict[str, Any]]] | None:
+    if not isinstance(payload, dict):
+        return None
+    normalized = {_key(key): value for key, value in payload.items()}
+    container = next(
+        (
+            normalized[key]
+            for key in ("correctedpurchasedata", "purchasesbyticker", "lotsbyticker")
+            if isinstance(normalized.get(key), dict)
+        ),
+        None,
+    )
+    if container is None:
+        return None
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for ticker, records in container.items():
+        if not isinstance(records, list) or not all(isinstance(record, dict) for record in records):
+            raise PortfolioImportError(f"{ticker}: purchase data must be a JSON list of objects.")
+        grouped[str(ticker).strip().upper()] = records
+    return grouped
 
 
 def parse_portfolio_json_message(message: str) -> PortfolioImport | None:

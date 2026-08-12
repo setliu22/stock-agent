@@ -113,3 +113,25 @@ def test_update_mode_can_apply_a_field_to_all_holdings(tmp_path):
     assert updates is not None
     assert database.apply_portfolio_updates(updates) == (2, 0)
     assert {item.purchased_at for item in database.list_purchases()} == {date(2026, 8, 12)}
+
+
+def test_update_mode_accepts_grouped_corrected_purchase_data(tmp_path):
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
+    database = PortfolioDatabase(settings.database_path)
+    database.record_purchases([
+        __import__("portfolio.models", fromlist=["Purchase"]).Purchase("AZTA", 1.4, 25.1071, date(2026, 1, 1)),
+    ])
+    agent = StockAgent(settings, database)
+    agent.handle("Update my portfolio")
+    response = agent.handle(
+        '{"corrected_purchase_data": {"AZTA": ['
+        '{"purchase_date": "2026-07-09", "quantity": 0.40, "purchase_price_per_share": 25.13}, '
+        '{"purchase_date": "2026-07-09", "quantity": 1.00, "purchase_price_per_share": 25.10}]}}'
+    )
+
+    assert "Updated 1 existing" in response
+    lots = database.list_purchases()
+    assert [(lot.quantity, lot.price, lot.purchased_at) for lot in lots] == [
+        (0.4, 25.13, date(2026, 7, 9)),
+        (1.0, 25.1, date(2026, 7, 9)),
+    ]

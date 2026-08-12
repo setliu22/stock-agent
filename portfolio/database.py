@@ -171,6 +171,22 @@ class PortfolioDatabase:
         with self._connect() as connection:
             for update in updates:
                 ticker = update.ticker.strip().upper()
+                if update.replacement_lots is not None:
+                    rows = connection.execute(
+                        "SELECT id FROM purchases WHERE ticker = ? ORDER BY id",
+                        (ticker,),
+                    ).fetchall()
+                    connection.execute("DELETE FROM purchases WHERE ticker = ?", (ticker,))
+                    connection.executemany(
+                        "INSERT INTO purchases(ticker, quantity, price, purchased_at, note) VALUES (?, ?, ?, ?, ?)",
+                        [
+                            (lot.ticker.upper(), lot.quantity, lot.price, lot.purchased_at.isoformat(), lot.note.strip())
+                            for lot in update.replacement_lots
+                        ],
+                    )
+                    updated += min(len(rows), len(update.replacement_lots))
+                    added += max(0, len(update.replacement_lots) - len(rows))
+                    continue
                 rows = connection.execute(
                     "SELECT id, quantity, price, purchased_at, note FROM purchases WHERE ticker = ? ORDER BY id",
                     (ticker,),
