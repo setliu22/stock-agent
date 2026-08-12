@@ -8,6 +8,7 @@ import sqlite3
 from typing import Iterable
 
 from .models import Holding, Purchase
+from .portfolio_import import PortfolioUpdate
 
 
 class PortfolioDatabase:
@@ -162,3 +163,49 @@ class PortfolioDatabase:
                     for purchase in purchases
                 ],
             )
+
+    def apply_portfolio_updates(self, updates: Iterable[PortfolioUpdate]) -> tuple[int, int]:
+        """Apply ticker patches atomically; return (updated lots, added positions)."""
+        updates = list(updates)
+        updated = added = 0
+        with self._connect() as connection:
+            for update in updates:
+                ticker = update.ticker.strip().upper()
+                rows = connection.execute(
+                    "SELECT id, quantity, price, purchased_at, note FROM purchases WHERE ticker = ? ORDER BY id",
+                    (ticker,),
+                ).fetchall()
+                if ticker == "*":
+                    rows = connection.execute(
+                        "SELECT id, quantity, price, purchased_at, note FROM purchases ORDER BY id"
+                    ).fetchall()
+                if not rows:
+                    if ticker == "*":
+                        continue
+                    if update.quantity is None or update.price is None:
+                        raise ValueError(
+                            f"{ticker} is not in the portfolio; a new position needs quantity and purchase price."
+                        )
+                    connection.execute(
+                        "INSERT INTO purchases(ticker, quantity, price, purchased_at, note) VALUES (?, ?, ?, ?, ?)",
+                        (ticker, update.quantity, update.price, (update.purchased_at or date.today()).isoformat(), update.note or "Added through portfolio update"),
+                    )
+                    added += 1
+                    continue
+                for row in rows:
+                    connection.execute(
+                        """
+                        UPDATE purchases
+                        SET quantity = ?, price = ?, purchased_at = ?, note = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            update.quantity if "quantity" in update.fields else row["quantity"],
+                            update.price if "price" in update.fields else row["price"],
+                            update.purchased_at.isoformat() if "purchased_at" in update.fields else row["purchased_at"],
+                            update.note if "note" in update.fields else row["note"],
+                            row["id"],
+                        ),
+                    )
+                    updated += 1
+        return updated, added

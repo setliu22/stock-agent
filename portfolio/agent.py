@@ -32,7 +32,11 @@ from .research_planner import (
 )
 from .market_data import current_price
 from .models import Purchase
-from .portfolio_import import PortfolioImportError, parse_portfolio_json_message
+from .portfolio_import import (
+    PortfolioImportError,
+    parse_portfolio_json_message,
+    parse_portfolio_update_json_message,
+)
 
 
 _RESEARCH_PATTERN = re.compile(
@@ -64,6 +68,12 @@ _PURCHASE_PATTERN = re.compile(
 
 _PORTFOLIO_IMPORT_INTENT = re.compile(
     r"\b(?:add|import|upload|load|enter|paste|bring|sync)\b.*"
+    r"\b(?:my\s+)?(?:portfolio|holdings?|positions?)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
+_PORTFOLIO_UPDATE_INTENT = re.compile(
+    r"\b(?:update|modify|change|correct|edit|fix)\b.*"
     r"\b(?:my\s+)?(?:portfolio|holdings?|positions?)\b",
     re.IGNORECASE | re.DOTALL,
 )
@@ -141,6 +151,27 @@ class StockAgent:
             return "Enter a request."
 
         lower = text.casefold()
+        if self._pending_task is not None and self._pending_task.kind == "portfolio_update":
+            if re.fullmatch(r"\s*(?:cancel|never\s+mind|nevermind|forget\s+it|start\s+over)\s*[.!]?\s*", lower):
+                self._clear_pending_task()
+                return "Okay, I cancelled the portfolio update."
+            try:
+                updates = parse_portfolio_update_json_message(text)
+            except PortfolioImportError as exc:
+                return str(exc)
+            if updates is not None:
+                self._clear_pending_task()
+                updated, added = self.database.apply_portfolio_updates(updates)
+                return f"Updated {updated} existing position(s) and added {added} new position(s)."
+            if not _PORTFOLIO_UPDATE_INTENT.search(text):
+                return "Paste the update JSON now, or say cancel."
+        if _PORTFOLIO_UPDATE_INTENT.search(text):
+            self._set_pending_task("portfolio_update", text)
+            self._screen_refinement_available = False
+            return (
+                "Paste the portfolio update JSON in your next message. Include the ticker and only the fields "
+                "you want to change. A new ticker must include quantity and purchase price. Say cancel to stop."
+            )
         if _PORTFOLIO_IMPORT_INTENT.search(text) and self._pending_research_query is not None:
             self._clear_pending_task()
         if self._pending_portfolio_import and re.fullmatch(

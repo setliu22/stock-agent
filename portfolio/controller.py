@@ -137,23 +137,41 @@ class StockAgentController:
             return 0
         portfolio = self._account_portfolio(self.cloud_client)
         remote = self.cloud_client.list_purchases(portfolio.id)
-        known = {_purchase_fingerprint(item) for item in remote}
+        local = self.database.list_purchases()
+        remote_by_ticker: dict[str, list[CloudPurchase]] = {}
+        local_by_ticker: dict[str, list[Purchase]] = {}
+        for item in remote:
+            remote_by_ticker.setdefault((item.ticker or "").upper(), []).append(item)
+        for item in local:
+            local_by_ticker.setdefault(item.ticker.upper(), []).append(item)
         created = 0
-        for purchase in self.database.list_purchases():
-            fingerprint = _local_purchase_fingerprint(purchase)
-            if fingerprint in known:
-                continue
-            self.cloud_client.create_purchase(
-                portfolio_id=portfolio.id,
-                security_name=purchase.ticker,
-                ticker=purchase.ticker,
-                quantity=purchase.quantity,
-                purchase_price=purchase.price,
-                purchased_at=purchase.purchased_at.isoformat(),
-                note=purchase.note,
-            )
-            known.add(fingerprint)
-            created += 1
+        for ticker, purchases in local_by_ticker.items():
+            remote_rows = remote_by_ticker.get(ticker, [])
+            for index, purchase in enumerate(purchases):
+                if index < len(remote_rows):
+                    remote_row = remote_rows[index]
+                    if _purchase_fingerprint(remote_row) != _local_purchase_fingerprint(purchase):
+                        self.cloud_client.update_purchase(
+                            remote_row.id,
+                            portfolio_id=portfolio.id,
+                            security_name=purchase.ticker,
+                            ticker=purchase.ticker,
+                            quantity=purchase.quantity,
+                            purchase_price=purchase.price,
+                            purchased_at=purchase.purchased_at.isoformat(),
+                            note=purchase.note,
+                        )
+                else:
+                    self.cloud_client.create_purchase(
+                        portfolio_id=portfolio.id,
+                        security_name=purchase.ticker,
+                        ticker=purchase.ticker,
+                        quantity=purchase.quantity,
+                        purchase_price=purchase.price,
+                        purchased_at=purchase.purchased_at.isoformat(),
+                        note=purchase.note,
+                    )
+                    created += 1
         return created
 
     @staticmethod

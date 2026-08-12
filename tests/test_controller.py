@@ -6,6 +6,7 @@ from portfolio.config import Settings
 from portfolio.controller import StockAgentController
 from portfolio.cloud_portfolios import CloudPortfolio, CloudPurchase, CloudSession
 from portfolio.models import Purchase
+from portfolio.portfolio_import import parse_portfolio_update_json_message
 
 
 def test_controller_records_explicit_ticker(tmp_path) -> None:
@@ -46,6 +47,7 @@ class _FakeCloudClient:
         self.created = []
         self.signed_out = False
         self.signed_in = False
+        self.updated = []
 
     def sign_in(self, _email, _password):
         self.signed_in = True
@@ -62,6 +64,9 @@ class _FakeCloudClient:
 
     def create_purchase(self, **kwargs):
         self.created.append(kwargs)
+
+    def update_purchase(self, purchase_id, **kwargs):
+        self.updated.append((purchase_id, kwargs))
 
     def sign_out(self):
         self.signed_out = True
@@ -106,3 +111,18 @@ def test_post_login_purchase_syncs_before_logout(tmp_path, monkeypatch):
 
     assert len(fake.created) == 1
     assert fake.created[0]["ticker"] == "AAPL"
+
+
+def test_post_login_update_syncs_existing_cloud_purchase(tmp_path, monkeypatch):
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
+    controller = StockAgentController(settings=settings)
+    fake = _FakeCloudClient([
+        CloudPurchase("purchase-1", "portfolio-1", "AAPL", "AAPL", 2, 100, "2026-01-01", "", "complete")
+    ])
+    monkeypatch.setattr("portfolio.controller.SupabasePortfolioClient.from_project", lambda _root: fake)
+    controller.account_sign_in("person@example.com", "password")
+    controller.database.apply_portfolio_updates(parse_portfolio_update_json_message('{"ticker": "AAPL", "purchase_date": "2026-08-01"}'))
+    controller.sync_local_portfolio()
+
+    assert fake.updated[0][0] == "purchase-1"
+    assert fake.updated[0][1]["purchased_at"] == "2026-08-01"

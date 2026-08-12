@@ -22,6 +22,36 @@ class PortfolioImport:
     source_position_count: int
 
 
+@dataclass(frozen=True)
+class PortfolioUpdate:
+    ticker: str
+    quantity: float | None = None
+    price: float | None = None
+    purchased_at: date | None = None
+    note: str | None = None
+    fields: frozenset[str] = frozenset()
+
+
+def parse_portfolio_update_json_message(message: str) -> list[PortfolioUpdate] | None:
+    """Parse partial position patches without filling omitted values."""
+    payload = _extract_json(message)
+    if payload is None:
+        return None
+    records = _records(payload, require_quantity=False)
+    if records is None:
+        return None
+    updates: list[PortfolioUpdate] = []
+    errors: list[str] = []
+    for index, record in enumerate(records, start=1):
+        try:
+            updates.append(_update_from_record(record, index))
+        except PortfolioImportError as exc:
+            errors.append(str(exc))
+    if errors:
+        raise PortfolioImportError("Could not update the portfolio JSON: " + " ".join(errors))
+    return updates
+
+
 def parse_portfolio_json_message(message: str) -> PortfolioImport | None:
     """Parse portfolio-shaped JSON, returning None for unrelated JSON/text."""
     payload = _extract_json(message)
@@ -61,7 +91,7 @@ def _extract_json(message: str) -> Any | None:
     return None
 
 
-def _records(payload: Any) -> list[dict[str, Any]] | None:
+def _records(payload: Any, *, require_quantity: bool = True) -> list[dict[str, Any]] | None:
     if isinstance(payload, list):
         records = payload
     elif isinstance(payload, dict):
@@ -82,13 +112,16 @@ def _records(payload: Any) -> list[dict[str, Any]] | None:
             if isinstance(candidate, list):
                 records = candidate
                 break
-        if records is None and _has_position_fields(normalized):
+        if records is None and _has_position_fields(normalized, require_quantity=require_quantity):
             records = [payload]
     else:
         return None
     if not isinstance(records, list) or not all(isinstance(item, dict) for item in records):
         raise PortfolioImportError("Portfolio positions must be a JSON list of objects.")
-    if not any(_has_position_fields({_key(key): value for key, value in item.items()}) for item in records):
+    if not any(
+        _has_position_fields({_key(key): value for key, value in item.items()}, require_quantity=require_quantity)
+        for item in records
+    ):
         return None
     return records
 
@@ -126,11 +159,51 @@ def _purchase_from_record(record: dict[str, Any], index: int) -> Purchase:
     return Purchase(ticker=ticker.upper(), quantity=quantity, price=price, purchased_at=purchased_at, note=note)
 
 
-def _has_position_fields(values: dict[str, Any]) -> bool:
-    return bool(
-        _first(values, "ticker", "symbol", "ric") is not None
-        and _first(values, "quantity", "shares", "units", "qty") is not None
-    )
+def _update_from_record(record: dict[str, Any], index: int) -> PortfolioUpdate:
+    values = {_key(key): value for key, value in record.items()}
+    ticker = _text(_first(values, "ticker", "symbol", "ric"))
+    if not ticker:
+        raise PortfolioImportError(f"Update {index}: ticker/symbol is missing.")
+    ticker = ticker.upper()
+    if ticker in {"ALL", "*"}:
+        ticker = "*"
+    fields: set[str] = set()
+    quantity = price = None
+    purchased_at = None
+    note = None
+    quantity_value = _first(values, "quantity", "shares", "units", "qty")
+    if quantity_value is not None:
+        quantity = _number(quantity_value)
+        if quantity is None or quantity <= 0:
+            raise PortfolioImportError(f"Update {index} ({ticker}): quantity must be greater than zero.")
+        fields.add("quantity")
+    price_value = _first(values, "purchaseprice", "purchasepricepershare", "averagecost", "averagecostpershare", "avgcost", "price")
+    if price_value is not None:
+        price = _number(price_value)
+        if price is None or price < 0:
+            raise PortfolioImportError(f"Update {index} ({ticker}): purchase price cannot be negative.")
+        fields.add("price")
+    date_key = next((key for key in ("purchasedat", "purchasedate", "acquiredat", "date") if key in values), None)
+    if date_key is not None:
+        purchased_at = _date(values[date_key])
+        if purchased_at is None:
+            raise PortfolioImportError(f"Update {index} ({ticker}): purchase date must be YYYY-MM-DD.")
+        fields.add("purchased_at")
+    note_key = next((key for key in ("note", "notes") if key in values), None)
+    if note_key is not None:
+        note = _text(values[note_key]) or ""
+        fields.add("note")
+    if not fields:
+        raise PortfolioImportError(f"Update {index} ({ticker}): no update fields were provided.")
+    return PortfolioUpdate(ticker=ticker, quantity=quantity, price=price, purchased_at=purchased_at, note=note, fields=frozenset(fields))
+
+
+def _has_position_fields(values: dict[str, Any], *, require_quantity: bool = True) -> bool:
+    if _first(values, "ticker", "symbol", "ric") is None:
+        return False
+    if not require_quantity:
+        return True
+    return _first(values, "quantity", "shares", "units", "qty") is not None
 
 
 def _first(values: dict[str, Any], *keys: str) -> Any:
