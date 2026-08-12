@@ -135,3 +135,14 @@ def test_update_mode_accepts_grouped_corrected_purchase_data(tmp_path):
         (0.4, 25.13, date(2026, 7, 9)),
         (1.0, 25.1, date(2026, 7, 9)),
     ]
+
+
+def test_key_normalization_handles_close_typos_but_not_current_price():
+    updates = parse_portfolio_update_json_message(
+        '{"stocks": [{"tiker": "AAPL", "purchse_dat": "2026-08-12", "current_price": 250}]}'
+    )
+
+    assert updates is not None
+    assert updates[0].ticker == "AAPL"
+    assert updates[0].purchased_at == date(2026, 8, 12)
+    assert updates[0].fields == frozenset({"purchased_at"})

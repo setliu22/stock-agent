@@ -7,6 +7,7 @@ from datetime import date
 import json
 import math
 import re
+from difflib import SequenceMatcher
 from typing import Any
 
 from .models import Purchase
@@ -31,6 +32,16 @@ class PortfolioUpdate:
     note: str | None = None
     fields: frozenset[str] = frozenset()
     replacement_lots: tuple[Purchase, ...] | None = None
+
+
+_KEY_ALIASES: dict[str, tuple[str, ...]] = {
+    "ticker": ("ticker", "symbol", "ric"),
+    "quantity": ("quantity", "shares", "units", "qty"),
+    "purchaseprice": ("purchaseprice", "purchasepricepershare", "averagecost", "averagecostpershare", "avgcost", "costbasis", "entryprice", "price"),
+    "purchasedat": ("purchasedat", "purchasedate", "acquiredat", "date"),
+    "note": ("note", "notes"),
+    "container": ("holdings", "positions", "purchases", "assets", "stocks", "securities", "equities", "portfolio", "data", "correctedpurchasedata", "purchasesbyticker", "lotsbyticker"),
+}
 
 
 def parse_portfolio_update_json_message(message: str) -> list[PortfolioUpdate] | None:
@@ -76,15 +87,8 @@ def parse_portfolio_update_json_message(message: str) -> list[PortfolioUpdate] |
 def _grouped_lot_records(payload: Any) -> dict[str, list[dict[str, Any]]] | None:
     if not isinstance(payload, dict):
         return None
-    normalized = {_key(key): value for key, value in payload.items()}
-    container = next(
-        (
-            normalized[key]
-            for key in ("correctedpurchasedata", "purchasesbyticker", "lotsbyticker")
-            if isinstance(normalized.get(key), dict)
-        ),
-        None,
-    )
+    normalized = _normalize_mapping(payload, "container")
+    container = next((value for key, value in normalized.items() if key in {"correctedpurchasedata", "purchasesbyticker", "lotsbyticker"} and isinstance(value, dict)), None)
     if container is None:
         return None
     grouped: dict[str, list[dict[str, Any]]] = {}
@@ -138,19 +142,9 @@ def _records(payload: Any, *, require_quantity: bool = True) -> list[dict[str, A
     if isinstance(payload, list):
         records = payload
     elif isinstance(payload, dict):
-        normalized = {_key(key): value for key, value in payload.items()}
+        normalized = _normalize_mapping(payload, "container")
         records = None
-        for key in (
-            "holdings",
-            "positions",
-            "purchases",
-            "assets",
-            "stocks",
-            "securities",
-            "equities",
-            "portfolio",
-            "data",
-        ):
+        for key in _KEY_ALIASES["container"]:
             candidate = normalized.get(key)
             if isinstance(candidate, list):
                 records = candidate
@@ -162,7 +156,7 @@ def _records(payload: Any, *, require_quantity: bool = True) -> list[dict[str, A
     if not isinstance(records, list) or not all(isinstance(item, dict) for item in records):
         raise PortfolioImportError("Portfolio positions must be a JSON list of objects.")
     if not any(
-        _has_position_fields({_key(key): value for key, value in item.items()}, require_quantity=require_quantity)
+        _has_position_fields(item, require_quantity=require_quantity)
         for item in records
     ):
         return None
@@ -170,7 +164,7 @@ def _records(payload: Any, *, require_quantity: bool = True) -> list[dict[str, A
 
 
 def _purchase_from_record(record: dict[str, Any], index: int) -> Purchase:
-    values = {_key(key): value for key, value in record.items()}
+    values = _normalize_mapping(record, "fields")
     ticker = _text(_first(values, "ticker", "symbol", "ric"))
     quantity = _number(_first(values, "quantity", "shares", "units", "qty"))
     price = _number(
@@ -203,7 +197,7 @@ def _purchase_from_record(record: dict[str, Any], index: int) -> Purchase:
 
 
 def _update_from_record(record: dict[str, Any], index: int) -> PortfolioUpdate:
-    values = {_key(key): value for key, value in record.items()}
+    values = _normalize_mapping(record, "fields")
     ticker = _text(_first(values, "ticker", "symbol", "ric"))
     if not ticker:
         raise PortfolioImportError(f"Update {index}: ticker/symbol is missing.")
@@ -226,13 +220,13 @@ def _update_from_record(record: dict[str, Any], index: int) -> PortfolioUpdate:
         if price is None or price < 0:
             raise PortfolioImportError(f"Update {index} ({ticker}): purchase price cannot be negative.")
         fields.add("price")
-    date_key = next((key for key in ("purchasedat", "purchasedate", "acquiredat", "date") if key in values), None)
+    date_key = "purchasedat" if "purchasedat" in values else None
     if date_key is not None:
         purchased_at = _date(values[date_key])
         if purchased_at is None:
             raise PortfolioImportError(f"Update {index} ({ticker}): purchase date must be YYYY-MM-DD.")
         fields.add("purchased_at")
-    note_key = next((key for key in ("note", "notes") if key in values), None)
+    note_key = "note" if "note" in values else None
     if note_key is not None:
         note = _text(values[note_key]) or ""
         fields.add("note")
@@ -242,6 +236,7 @@ def _update_from_record(record: dict[str, Any], index: int) -> PortfolioUpdate:
 
 
 def _has_position_fields(values: dict[str, Any], *, require_quantity: bool = True) -> bool:
+    values = _normalize_mapping(values, "fields")
     if _first(values, "ticker", "symbol", "ric") is None:
         return False
     if not require_quantity:
@@ -258,6 +253,42 @@ def _first(values: dict[str, Any], *keys: str) -> Any:
 
 def _key(value: Any) -> str:
     return re.sub(r"[^a-z0-9]", "", str(value).casefold())
+
+
+def _normalize_mapping(values: dict[str, Any], scope: str) -> dict[str, Any]:
+    """Normalize known key variants; reject ambiguous close matches, ignore metadata."""
+    field_aliases = tuple(
+        alias for canonical, names in _KEY_ALIASES.items() if canonical != "container" for alias in names
+    )
+    aliases = _KEY_ALIASES["container"] + field_aliases if scope == "container" else field_aliases
+    canonical_by_alias = {
+        alias: canonical
+        for canonical, names in _KEY_ALIASES.items()
+        if canonical != "container" or scope == "container"
+        for alias in names
+    }
+    output: dict[str, Any] = {}
+    for raw_key, value in values.items():
+        token = _key(raw_key)
+        if scope == "container" and token in _KEY_ALIASES["container"]:
+            output[token] = value
+            continue
+        if token in canonical_by_alias:
+            output[canonical_by_alias[token]] = value
+            continue
+        scores_by_canonical: dict[str, float] = {}
+        for alias in aliases:
+            canonical = alias if alias in _KEY_ALIASES["container"] else canonical_by_alias[alias]
+            scores_by_canonical[canonical] = max(
+                scores_by_canonical.get(canonical, 0.0),
+                SequenceMatcher(None, token, alias).ratio(),
+            )
+        candidates = sorted(scores_by_canonical.items(), key=lambda item: (item[1], item[0]), reverse=True)
+        if candidates and candidates[0][1] >= 0.88 and (
+            len(candidates) == 1 or candidates[0][1] - candidates[1][1] >= 0.06
+        ):
+            output[candidates[0][0]] = value
+    return output
 
 
 def _text(value: Any) -> str | None:
