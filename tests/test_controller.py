@@ -45,8 +45,10 @@ class _FakeCloudClient:
         self.remote_purchases = list(remote_purchases or [])
         self.created = []
         self.signed_out = False
+        self.signed_in = False
 
     def sign_in(self, _email, _password):
+        self.signed_in = True
         return CloudSession("a", "r", 9999999999, "user-1", "person@example.com")
 
     def list_portfolios(self):
@@ -91,3 +93,16 @@ def test_account_sign_in_uploads_local_holdings_when_cloud_is_empty(tmp_path, mo
 
     assert len(fake.created) == 1
     assert fake.created[0]["ticker"] == "MSFT"
+
+
+def test_post_login_purchase_syncs_before_logout(tmp_path, monkeypatch):
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
+    controller = StockAgentController(settings=settings)
+    fake = _FakeCloudClient()
+    monkeypatch.setattr("portfolio.controller.SupabasePortfolioClient.from_project", lambda _root: fake)
+    controller.account_sign_in("person@example.com", "password")
+
+    controller.record_purchase("AAPL", 2, 100, date(2026, 1, 1))
+
+    assert len(fake.created) == 1
+    assert fake.created[0]["ticker"] == "AAPL"

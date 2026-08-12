@@ -1,4 +1,4 @@
-from portfolio.cloud_portfolios import CloudPurchase
+from portfolio.cloud_portfolios import CloudPurchase, friendly_cloud_error
 from portfolio.input_normalization import normalize_research_request
 from portfolio.portfolio_chat import is_purchase_statement, parse_follow_up, parse_purchase_statement
 from portfolio.portfolio_metrics import calculate_portfolio_metrics
@@ -54,3 +54,11 @@ def test_returns_exclude_missing_initial_price():
     assert metrics.gain_loss == 25
     assert metrics.return_percent == 25
     assert metrics.excluded_purchase_count == 1
+
+
+def test_missing_supabase_schema_has_actionable_message():
+    message = friendly_cloud_error(
+        RuntimeError("Could not find the table 'public.portfolios' in the schema cache")
+    )
+
+    assert "run the complete contents of supabase/schema.sql" in message

@@ -13,6 +13,7 @@ from typing import Any
 
 from portfolio.config import save_supabase_settings
 from portfolio.controller import StockAgentController
+from portfolio.cloud_portfolios import friendly_cloud_error
 from portfolio.supabase_auth import AuthResult, SupabaseAuth, friendly_auth_error
 
 
@@ -419,7 +420,8 @@ class StockAgentApp(tk.Tk):
                     self.supabase_auth.sign_out()
                 except Exception:
                     pass
-            self.results.put(("auth_error", friendly_auth_error(exc)))
+            message = friendly_cloud_error(exc)
+            self.results.put(("auth_error", friendly_auth_error(RuntimeError(message))))
 
     def _send_event(self, _event: tk.Event) -> str:
         self._send_or_stop()

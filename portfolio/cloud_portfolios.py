@@ -42,6 +42,25 @@ class CloudRequestError(CloudPortfolioError):
     """Raised when the Supabase REST API returns an error."""
 
 
+def friendly_cloud_error(error: BaseException) -> str:
+    """Turn common first-time Supabase setup failures into actionable messages."""
+    message = str(error).strip() or type(error).__name__
+    lowered = message.casefold()
+    if "public.portfolios" in lowered and "schema cache" in lowered:
+        return (
+            "Supabase login succeeded, but the cloud portfolio tables are not set up. "
+            "Open the Supabase SQL Editor, run the complete contents of "
+            "supabase/schema.sql from this project, then sign in again."
+        )
+    if "public.purchases" in lowered and "schema cache" in lowered:
+        return (
+            "Supabase login succeeded, but the cloud purchase table is not set up. "
+            "Run the complete contents of supabase/schema.sql in the Supabase SQL Editor, "
+            "then sign in again."
+        )
+    return message
+
+
 @dataclass(slots=True)
 class CloudSession:
     access_token: str

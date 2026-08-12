@@ -29,9 +29,11 @@ class StockAgentController:
         progress_callback: Callable[[int | None, str, str], None] | None = None,
         cancel_event: object | None = None,
     ) -> str:
-        return self.agent.handle(
+        response = self.agent.handle(
             message, progress_callback=progress_callback, cancel_event=cancel_event
         )
+        self.sync_local_portfolio()
+        return response
 
     def record_purchase(
         self,
@@ -54,6 +56,7 @@ class StockAgentController:
             note=note,
         )
         self.database.record_purchase(purchase)
+        self.sync_local_portfolio()
         return purchase
 
     def holdings(self) -> list[Holding]:
@@ -128,6 +131,31 @@ class StockAgentController:
         self.cloud_client = None
         self.database.replace_with_snapshot([])
 
+    def sync_local_portfolio(self) -> int:
+        """Upload local purchases not yet present in the signed-in account."""
+        if self.cloud_client is None or not self.cloud_client.signed_in:
+            return 0
+        portfolio = self._account_portfolio(self.cloud_client)
+        remote = self.cloud_client.list_purchases(portfolio.id)
+        known = {_purchase_fingerprint(item) for item in remote}
+        created = 0
+        for purchase in self.database.list_purchases():
+            fingerprint = _local_purchase_fingerprint(purchase)
+            if fingerprint in known:
+                continue
+            self.cloud_client.create_purchase(
+                portfolio_id=portfolio.id,
+                security_name=purchase.ticker,
+                ticker=purchase.ticker,
+                quantity=purchase.quantity,
+                purchase_price=purchase.price,
+                purchased_at=purchase.purchased_at.isoformat(),
+                note=purchase.note,
+            )
+            known.add(fingerprint)
+            created += 1
+        return created
+
     @staticmethod
     def _account_portfolio(client: SupabasePortfolioClient):
         portfolios = client.list_portfolios()
@@ -155,3 +183,23 @@ def _local_purchases(rows: list[CloudPurchase]) -> list[Purchase]:
             )
         )
     return purchases
+
+
+def _local_purchase_fingerprint(purchase: Purchase) -> tuple[object, ...]:
+    return (
+        purchase.ticker.upper(),
+        float(purchase.quantity),
+        float(purchase.price),
+        purchase.purchased_at.isoformat(),
+        purchase.note.strip(),
+    )
+
+
+def _purchase_fingerprint(purchase: CloudPurchase) -> tuple[object, ...]:
+    return (
+        (purchase.ticker or "").upper(),
+        float(purchase.quantity or 0),
+        float(purchase.purchase_price or 0),
+        purchase.purchased_at or "",
+        purchase.note.strip(),
+    )
