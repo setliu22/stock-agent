@@ -236,7 +236,7 @@ class StockAgentApp(tk.Tk):
         headings = {
             "ticker": "Ticker",
             "quantity": "Shares",
-            "average_cost": "Average cost",
+            "average_cost": "Avg. purchase price",
             "total_cost": "Total cost",
             "current_price": "Current price",
             "market_value": "Total value",
