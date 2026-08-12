@@ -74,6 +74,7 @@ class StockAgentController:
                 if price is not None
                 else None
             )
+            market_value = price * holding.quantity if price is not None else None
             snapshots.append(
                 HoldingSnapshot(
                     ticker=holding.ticker,
@@ -81,6 +82,7 @@ class StockAgentController:
                     average_cost=holding.average_cost,
                     total_cost=holding.total_cost,
                     current_price=price,
+                    market_value=market_value,
                     gain_loss=gain_loss,
                 )
             )

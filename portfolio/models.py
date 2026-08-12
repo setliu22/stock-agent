@@ -30,4 +30,5 @@ class HoldingSnapshot:
     average_cost: float
     total_cost: float
     current_price: float | None
+    market_value: float | None
     gain_loss: float | None

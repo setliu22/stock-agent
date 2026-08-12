@@ -223,16 +223,34 @@ class StockAgentApp(tk.Tk):
             command=self.prepare_event_risk_prompt,
         ).pack(side="left")
 
-        columns = ("ticker", "quantity", "average_cost", "total_cost", "gain_loss")
+        columns = (
+            "ticker",
+            "quantity",
+            "average_cost",
+            "total_cost",
+            "current_price",
+            "market_value",
+            "gain_loss",
+        )
         self.holdings_tree = ttk.Treeview(self.holdings_tab, columns=columns, show="headings")
         headings = {
             "ticker": "Ticker",
             "quantity": "Shares",
             "average_cost": "Average cost",
             "total_cost": "Total cost",
+            "current_price": "Current price",
+            "market_value": "Total value",
             "gain_loss": "Gain/loss",
         }
-        widths = {"ticker": 130, "quantity": 120, "average_cost": 160, "total_cost": 160, "gain_loss": 160}
+        widths = {
+            "ticker": 110,
+            "quantity": 100,
+            "average_cost": 140,
+            "total_cost": 140,
+            "current_price": 140,
+            "market_value": 140,
+            "gain_loss": 140,
+        }
         for column in columns:
             self.holdings_tree.heading(column, text=headings[column])
             self.holdings_tree.column(column, width=widths[column], anchor="center")
@@ -760,6 +778,16 @@ class StockAgentApp(tk.Tk):
                     f"{holding.quantity:g}",
                     f"${holding.average_cost:,.2f}",
                     f"${holding.total_cost:,.2f}",
+                    (
+                        f"${holding.current_price:,.2f}"
+                        if getattr(holding, "current_price", None) is not None
+                        else "N/A"
+                    ),
+                    (
+                        f"${holding.market_value:,.2f}"
+                        if getattr(holding, "market_value", None) is not None
+                        else "N/A"
+                    ),
                     (
                         f"${holding.gain_loss:+,.2f}"
                         if getattr(holding, "gain_loss", None) is not None

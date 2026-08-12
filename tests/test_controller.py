@@ -38,6 +38,7 @@ def test_controller_holding_snapshots_calculate_gain(tmp_path, monkeypatch) -> N
     snapshots = controller.holding_snapshots()
 
     assert snapshots[0].current_price == 125.0
+    assert snapshots[0].market_value == 250.0
     assert snapshots[0].gain_loss == 50.0
 
 
