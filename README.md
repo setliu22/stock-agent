@@ -56,6 +56,15 @@ After the first Git checkout or manual update, double-click:
 Update Stock Agent.command
 ```
 
+For a more obvious one-click entry point, double-click:
+
+```text
+Update and Open Stock Agent.command
+```
+
+It runs the same safe GitHub update, reinstalls dependencies, rebuilds the app,
+and opens Stock Agent when the update succeeds.
+
 The updater refuses to overwrite local source edits, downloads a safe
 fast-forward of the current branch, then reinstalls dependencies, runs the test
 suite, and rebuilds `Stock Agent.app`. Existing `.env` settings and portfolio
