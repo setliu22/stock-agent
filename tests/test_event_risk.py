@@ -7,7 +7,7 @@ from portfolio.agent import StockAgent
 from portfolio.company_resolver import ResolvedInstrument
 from portfolio.config import Settings
 from portfolio.database import PortfolioDatabase
-from portfolio.event_risk import build_portfolio_review_plan, score_portfolio_event_risk
+from portfolio.event_risk import build_portfolio_review_plan, run_portfolio_event_risk_review, score_portfolio_event_risk
 from portfolio.models import Holding
 
 
@@ -43,6 +43,26 @@ def test_portfolio_review_plan_is_fixed_and_validated():
     assert plan.entities == ["AAPL", "MSFT"]
     assert plan.topics == ["valuation", "estimates", "price", "risk", "news", "events"]
     assert plan.investment_horizon == "short_term"
+
+
+def test_event_review_batches_more_than_eight_holdings(tmp_path, monkeypatch):
+    settings = SimpleNamespace(groq_api_key=None, groq_model="test-model")
+    holdings = [Holding(f"TICK{i}", 1, 100, 100) for i in range(9)]
+    calls = []
+
+    def fake_run(plan, *_args, **_kwargs):
+        calls.append(plan.entities)
+        return SimpleNamespace(
+            resolved=[ResolvedInstrument(ticker, ticker, ticker, f"{ticker}.O", ticker) for ticker in plan.entities],
+            tables={},
+            metrics={f"{ticker}.O:evidence_family_count": 1 for ticker in plan.entities},
+        )
+
+    monkeypatch.setattr("portfolio.lseg_research.run_research", fake_run)
+    review = run_portfolio_event_risk_review(settings, holdings)
+
+    assert [len(batch) for batch in calls] == [8, 1]
+    assert [item.ticker for item in review.holdings] == [f"TICK{i}" for i in range(9)]
 
 
 def test_event_risk_flags_converging_signals_without_llm():

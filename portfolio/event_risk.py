@@ -97,7 +97,7 @@ def build_portfolio_review_plan(tickers: Iterable[str]) -> Any:
     if not clean:
         raise ValueError("No holdings are available for event-risk review.")
     if len(clean) > 8:
-        clean = clean[:8]
+        raise ValueError("A portfolio review batch cannot contain more than eight holdings.")
     return ResearchPlan(
         mode="compare" if len(clean) > 1 else "company",
         workflow="company_compare" if len(clean) > 1 else "company_deep_dive",
@@ -229,12 +229,30 @@ def run_portfolio_event_risk_review(
             holdings=[],
             generated_at=pd.Timestamp.now(tz="UTC").isoformat(),
         )
-    plan = build_portfolio_review_plan(item.ticker for item in holdings)
     if progress_callback:
-        progress_callback(5, "Preparing portfolio review", f"Checking {len(plan.entities)} holding(s).")
-    result = run_research(plan, settings, progress_callback=progress_callback, cancel_event=cancel_event)
-    review = score_portfolio_event_risk(holdings, result)
-    review.llm_summary = _llm_summary(review, settings)
+        progress_callback(5, "Preparing portfolio review", f"Checking {len(holdings)} holding(s).")
+    reviews: list[PortfolioEventRiskReview] = []
+    for start in range(0, len(holdings), 8):
+        batch = holdings[start : start + 8]
+        plan = build_portfolio_review_plan(item.ticker for item in batch)
+        if progress_callback:
+            progress_callback(
+                min(90, 5 + int(start / max(len(holdings), 1) * 85)),
+                "Preparing portfolio review",
+                f"Checking holdings {start + 1}-{start + len(batch)} of {len(holdings)}.",
+            )
+        result = run_research(plan, settings, progress_callback=progress_callback, cancel_event=cancel_event)
+        review = score_portfolio_event_risk(batch, result)
+        review.llm_summary = _llm_summary(review, settings)
+        reviews.append(review)
+    review = PortfolioEventRiskReview(
+        holdings=[item for batch_review in reviews for item in batch_review.holdings],
+        generated_at=pd.Timestamp.now(tz="UTC").isoformat(),
+        horizon_days=90,
+        llm_summary="\n".join(
+            summary for summary in (item.llm_summary for item in reviews) if summary
+        ) or None,
+    )
     if progress_callback:
         progress_callback(100, "Portfolio review complete", "Event and estimate evidence was scored.")
     return review
