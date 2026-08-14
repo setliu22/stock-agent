@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 import queue
 import threading
 import time
@@ -75,11 +75,21 @@ class PurchaseDialog(tk.Toplevel):
 
 
 class StockAgentApp(tk.Tk):
+    BG = "#0B0D10"
+    SURFACE = "#13171C"
+    SURFACE_ALT = "#181D23"
+    BORDER = "#2A3038"
+    TEXT = "#F5F5F7"
+    MUTED = "#9DA5B0"
+    ACCENT = "#55C2D9"
+    POSITIVE = "#34C759"
+    NEGATIVE = "#FF453A"
+
     def __init__(self) -> None:
         super().__init__()
         self.title("Stock Agent")
-        self.geometry("1180x760")
-        self.minsize(900, 620)
+        self.geometry("1280x820")
+        self.minsize(1100, 700)
         self.controller = StockAgentController()
         self.supabase_auth: SupabaseAuth | None = None
         self.auth_busy = False
@@ -103,28 +113,56 @@ class StockAgentApp(tk.Tk):
     def _configure_style(self) -> None:
         style = ttk.Style(self)
         try:
-            style.theme_use("aqua")
+            style.theme_use("clam")
         except tk.TclError:
             pass
-        style.configure("Title.TLabel", font=("Helvetica", 20, "bold"))
+        self.configure(background=self.BG)
+        style.configure("TFrame", background=self.BG)
+        style.configure("TLabel", background=self.BG, foreground=self.TEXT, font=("Helvetica", 12))
+        style.configure("Title.TLabel", background=self.BG, foreground=self.TEXT, font=("Helvetica", 24, "bold"))
+        style.configure("Section.TLabel", background=self.BG, foreground=self.TEXT, font=("Helvetica", 15, "bold"))
+        style.configure("SurfaceSection.TLabel", background=self.SURFACE, foreground=self.TEXT, font=("Helvetica", 14, "bold"))
+        style.configure("Muted.TLabel", background=self.BG, foreground=self.MUTED, font=("Helvetica", 11))
+        style.configure("Surface.TFrame", background=self.SURFACE)
+        style.configure("MetricLabel.TLabel", background=self.SURFACE, foreground=self.MUTED, font=("Helvetica", 10))
+        style.configure("MetricValue.TLabel", background=self.SURFACE, foreground=self.TEXT, font=("Helvetica", 18, "bold"))
+        style.configure("Positive.MetricValue.TLabel", background=self.SURFACE, foreground=self.POSITIVE, font=("Helvetica", 18, "bold"))
+        style.configure("Negative.MetricValue.TLabel", background=self.SURFACE, foreground=self.NEGATIVE, font=("Helvetica", 18, "bold"))
         style.configure("ProgressTitle.TLabel", font=("Helvetica", 12, "bold"))
-        style.configure("ProgressDetail.TLabel", font=("Helvetica", 10))
-        style.configure("Treeview", rowheight=27)
-        style.configure("Treeview.Heading", font=("Helvetica", 12, "bold"))
+        style.configure("ProgressDetail.TLabel", foreground=self.MUTED, font=("Helvetica", 10))
+        style.configure("TButton", background=self.SURFACE_ALT, foreground=self.TEXT, bordercolor=self.BORDER, padding=(14, 8), font=("Helvetica", 11))
+        style.map("TButton", background=[("active", "#242B33")], foreground=[("disabled", "#666D76")])
+        style.configure("Accent.TButton", background=self.ACCENT, foreground="#071014", bordercolor=self.ACCENT, font=("Helvetica", 11, "bold"))
+        style.map("Accent.TButton", background=[("active", "#74D0E1")])
+        style.configure("Segment.TButton", padding=(12, 5), font=("Helvetica", 10))
+        style.configure("Selected.Segment.TButton", background="#173E48", foreground=self.ACCENT, bordercolor=self.ACCENT, padding=(12, 5), font=("Helvetica", 10, "bold"))
+        style.configure("TNotebook", background=self.BG, borderwidth=0)
+        style.configure("TNotebook.Tab", background=self.BG, foreground=self.MUTED, padding=(20, 10), font=("Helvetica", 11))
+        style.map("TNotebook.Tab", background=[("selected", self.BG)], foreground=[("selected", self.ACCENT), ("active", self.TEXT)])
+        style.configure("Treeview", background=self.SURFACE, fieldbackground=self.SURFACE, foreground=self.TEXT, bordercolor=self.BORDER, rowheight=38, font=("Helvetica", 11))
+        style.map("Treeview", background=[("selected", "#204A55")], foreground=[("selected", self.TEXT)])
+        style.configure("Treeview.Heading", background=self.SURFACE_ALT, foreground=self.MUTED, bordercolor=self.BORDER, relief="flat", font=("Helvetica", 10, "bold"), padding=(8, 8))
+        style.map("Treeview.Heading", background=[("active", "#20262D")])
+        style.configure("TEntry", fieldbackground=self.SURFACE_ALT, foreground=self.TEXT, insertcolor=self.TEXT, bordercolor=self.BORDER, padding=8)
+        style.map("TEntry", bordercolor=[("focus", self.ACCENT)])
+        style.configure("TCheckbutton", background=self.BG, foreground=self.TEXT, font=("Helvetica", 11))
+        style.map("TCheckbutton", background=[("active", self.BG)], foreground=[("active", self.TEXT)])
+        style.configure("TSeparator", background=self.BORDER)
+        style.configure("Horizontal.TProgressbar", background=self.ACCENT, troughcolor=self.SURFACE_ALT, bordercolor=self.BORDER)
 
     def _build_ui(self) -> None:
-        outer = ttk.Frame(self, padding=(18, 12, 18, 18))
+        outer = ttk.Frame(self, padding=(24, 14, 24, 24))
         outer.pack(fill="both", expand=True)
-        ttk.Label(outer, text="Stock Agent", style="Title.TLabel").pack(anchor="w", pady=(0, 10))
+        ttk.Label(outer, text="Stock Agent", style="Section.TLabel").pack(anchor="w", pady=(0, 8))
 
         notebook = ttk.Notebook(outer)
         notebook.pack(fill="both", expand=True)
         self.notebook = notebook
         self.chat_tab = ttk.Frame(notebook, padding=16)
-        self.holdings_tab = ttk.Frame(notebook, padding=16)
+        self.holdings_tab = ttk.Frame(notebook, padding=(4, 18, 4, 4))
         self.account_tab = ttk.Frame(notebook, padding=16)
         notebook.add(self.chat_tab, text="Chat")
-        notebook.add(self.holdings_tab, text="Portfolio Snapshot")
+        notebook.add(self.holdings_tab, text="Portfolio")
         notebook.add(self.account_tab, text="Account")
         self._build_chat_tab()
         self._build_holdings_tab()
@@ -149,8 +187,8 @@ class StockAgentApp(tk.Tk):
             transcript_frame,
             wrap="word",
             font=("Menlo", 13),
-            background="#171717",
-            foreground="#f2f2f2",
+            background=self.SURFACE,
+            foreground=self.TEXT,
             insertbackground="#ffffff",
             padx=14,
             pady=12,
@@ -197,8 +235,8 @@ class StockAgentApp(tk.Tk):
             height=4,
             wrap="word",
             font=("Menlo", 13),
-            background="#171717",
-            foreground="#f2f2f2",
+            background=self.SURFACE,
+            foreground=self.TEXT,
             insertbackground="#ffffff",
             padx=10,
             pady=8,
@@ -213,15 +251,58 @@ class StockAgentApp(tk.Tk):
         self.input_box.focus_set()
 
     def _build_holdings_tab(self) -> None:
-        toolbar = ttk.Frame(self.holdings_tab)
-        toolbar.pack(fill="x", pady=(0, 12))
-        ttk.Button(toolbar, text="Refresh", command=self.refresh_holdings).pack(side="left")
-        ttk.Button(toolbar, text="Record purchase", command=self.record_purchase).pack(side="left", padx=8)
+        header = ttk.Frame(self.holdings_tab)
+        header.pack(fill="x", pady=(0, 14))
+        title_block = ttk.Frame(header)
+        title_block.pack(side="left")
+        ttk.Label(title_block, text="Portfolio", style="Title.TLabel").pack(anchor="w")
+        self.portfolio_status = tk.StringVar(value="Live prices have not been refreshed")
+        ttk.Label(title_block, textvariable=self.portfolio_status, style="Muted.TLabel").pack(anchor="w", pady=(2, 0))
+
+        toolbar = ttk.Frame(header)
+        toolbar.pack(side="right", anchor="e")
+        ttk.Button(toolbar, text="Record purchase", command=self.record_purchase).pack(side="left")
         ttk.Button(
             toolbar,
             text="Review event risk",
             command=self.prepare_event_risk_prompt,
-        ).pack(side="left")
+        ).pack(side="left", padx=8)
+        ttk.Button(toolbar, text="Refresh prices", style="Accent.TButton", command=self.refresh_holdings).pack(side="left")
+
+        self.portfolio_value = tk.StringVar(value="—")
+        self.portfolio_cost = tk.StringVar(value="—")
+        self.portfolio_gain = tk.StringVar(value="—")
+        self.portfolio_return = tk.StringVar(value="—")
+        summary = ttk.Frame(self.holdings_tab, style="Surface.TFrame", padding=(20, 16))
+        summary.pack(fill="x", pady=(0, 14))
+        for column in range(4):
+            summary.columnconfigure(column, weight=1, uniform="metric")
+        self._metric(summary, 0, "Portfolio value", self.portfolio_value)
+        self._metric(summary, 1, "Invested", self.portfolio_cost)
+        self.portfolio_gain_label = self._metric(summary, 2, "Total gain", self.portfolio_gain)
+        self.portfolio_return_label = self._metric(summary, 3, "Total return", self.portfolio_return)
+
+        performance = ttk.Frame(self.holdings_tab, style="Surface.TFrame", padding=(18, 14))
+        performance.pack(fill="x", pady=(0, 14))
+        performance_header = ttk.Frame(performance, style="Surface.TFrame")
+        performance_header.pack(fill="x", pady=(0, 8))
+        ttk.Label(performance_header, text="Performance", style="SurfaceSection.TLabel").pack(side="left")
+        self.period_change = tk.StringVar(value="History unavailable")
+        self.period_change_label = ttk.Label(performance_header, textvariable=self.period_change, style="MetricValue.TLabel")
+        self.period_change_label.pack(side="left", padx=(16, 0))
+        segment = ttk.Frame(performance_header, style="Surface.TFrame")
+        segment.pack(side="right")
+        self.period_buttons: dict[int, ttk.Button] = {}
+        for sessions, label in ((3, "3 days"), (5, "1 week")):
+            button = ttk.Button(segment, text=label, style="Segment.TButton", command=lambda value=sessions: self._set_performance_period(value))
+            button.pack(side="left", padx=(6, 0))
+            self.period_buttons[sessions] = button
+        self.performance_canvas = tk.Canvas(performance, height=118, background=self.SURFACE, highlightthickness=0)
+        self.performance_canvas.pack(fill="x")
+        self.performance_canvas.bind("<Configure>", lambda _event: self._draw_performance())
+        self.performance_history = []
+        self.performance_sessions = 3
+        self._set_performance_period(3)
 
         columns = (
             "ticker",
@@ -231,6 +312,7 @@ class StockAgentApp(tk.Tk):
             "current_price",
             "market_value",
             "gain_loss",
+            "return_percent",
         )
         self.holdings_tree = ttk.Treeview(self.holdings_tab, columns=columns, show="headings")
         headings = {
@@ -241,6 +323,7 @@ class StockAgentApp(tk.Tk):
             "current_price": "Current price",
             "market_value": "Total value",
             "gain_loss": "Gain/loss",
+            "return_percent": "Return",
         }
         widths = {
             "ticker": 110,
@@ -250,15 +333,26 @@ class StockAgentApp(tk.Tk):
             "current_price": 140,
             "market_value": 140,
             "gain_loss": 140,
+            "return_percent": 110,
         }
         for column in columns:
             self.holdings_tree.heading(column, text=headings[column])
             self.holdings_tree.column(column, width=widths[column], anchor="center")
         scrollbar = ttk.Scrollbar(self.holdings_tab, orient="vertical", command=self.holdings_tree.yview)
         self.holdings_tree.configure(yscrollcommand=scrollbar.set)
+        self.holdings_tree.tag_configure("positive", foreground=self.POSITIVE)
+        self.holdings_tree.tag_configure("negative", foreground=self.NEGATIVE)
         self.holdings_tree.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
         self.refresh_holdings()
+
+    def _metric(self, parent: ttk.Frame, column: int, title: str, variable: tk.StringVar) -> ttk.Label:
+        cell = ttk.Frame(parent, style="Surface.TFrame", padding=(12, 0))
+        cell.grid(row=0, column=column, sticky="nsew")
+        ttk.Label(cell, text=title, style="MetricLabel.TLabel").pack(anchor="w")
+        value = ttk.Label(cell, textvariable=variable, style="MetricValue.TLabel")
+        value.pack(anchor="w", pady=(5, 0))
+        return value
 
     def _build_account_tab(self) -> None:
         settings = self.controller.settings
@@ -768,11 +862,39 @@ class StockAgentApp(tk.Tk):
                 else self.controller.holdings()
             )
         except Exception:
+            self.portfolio_status.set("Price refresh failed")
             return
+        total_cost = sum(holding.total_cost for holding in holdings)
+        priced = [
+            holding
+            for holding in holdings
+            if getattr(holding, "market_value", None) is not None
+        ]
+        total_value = sum(holding.market_value for holding in priced)
+        total_gain = sum(holding.gain_loss for holding in priced)
+        priced_cost = sum(holding.total_cost for holding in priced)
+        total_return = total_gain / priced_cost * 100 if priced_cost else None
+
+        self.portfolio_cost.set(f"${total_cost:,.2f}")
+        self.portfolio_value.set(f"${total_value:,.2f}" if priced else "—")
+        self.portfolio_gain.set(f"${total_gain:+,.2f}" if priced else "—")
+        self.portfolio_return.set(f"{total_return:+,.2f}%" if total_return is not None else "—")
+        tone = "Positive.MetricValue.TLabel" if total_gain >= 0 else "Negative.MetricValue.TLabel"
+        if not priced:
+            tone = "MetricValue.TLabel"
+        self.portfolio_gain_label.configure(style=tone)
+        self.portfolio_return_label.configure(style=tone)
+
         for holding in holdings:
+            gain_loss = getattr(holding, "gain_loss", None)
+            return_percent = getattr(holding, "return_percent", None)
+            row_tag = "positive" if gain_loss is not None and gain_loss >= 0 else "negative"
+            if gain_loss is None:
+                row_tag = ""
             self.holdings_tree.insert(
                 "",
                 "end",
+                tags=(row_tag,) if row_tag else (),
                 values=(
                     holding.ticker,
                     f"{holding.quantity:g}",
@@ -790,11 +912,83 @@ class StockAgentApp(tk.Tk):
                     ),
                     (
                         f"${holding.gain_loss:+,.2f}"
-                        if getattr(holding, "gain_loss", None) is not None
+                        if gain_loss is not None
                         else "N/A"
                     ),
+                    f"{return_percent:+,.2f}%" if return_percent is not None else "N/A",
                 ),
             )
+
+        if refresh_prices:
+            try:
+                self.performance_history = self.controller.portfolio_history()
+            except Exception:
+                self.performance_history = []
+            self.portfolio_status.set(
+                f"Prices refreshed {datetime.now().strftime('%-I:%M %p')}"
+                if holdings
+                else "No holdings yet"
+            )
+        elif not holdings:
+            self.performance_history = []
+            self.portfolio_status.set("No holdings yet")
+        else:
+            self.portfolio_status.set("Refresh prices to update market values")
+        self._draw_performance()
+
+    def _set_performance_period(self, sessions: int) -> None:
+        self.performance_sessions = sessions
+        for value, button in self.period_buttons.items():
+            button.configure(style="Selected.Segment.TButton" if value == sessions else "Segment.TButton")
+        self._draw_performance()
+
+    def _draw_performance(self) -> None:
+        if not hasattr(self, "performance_canvas"):
+            return
+        canvas = self.performance_canvas
+        canvas.delete("all")
+        points = self.performance_history[-(self.performance_sessions + 1):]
+        width = max(canvas.winfo_width(), 640)
+        height = max(canvas.winfo_height(), 118)
+        if len(points) < 2:
+            self.period_change.set("History unavailable")
+            self.period_change_label.configure(style="MetricValue.TLabel")
+            canvas.create_text(
+                18,
+                height / 2,
+                anchor="w",
+                text="Not enough market history for this portfolio",
+                fill=self.MUTED,
+                font=("Helvetica", 11),
+            )
+            return
+
+        start_value = points[0].market_value
+        end_value = points[-1].market_value
+        change = end_value - start_value
+        percent = change / start_value * 100 if start_value else 0.0
+        color = self.POSITIVE if change >= 0 else self.NEGATIVE
+        self.period_change.set(f"{change:+,.2f}  {percent:+.2f}%")
+        self.period_change_label.configure(
+            style="Positive.MetricValue.TLabel" if change >= 0 else "Negative.MetricValue.TLabel"
+        )
+
+        left, right, top, bottom = 18, width - 18, 10, height - 24
+        values = [point.market_value for point in points]
+        low, high = min(values), max(values)
+        span = high - low or 1.0
+        for fraction in (0.0, 0.5, 1.0):
+            y = top + (bottom - top) * fraction
+            canvas.create_line(left, y, right, y, fill=self.BORDER, width=1)
+        coordinates: list[float] = []
+        for index, point in enumerate(points):
+            x = left + (right - left) * index / max(1, len(points) - 1)
+            y = bottom - (point.market_value - low) / span * (bottom - top)
+            coordinates.extend((x, y))
+        canvas.create_line(*coordinates, fill=color, width=2, smooth=True)
+        canvas.create_oval(coordinates[-2] - 3, coordinates[-1] - 3, coordinates[-2] + 3, coordinates[-1] + 3, fill=color, outline=color)
+        canvas.create_text(left, height - 8, anchor="w", text=points[0].as_of.strftime("%b %-d"), fill=self.MUTED, font=("Helvetica", 9))
+        canvas.create_text(right, height - 8, anchor="e", text=points[-1].as_of.strftime("%b %-d"), fill=self.MUTED, font=("Helvetica", 9))
 
 
 def main() -> None:

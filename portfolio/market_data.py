@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
 from .company_resolver import company_name_to_ticker, extract_security_reference, is_explicit_ticker
@@ -57,6 +58,24 @@ def current_price(ticker: str) -> float | None:
     if history is None or history.empty or "Close" not in history.columns:
         return None
     return _number(history["Close"].dropna().iloc[-1])
+
+
+def recent_closes(ticker: str, period: str = "1mo") -> list[tuple[date, float]]:
+    """Return recent unadjusted daily closes in chronological order."""
+    try:
+        import yfinance as yf
+    except Exception as exc:
+        raise RuntimeError("yfinance is not installed.") from exc
+
+    history = yf.Ticker(ticker).history(period=period, interval="1d", auto_adjust=False)
+    if history is None or history.empty or "Close" not in history.columns:
+        return []
+    closes: list[tuple[date, float]] = []
+    for timestamp, value in history["Close"].dropna().items():
+        parsed = _number(value)
+        if parsed is not None and parsed >= 0:
+            closes.append((timestamp.date(), parsed))
+    return closes
 
 
 def snapshot(query: str) -> MarketSnapshot:

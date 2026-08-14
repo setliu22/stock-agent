@@ -32,3 +32,10 @@ class HoldingSnapshot:
     current_price: float | None
     market_value: float | None
     gain_loss: float | None
+    return_percent: float | None
+
+
+@dataclass(frozen=True)
+class PortfolioHistoryPoint:
+    as_of: date
+    market_value: float

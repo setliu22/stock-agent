@@ -40,6 +40,30 @@ def test_controller_holding_snapshots_calculate_gain(tmp_path, monkeypatch) -> N
     assert snapshots[0].current_price == 125.0
     assert snapshots[0].market_value == 250.0
     assert snapshots[0].gain_loss == 50.0
+    assert snapshots[0].return_percent == 25.0
+
+
+def test_controller_builds_common_session_portfolio_history(tmp_path, monkeypatch) -> None:
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
+    controller = StockAgentController(settings=settings)
+    controller.database.record_purchases(
+        [
+            Purchase("AAPL", 2, 100, date(2026, 1, 1)),
+            Purchase("MSFT", 1, 200, date(2026, 1, 1)),
+        ]
+    )
+    histories = {
+        "AAPL": [(date(2026, 8, 10), 110), (date(2026, 8, 11), 115)],
+        "MSFT": [(date(2026, 8, 10), 210), (date(2026, 8, 11), 220)],
+    }
+    monkeypatch.setattr("portfolio.controller.recent_closes", lambda ticker: histories[ticker])
+
+    points = controller.portfolio_history()
+
+    assert [(point.as_of, point.market_value) for point in points] == [
+        (date(2026, 8, 10), 430),
+        (date(2026, 8, 11), 450),
+    ]
 
 
 class _FakeCloudClient:

@@ -12,8 +12,8 @@ from .config import Settings, get_settings
 from .cloud_portfolios import CloudPurchase, SupabasePortfolioClient
 from .database import PortfolioDatabase
 from .event_risk import run_portfolio_event_risk_review
-from .market_data import current_price
-from .models import Holding, HoldingSnapshot, Purchase
+from .market_data import current_price, recent_closes
+from .models import Holding, HoldingSnapshot, PortfolioHistoryPoint, Purchase
 
 
 class StockAgentController:
@@ -75,6 +75,11 @@ class StockAgentController:
                 else None
             )
             market_value = price * holding.quantity if price is not None else None
+            return_percent = (
+                gain_loss / holding.total_cost * 100
+                if gain_loss is not None and holding.total_cost
+                else None
+            )
             snapshots.append(
                 HoldingSnapshot(
                     ticker=holding.ticker,
@@ -84,9 +89,39 @@ class StockAgentController:
                     current_price=price,
                     market_value=market_value,
                     gain_loss=gain_loss,
+                    return_percent=return_percent,
                 )
             )
         return snapshots
+
+    def portfolio_history(self) -> list[PortfolioHistoryPoint]:
+        """Value current holdings across recent common market sessions."""
+        holdings = self.holdings()
+        if not holdings:
+            return []
+        closes_by_ticker: dict[str, dict[date, float]] = {}
+        for holding in holdings:
+            try:
+                closes = recent_closes(holding.ticker)
+            except Exception:
+                return []
+            if not closes:
+                return []
+            closes_by_ticker[holding.ticker] = dict(closes)
+
+        common_dates = set.intersection(
+            *(set(closes) for closes in closes_by_ticker.values())
+        )
+        return [
+            PortfolioHistoryPoint(
+                as_of=as_of,
+                market_value=sum(
+                    closes_by_ticker[holding.ticker][as_of] * holding.quantity
+                    for holding in holdings
+                ),
+            )
+            for as_of in sorted(common_dates)
+        ]
 
     def holdings_text(self) -> str:
         return self.agent.show_holdings()
