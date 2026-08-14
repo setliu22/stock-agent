@@ -1845,41 +1845,134 @@ def _strip_html(value: str) -> str:
     return re.sub(r"\s+", " ", html.unescape(text)).strip()
 
 
+_COMPANY_SUFFIXES = {
+    "co", "company", "corp", "corporation", "inc", "incorporated", "limited",
+    "ltd", "plc",
+}
+
+
+def _news_entity_terms(
+    resolved: ResolvedInstrument,
+    *,
+    include_ticker: bool = True,
+) -> tuple[str, ...]:
+    """Build conservative company references for validating tagged news."""
+    terms: list[str] = []
+    ticker = re.sub(r"[^a-z0-9]", "", resolved.ticker.casefold())
+    for candidate in (resolved.company_name, resolved.query, resolved.original):
+        cleaned = re.sub(r"[^a-z0-9]+", " ", str(candidate or "").casefold()).strip()
+        if not include_ticker and re.sub(r"[^a-z0-9]", "", cleaned) == ticker:
+            continue
+        if len(cleaned) >= 4 and cleaned not in terms:
+            terms.append(cleaned)
+        words = cleaned.split()
+        while words and words[-1] in _COMPANY_SUFFIXES:
+            words.pop()
+        shortened = " ".join(words)
+        if len(shortened) >= 4 and shortened not in terms:
+            terms.append(shortened)
+    if include_ticker:
+        if len(ticker) >= 3 and ticker not in terms:
+            terms.append(ticker)
+    return tuple(terms)
+
+
+def _contains_news_entity(text: str, terms: Iterable[str]) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", " ", str(text).casefold()).strip()
+    return any(
+        re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", normalized)
+        for term in terms
+    )
+
+
+def _company_story_excerpt(text: str, terms: Iterable[str], limit: int = 600) -> str | None:
+    """Return only sentences that explicitly discuss the selected company."""
+    cleaned = _strip_html(text)
+    sentences = re.split(r"(?<=[.!?])\s+|\s*[\r\n]+\s*", cleaned)
+    matches: list[str] = []
+    for sentence in sentences:
+        sentence = re.sub(r"\s+", " ", sentence).strip()
+        if len(sentence.split()) < 4 or not _contains_news_entity(sentence, terms):
+            continue
+        if len(sentence) > limit:
+            positions = [
+                match.start()
+                for term in terms
+                if (match := re.search(re.escape(term), sentence, flags=re.IGNORECASE))
+            ]
+            if positions:
+                start = max(0, min(positions) - limit // 3)
+                sentence = sentence[start : start + limit].strip()
+        matches.append(sentence)
+        if len(matches) >= 2:
+            break
+    if not matches:
+        return None
+    excerpt = " ".join(matches)
+    return excerpt if len(excerpt) <= limit else excerpt[: limit - 1].rstrip() + "…"
+
+
 def _retrieve_news_stories(ld: Any, client: _LSEGClient, result: ResearchResult, resolved: ResolvedInstrument, limit: int) -> None:
     headlines = result.tables.get(f"news:{resolved.ric}", pd.DataFrame())
     if headlines.empty:
         return
     story_col = _story_id_column(headlines)
     headline_col = _headline_column(headlines)
-    if story_col is None:
+    headline_terms = _news_entity_terms(resolved)
+    story_terms = _news_entity_terms(resolved, include_ticker=False)
+    if not headline_terms:
+        result.tables[f"news:{resolved.ric}"] = headlines.iloc[0:0].copy()
         return
+    target_count = max(1, int(limit))
+    fetch_budget = min(12, max(8, target_count * 4))
     records: list[dict[str, Any]] = []
+    accepted_headlines: list[dict[str, Any]] = []
     seen: set[str] = set()
+    fetched = 0
     for _, row in headlines.iterrows():
-        story_value = row.get(story_col)
-        story_id = "" if _missing(story_value) else str(story_value).strip()
-        if not story_id or story_id in seen:
-            continue
-        seen.add(story_id)
-        story = client.call(
-            f"News story {resolved.ric} {story_id}",
-            lambda sid=story_id: ld.news.get_story(sid),
-            warn=False,
-            request_metadata={"operation": "news.get_story", "ric": resolved.ric, "story_id": story_id},
+        headline = (
+            "" if headline_col is None or _missing(row.get(headline_col))
+            else str(row.get(headline_col)).strip()
         )
-        if story is _CALL_TIMED_OUT or not story:
+        direct_headline = _contains_news_entity(headline, headline_terms)
+        story_value = row.get(story_col) if story_col is not None else None
+        story_id = "" if _missing(story_value) else str(story_value).strip()
+        excerpt: str | None = None
+        if story_id and story_id not in seen and fetched < fetch_budget:
+            seen.add(story_id)
+            fetched += 1
+            story = client.call(
+                f"News story {resolved.ric} {story_id}",
+                lambda sid=story_id: ld.news.get_story(sid),
+                warn=False,
+                request_metadata={"operation": "news.get_story", "ric": resolved.ric, "story_id": story_id},
+            )
+            if story is not _CALL_TIMED_OUT and story:
+                excerpt = _company_story_excerpt(str(story), story_terms)
+        if not direct_headline and excerpt is None:
             continue
-        records.append({
-            "Instrument": resolved.ric,
-            "story_id": story_id,
-            "headline": (
-                "" if headline_col is None or _missing(row.get(headline_col))
-                else str(row.get(headline_col)).strip()
-            ),
-            "story_text": _strip_html(str(story))[:6000],
-        })
-        if len(records) >= limit:
+        display_text = headline if direct_headline else excerpt
+        accepted = row.to_dict()
+        if not direct_headline and headline_col is not None:
+            accepted[headline_col] = display_text
+        accepted["CompanyRelevantText"] = display_text
+        accepted["CompanyRelevanceSource"] = "headline" if direct_headline else "story"
+        accepted_headlines.append(accepted)
+        if excerpt is not None:
+            records.append({
+                "Instrument": resolved.ric,
+                "story_id": story_id,
+                "company_excerpt": excerpt,
+            })
+        if len(accepted_headlines) >= target_count:
             break
+    result.tables[f"news:{resolved.ric}"] = pd.DataFrame(
+        accepted_headlines,
+        columns=[*headlines.columns, "CompanyRelevantText", "CompanyRelevanceSource"],
+    )
+    result.metrics[f"{resolved.ric}:news_candidates"] = len(headlines)
+    result.metrics[f"{resolved.ric}:news_story_checks"] = fetched
+    result.metrics[f"{resolved.ric}:news_relevant"] = len(accepted_headlines)
     if records:
         result.tables[f"stories:{resolved.ric}"] = pd.DataFrame(records)
 
@@ -2013,7 +2106,11 @@ def _derive_metrics(result: ResearchResult) -> None:
                     result.metrics[f"{ric}:peer_median:{field_name}"] = float(values.median())
 
         headlines = result.tables.get(f"news:{ric}", pd.DataFrame())
-        headline_col = _headline_column(headlines) if not headlines.empty else None
+        headline_col = (
+            "CompanyRelevantText"
+            if "CompanyRelevantText" in headlines.columns
+            else _headline_column(headlines) if not headlines.empty else None
+        )
         if headline_col is not None:
             text = " ".join(headlines[headline_col].dropna().astype(str).head(30)).casefold()
             risk_words = ("cuts outlook", "warning", "probe", "lawsuit", "downgrade", "misses", "decline", "weak", "layoff", "recall", "debt")
@@ -2412,6 +2509,20 @@ def _latest_titles(frame: pd.DataFrame, limit: int = 2) -> list[str]:
     return titles
 
 
+def _latest_company_developments(frame: pd.DataFrame, limit: int = 2) -> list[str]:
+    if "CompanyRelevantText" not in frame.columns:
+        return _latest_titles(frame, limit)
+    values = frame["CompanyRelevantText"]
+    titles: list[str] = []
+    for value in values.dropna().astype(str):
+        cleaned = re.sub(r"\s+", " ", value).strip()
+        if cleaned and cleaned not in titles:
+            titles.append(cleaned)
+        if len(titles) >= limit:
+            break
+    return titles
+
+
 def _company_name(result: ResearchResult, resolved: ResolvedInstrument) -> str:
     name = _first_value(result, "profile", "TR.CommonName", resolved.ric)
     return str(name) if not _missing(name) else (resolved.company_name or resolved.query)
@@ -2565,7 +2676,7 @@ def _deterministic_company_report(result: ResearchResult) -> str:
             lines.append("Valuation and expectations: " + ", ".join(valuation_parts) + ".")
         else:
             lines.append("Valuation and expectations: No usable positive valuation multiple was returned.")
-        titles = _latest_titles(result.tables.get(f"news:{ric}", pd.DataFrame()), 2)
+        titles = _latest_company_developments(result.tables.get(f"news:{ric}", pd.DataFrame()), 2)
         if titles:
             lines.append("Catalyst: No positive catalyst was independently validated; recent developments include " + " | ".join(titles))
         else:
@@ -2592,7 +2703,7 @@ def _deterministic_screen_report(result: ResearchResult) -> str:
         opportunities = _candidate_opportunities(result, candidate)
         risks = _candidate_risks(result, candidate)
         lines.append("Opportunity: " + (" ".join(opportunities[:2]) if opportunities else "The ranking was supported mainly by relative factor scores, not a clear standalone opportunity."))
-        titles = _latest_titles(result.tables.get(f"news:{ric}", pd.DataFrame()), 2)
+        titles = _latest_company_developments(result.tables.get(f"news:{ric}", pd.DataFrame()), 2)
         if titles:
             lines.append("Catalyst: No positive catalyst was independently validated; recent developments include " + " | ".join(titles))
         else:
@@ -2924,7 +3035,7 @@ def _deterministic_catalyst_follow_up(result: ResearchResult) -> str:
     selected = _selected_resolved(result)
     if selected is None:
         return "The prior research did not select a company, so there is no company-specific catalyst to explain."
-    titles = _latest_titles(result.tables.get(f"news:{selected.ric}", pd.DataFrame()), 2)
+    titles = _latest_company_developments(result.tables.get(f"news:{selected.ric}", pd.DataFrame()), 2)
     if not titles:
         return (
             f"No specific catalyst for {_company_name(result, selected)} ({selected.ric}) was supported by the "

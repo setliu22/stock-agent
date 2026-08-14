@@ -71,6 +71,72 @@ def test_concise_company_report_uses_derived_evidence(tmp_path) -> None:
     assert "forward P/E 60" in text
 
 
+def test_company_news_rejects_tagged_spillover_and_keeps_company_excerpt() -> None:
+    import portfolio.lseg_research as module
+
+    resolved = ResolvedInstrument(
+        "QCOM", "QCOM", "QCOM", "QCOM.O", "QUALCOMM Incorporated"
+    )
+    result = ResearchResult(
+        plan=ResearchPlan(mode="company", entities=["QCOM"]),
+        resolved=[resolved],
+    )
+    result.tables["news:QCOM.O"] = pd.DataFrame(
+        {
+            "Headline": [
+                "VIKING CUTS SHARE STAKE IN WALT DISNEY",
+                "Viking files quarterly holdings update",
+                "VIKING RAISES SHARE STAKE IN BOEING",
+                "Qualcomm launches next-generation mobile platform",
+            ],
+            "storyId": ["disney", "filing", "boeing", "qualcomm"],
+        }
+    )
+    stories = {
+        "disney": "Viking Global reduced its Walt Disney position by 46 percent.",
+        "filing": (
+            "The quarterly filing covered several technology investments. "
+            "Viking Global increased its QUALCOMM Incorporated position by 12 percent."
+        ),
+        "boeing": "Viking Global increased its Boeing position during the quarter.",
+        "qualcomm": "Qualcomm launched a new mobile platform for premium devices.",
+    }
+
+    class News:
+        @staticmethod
+        def get_story(story_id):
+            return stories[story_id]
+
+    class FakeLD:
+        news = News()
+
+    client = module._LSEGClient(result, minimum_interval=0)
+    module._retrieve_news_stories(FakeLD(), client, result, resolved, limit=2)
+
+    relevant = result.tables["news:QCOM.O"]
+    assert relevant["CompanyRelevanceSource"].tolist() == ["story", "headline"]
+    assert "QUALCOMM Incorporated position" in relevant.iloc[0]["CompanyRelevantText"]
+    assert "Disney" not in " ".join(relevant["CompanyRelevantText"])
+    assert "Boeing" not in " ".join(relevant["CompanyRelevantText"])
+    assert result.metrics["QCOM.O:news_candidates"] == 4
+    assert result.metrics["QCOM.O:news_relevant"] == 2
+    report = module._deterministic_company_report(result)
+    assert "QUALCOMM Incorporated position" in report
+    assert "Disney" not in report
+    assert "Boeing" not in report
+
+
+def test_ambiguous_story_does_not_pass_on_ticker_metadata_alone() -> None:
+    import portfolio.lseg_research as module
+
+    resolved = ResolvedInstrument(
+        "QCOM", "QCOM", "QCOM", "QCOM.O", "QUALCOMM Incorporated"
+    )
+    terms = module._news_entity_terms(resolved, include_ticker=False)
+
+    assert module._company_story_excerpt("Related tickers: DIS.N BA.N QCOM.O", terms) is None
+
+
 def test_candidate_screen_ranks_quality_and_value() -> None:
     filters = ScreenFilters(sector="Utilities", candidate_search=True, limit=3)
     frame = pd.DataFrame(
