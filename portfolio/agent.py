@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+from collections import deque
 from datetime import date
 from dataclasses import dataclass
-import json
 import os
 import re
 from typing import Any, Callable
@@ -20,7 +20,6 @@ from .lseg_research import (
     answer_follow_up,
     concise_report,
     is_request_diagnostics_follow_up,
-    research_context_payload,
     run_research,
 )
 from .research_planner import (
@@ -98,6 +97,13 @@ class PendingTask:
     payload: Any = None
 
 
+@dataclass(slots=True, frozen=True)
+class ConversationTurn:
+    user: str
+    assistant: str
+    sequence: int = 0
+
+
 _EQUITY_CONTEXT_PATTERN = re.compile(
     r"\b(?:stocks?|companies|company|equities|equity|shares?|tickers?|securities|"
     r"investments?|sector|industry|market|valuation|financials?|"
@@ -130,6 +136,39 @@ def _is_event_risk_request(text: str) -> bool:
     )
 
 
+def _is_contextual_chat_follow_up(text: str) -> bool:
+    lower = re.sub(r"\s+", " ", text.casefold()).strip()
+    return bool(
+        re.search(r"\b(it|its|they|their|them|this|that|those)\b", lower)
+        or re.match(r"^(?:and|also|why|how|what about|tell me more|go on)\b", lower)
+    )
+
+
+def _groq_status_code(exc: BaseException) -> int | None:
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        return status
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    return status if isinstance(status, int) else None
+
+
+def _is_oversized_groq_request(exc: BaseException) -> bool:
+    message = str(exc).casefold()
+    return _groq_status_code(exc) == 413 or "request too large" in message
+
+
+def _friendly_groq_error(exc: BaseException) -> str:
+    if _is_oversized_groq_request(exc):
+        return (
+            "This chat request is too large for the current Groq free-tier limit. "
+            "Start a shorter request; your portfolio and saved research were not cleared."
+        )
+    if _groq_status_code(exc) == 429 or "rate limit" in str(exc).casefold():
+        return "Groq's free-tier rate limit was reached. Wait briefly, then try again."
+    return "The chat service could not complete this request. Try again shortly."
+
+
 class StockAgent:
     def __init__(self, settings: Settings, database: PortfolioDatabase) -> None:
         self.settings = settings
@@ -139,6 +178,8 @@ class StockAgent:
         self._pending_research_query: str | None = None
         self._pending_research_prior_plan: ResearchPlan | None = None
         self._pending_task: PendingTask | None = None
+        self._recent_chat: deque[ConversationTurn] = deque(maxlen=1)
+        self._turn_sequence = 0
 
     def handle(
         self,
@@ -146,6 +187,7 @@ class StockAgent:
         progress_callback: ProgressCallback | None = None,
         cancel_event: Any | None = None,
     ) -> str:
+        self._turn_sequence += 1
         text = message.strip()
         if not text:
             return "Enter a request."
@@ -319,9 +361,8 @@ class StockAgent:
                 f"Recorded {purchase.quantity:g} shares of {purchase.ticker} "
                 f"at ${purchase.price:,.2f} per share."
             )
-        prior_result = self._last_research_result
         self._screen_refinement_available = False
-        return self._general_chat(text, research_result=prior_result)
+        return self._general_chat(text)
 
     def research(
         self,
@@ -344,6 +385,7 @@ class StockAgent:
         # company from an earlier request.
         previous_result = self._last_research_result
         previous_refinement_available = self._screen_refinement_available
+        self._recent_chat.clear()
         self._pending_research_query = None
         self._pending_research_prior_plan = None
         self._clear_pending_task()
@@ -593,6 +635,7 @@ class StockAgent:
         return self._pending_task is not None and self._pending_task.kind == "portfolio_import"
 
     def _set_pending_task(self, kind: str, original_request: str, payload: Any = None) -> None:
+        self._recent_chat.clear()
         self._pending_task = PendingTask(
             kind=kind,
             original_request=original_request,
@@ -638,12 +681,16 @@ class StockAgent:
     def _general_chat(
         self,
         text: str,
-        research_result: ResearchResult | None = None,
     ) -> str:
         if not self.settings.groq_api_key:
             return (
                 "I can research a company, record a purchase, show holdings, or calculate return. "
                 "Set GROQ_API_KEY in .env for general chat."
+            )
+        if len(text) > 12_000:
+            return (
+                "This message is too large for the current Groq free-tier limit. "
+                "Shorten it and try again; no application data was cleared."
             )
         try:
             from langchain_groq import ChatGroq
@@ -651,34 +698,50 @@ class StockAgent:
             llm = ChatGroq(
                 model=self.settings.groq_model,
                 temperature=0.2,
-                max_retries=2,
+                max_retries=0,
                 api_key=self.settings.groq_api_key,
             )
-            response = llm.invoke(
-                [
-                    (
-                        "system",
-                        "You are a concise stock research assistant. Explain uncertainty clearly. "
-                        "Do not claim access to live data unless data was supplied by a tool. "
-                        "When prior LSEG research context is supplied, use it for any relevant "
-                        "follow-up and never claim the conversation just started or lacks context "
-                        "that is present there.",
-                    ),
-                    (
-                        "human",
-                        (
-                            f"PRIOR LSEG RESEARCH CONTEXT:\n"
-                            f"{json.dumps(research_context_payload(research_result), default=str)}\n\n"
-                            f"CURRENT USER MESSAGE:\n{text}"
-                            if research_result is not None
-                            else text
-                        ),
-                    ),
-                ]
+            system_message = (
+                "You are a concise stock research assistant. Explain uncertainty clearly. "
+                "Do not claim access to live data unless data was supplied by a tool."
             )
-            return str(getattr(response, "content", response)).strip()
+            use_recent = bool(
+                _is_contextual_chat_follow_up(text)
+                and self._recent_chat
+                and (
+                    self._turn_sequence == 0
+                    or self._recent_chat[-1].sequence == self._turn_sequence - 1
+                )
+            )
+            messages: list[tuple[str, str]] = [("system", system_message)]
+            if use_recent:
+                turn = self._recent_chat[-1]
+                messages.extend(
+                    [
+                        ("human", turn.user[-1_500:]),
+                        ("assistant", turn.assistant[-3_000:]),
+                    ]
+                )
+            messages.append(("human", text))
+            try:
+                response = llm.invoke(messages)
+            except Exception as exc:
+                if not use_recent or not _is_oversized_groq_request(exc):
+                    raise
+                self._recent_chat.clear()
+                response = llm.invoke([("system", system_message), ("human", text)])
+            answer = str(getattr(response, "content", response)).strip()
+            if answer:
+                self._recent_chat.append(
+                    ConversationTurn(
+                        user=text[-1_500:],
+                        assistant=answer[-3_000:],
+                        sequence=self._turn_sequence,
+                    )
+                )
+            return answer
         except Exception as exc:
-            return f"Groq request failed: {type(exc).__name__}: {exc}"
+            return _friendly_groq_error(exc)
 
     @staticmethod
     def _number(value: Any) -> str:

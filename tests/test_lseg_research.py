@@ -71,6 +71,40 @@ def test_concise_company_report_uses_derived_evidence(tmp_path) -> None:
     assert "forward P/E 60" in text
 
 
+def test_follow_up_context_is_topic_specific_and_bounded() -> None:
+    import json
+    import portfolio.lseg_research as module
+
+    resolved = ResolvedInstrument("QCOM", "QCOM", "QCOM", "QCOM.O", "QUALCOMM Incorporated")
+    result = ResearchResult(
+        plan=ResearchPlan(mode="company", entities=["QCOM"], raw_request="Analyze QCOM"),
+        resolved=[resolved],
+        call_records=[{"error_message": "x" * 20_000}],
+        warnings=["warning " + "y" * 2_000],
+    )
+    result.metrics["selected_ric"] = "QCOM.O"
+    result.metrics["QCOM.O:annualized_vol"] = 0.4
+    result.tables["risk"] = pd.DataFrame(
+        {"Instrument": ["QCOM.O"], "TR.Volatility30D": [40.0]}
+    )
+    result.tables["valuation"] = pd.DataFrame(
+        {"Instrument": ["QCOM.O"], "TR.PE": [19.0]}
+    )
+
+    payload = module.research_context_payload(
+        result,
+        "what are its risks?",
+        max_characters=2_000,
+    )
+    encoded = json.dumps(payload, default=str)
+
+    assert len(encoded) <= 2_000
+    assert "risk" in payload["tables"]
+    assert "valuation" not in payload["tables"]
+    assert "request_trace" not in payload
+    assert "call_records" not in encoded
+
+
 def test_company_news_rejects_tagged_spillover_and_keeps_company_excerpt() -> None:
     import portfolio.lseg_research as module
 

@@ -276,13 +276,11 @@ def test_unrelated_turn_prevents_stale_screen_inheritance(tmp_path, monkeypatch)
     monkeypatch.setattr(
         agent,
         "_general_chat",
-        lambda _text, research_result=None: (
-            "Contextual response" if research_result is not None else "General response"
-        ),
+        lambda _text: "General response",
     )
 
     assert agent.handle("study biotech stocks") == "Screen"
-    assert agent.handle("hello") == "Contextual response"
+    assert agent.handle("hello") == "General response"
     assert agent._last_research_result is not None
     assert agent.handle("study US stocks") == "Screen"
 
@@ -291,6 +289,149 @@ def test_unrelated_turn_prevents_stale_screen_inheritance(tmp_path, monkeypatch)
     assert plans[1].screen.sector is None
     assert plans[1].screen.industry is None
     assert plans[1].context_parent_request is None
+
+
+def test_unrelated_company_question_does_not_receive_prior_research(tmp_path, monkeypatch) -> None:
+    import sys
+    from types import SimpleNamespace
+    from portfolio.company_resolver import ResolvedInstrument
+    from portfolio.lseg_research import ResearchResult
+    from portfolio.research_planner import ResearchPlan
+
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", "fake-key", "test-model", "desktop.workspace")
+    agent = StockAgent(settings, PortfolioDatabase(settings.database_path))
+    agent._last_research_result = ResearchResult(
+        plan=ResearchPlan(mode="company", entities=["QCOM"]),
+        resolved=[ResolvedInstrument("QCOM", "QCOM", "QCOM", "QCOM.O", "QUALCOMM Incorporated")],
+    )
+    calls = []
+
+    class FakeChatGroq:
+        def __init__(self, **_kwargs):
+            pass
+
+        def invoke(self, messages):
+            calls.append(messages)
+            return SimpleNamespace(content="Zebra Technologies makes enterprise tracking products.")
+
+    monkeypatch.setitem(sys.modules, "langchain_groq", SimpleNamespace(ChatGroq=FakeChatGroq))
+
+    response = agent.handle("what does zbra do")
+
+    assert response.startswith("Zebra Technologies")
+    assert len(calls) == 1
+    assert calls[0][-1] == ("human", "what does zbra do")
+    assert "QCOM" not in str(calls[0])
+    assert "QUALCOMM" not in str(calls[0])
+
+
+def test_general_chat_keeps_only_one_turn_for_pronoun_follow_up(tmp_path, monkeypatch) -> None:
+    import sys
+    from types import SimpleNamespace
+
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", "fake-key", "test-model", "desktop.workspace")
+    agent = StockAgent(settings, PortfolioDatabase(settings.database_path))
+    calls = []
+    answers = iter(["Zebra makes tracking hardware.", "It also sells software and services."])
+
+    class FakeChatGroq:
+        def __init__(self, **_kwargs):
+            pass
+
+        def invoke(self, messages):
+            calls.append(messages)
+            return SimpleNamespace(content=next(answers))
+
+    monkeypatch.setitem(sys.modules, "langchain_groq", SimpleNamespace(ChatGroq=FakeChatGroq))
+
+    agent.handle("what does zbra do")
+    response = agent.handle("what products does it make?")
+
+    assert response.startswith("It also")
+    assert [role for role, _content in calls[1]] == ["system", "human", "assistant", "human"]
+    assert calls[1][1][1] == "what does zbra do"
+
+
+def test_operational_turn_breaks_general_chat_memory(tmp_path, monkeypatch) -> None:
+    import sys
+    from types import SimpleNamespace
+
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", "fake-key", "test-model", "desktop.workspace")
+    agent = StockAgent(settings, PortfolioDatabase(settings.database_path))
+    calls = []
+
+    class FakeChatGroq:
+        def __init__(self, **_kwargs):
+            pass
+
+        def invoke(self, messages):
+            calls.append(messages)
+            return SimpleNamespace(content="Answer")
+
+    monkeypatch.setitem(sys.modules, "langchain_groq", SimpleNamespace(ChatGroq=FakeChatGroq))
+
+    agent.handle("what does zbra do")
+    agent.handle("show holdings")
+    agent.handle("what products does it make?")
+
+    assert len(calls) == 2
+    assert [role for role, _content in calls[-1]] == ["system", "human"]
+
+
+def test_general_chat_retries_oversized_context_without_memory(tmp_path, monkeypatch) -> None:
+    import sys
+    from types import SimpleNamespace
+    from portfolio.agent import ConversationTurn
+
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", "fake-key", "test-model", "desktop.workspace")
+    agent = StockAgent(settings, PortfolioDatabase(settings.database_path))
+    agent._recent_chat.append(ConversationTurn("Tell me about ZBRA", "A" * 3_000))
+    calls = []
+
+    class TooLarge(Exception):
+        status_code = 413
+
+    class FakeChatGroq:
+        def __init__(self, **_kwargs):
+            pass
+
+        def invoke(self, messages):
+            calls.append(messages)
+            if len(messages) > 2:
+                raise TooLarge("Request too large")
+            return SimpleNamespace(content="ZBRA faces execution risk.")
+
+    monkeypatch.setitem(sys.modules, "langchain_groq", SimpleNamespace(ChatGroq=FakeChatGroq))
+
+    response = agent._general_chat("what risks does it have?")
+
+    assert response == "ZBRA faces execution risk."
+    assert [len(messages) for messages in calls] == [4, 2]
+
+
+def test_general_chat_hides_raw_oversized_provider_error(tmp_path, monkeypatch) -> None:
+    import sys
+    from types import SimpleNamespace
+
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", "fake-key", "test-model", "desktop.workspace")
+    agent = StockAgent(settings, PortfolioDatabase(settings.database_path))
+
+    class TooLarge(Exception):
+        status_code = 413
+
+    class FakeChatGroq:
+        def __init__(self, **_kwargs):
+            pass
+
+        def invoke(self, _messages):
+            raise TooLarge("organization secret details; request too large")
+
+    monkeypatch.setitem(sys.modules, "langchain_groq", SimpleNamespace(ChatGroq=FakeChatGroq))
+
+    response = agent._general_chat("Explain diversification")
+
+    assert "too large" in response.casefold()
+    assert "organization secret details" not in response
 
 
 def test_lseg_capability_request_precedes_screen_refinement(tmp_path, monkeypatch) -> None:

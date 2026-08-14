@@ -2796,9 +2796,77 @@ def _evidence_payload(result: ResearchResult) -> dict[str, Any]:
     return _json_safe(payload)
 
 
-def research_context_payload(result: ResearchResult) -> dict[str, Any]:
-    """Return the validated prior-result context used for conversational follow-ups."""
-    return _evidence_payload(result)
+def research_context_payload(
+    result: ResearchResult,
+    question: str = "",
+    *,
+    max_characters: int = 12_000,
+) -> dict[str, Any]:
+    """Return a bounded, topic-specific slice of validated prior evidence."""
+    selected = _selected_resolved(result)
+    selected_ric = selected.ric if selected is not None else None
+    lower = question.casefold()
+    if re.search(r"\b(risks?|downside|concerns?|volatility|debt|leverage)\b", lower):
+        table_names = ("profile", "risk", "fundamentals", f"news:{selected_ric}")
+    elif re.search(r"\b(catalysts?|news|developments?|events?|drivers?)\b", lower):
+        table_names = (
+            "profile", f"news:{selected_ric}", f"stories:{selected_ric}",
+            "events", "guidance",
+        )
+    elif re.search(r"\b(valuation|cheap|discount|p\s*/?\s*e|target|multiple)\b", lower):
+        table_names = ("profile", "valuation", "recommendations", "screen")
+    elif re.search(r"\b(what\s+does|business|products?|services?|industry|sector)\b", lower):
+        table_names = ("profile",)
+    else:
+        table_names = (
+            "profile", "fundamentals", "profitability", "valuation",
+            "recommendations", "risk", f"news:{selected_ric}",
+        )
+
+    payload: dict[str, Any] = {
+        "request": result.plan.raw_request[:1_000],
+        "workflow": result.plan.workflow,
+        "selected": (
+            {
+                "name": _company_name(result, selected),
+                "ticker": selected.ticker,
+                "ric": selected.ric,
+            }
+            if selected is not None
+            else None
+        ),
+        "derived_metrics": {},
+        "tables": {},
+        "unavailable": [str(warning)[:300] for warning in result.warnings[:5]],
+    }
+
+    metrics = payload["derived_metrics"]
+    assert isinstance(metrics, dict)
+    for key, value in result.metrics.items():
+        if key == "selected_ric" or (selected_ric and key.startswith(f"{selected_ric}:")):
+            candidate = _json_safe(value)
+            trial = {**payload, "derived_metrics": {**metrics, str(key): candidate}}
+            if len(json.dumps(trial, default=str)) <= max_characters:
+                metrics[str(key)] = candidate
+
+    tables = payload["tables"]
+    assert isinstance(tables, dict)
+    for name in table_names:
+        if not name or name in tables:
+            continue
+        frame = result.tables.get(name)
+        if frame is None or frame.empty:
+            continue
+        limited = frame
+        if selected_ric and "Instrument" in frame.columns:
+            selected_rows = frame[frame["Instrument"].astype(str) == selected_ric]
+            if not selected_rows.empty:
+                limited = selected_rows
+        records = _json_safe(limited.head(3).to_dict(orient="records"))
+        trial = {**payload, "tables": {**tables, name: records}}
+        if len(json.dumps(trial, default=str)) <= max_characters:
+            tables[name] = records
+    return payload
 
 
 def _json_safe(value: Any) -> Any:
@@ -3296,8 +3364,11 @@ def answer_follow_up(result: ResearchResult, question: str, settings: Settings) 
     try:
         from langchain_groq import ChatGroq
 
-        llm = ChatGroq(model=settings.groq_model, temperature=0, max_retries=2, api_key=settings.groq_api_key)
-        evidence = json.dumps(_evidence_payload(result), default=str)
+        llm = ChatGroq(model=settings.groq_model, temperature=0, max_retries=0, api_key=settings.groq_api_key)
+        evidence = json.dumps(
+            research_context_payload(result, question, max_characters=10_000),
+            default=str,
+        )
         response = llm.invoke(
             [
                 (
