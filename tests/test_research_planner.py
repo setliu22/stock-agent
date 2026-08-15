@@ -25,6 +25,12 @@ def test_company_request_is_planned_without_hard_coded_ticker(tmp_path) -> None:
     assert "estimates" in plan.topics
 
 
+def test_company_request_strips_research_preposition(tmp_path) -> None:
+    plan = build_research_plan("do some research on zbra", settings(tmp_path))
+    assert plan.entities == ["zbra"]
+    assert plan.intent_resolution["llm_used"] is False
+
+
 def test_comparison_request_extracts_two_entities(tmp_path) -> None:
     plan = build_research_plan(
         "Compare Nvidia and AMD on valuation and profitability",

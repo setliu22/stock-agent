@@ -9,6 +9,7 @@ import os
 import re
 from typing import Any, Callable
 
+from .company_resolver import AmbiguousInstrumentError, InstrumentResolutionError
 from .config import Settings
 from .database import PortfolioDatabase
 from .event_risk import run_portfolio_event_risk_review
@@ -437,6 +438,15 @@ class StockAgent:
         except LSEGNoMatches as exc:
             progress(100, "No validated matches", str(exc))
             return f"No adequately supported company was found after validating the requested constraints. {exc}"
+        except AmbiguousInstrumentError as exc:
+            progress(None, "Company is ambiguous", str(exc))
+            return f"I found multiple possible listed securities. {exc} Specify the ticker, then try again."
+        except InstrumentResolutionError as exc:
+            progress(None, "Company not found", str(exc))
+            return (
+                "I couldn't identify the requested listed company or ticker. "
+                f"{exc} Check the ticker or include the company name, then try again."
+            )
         except Exception as exc:
             progress(None, "Research failed", f"{type(exc).__name__}: {exc}")
             return (

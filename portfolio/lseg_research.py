@@ -19,7 +19,7 @@ from typing import Any, Callable, Iterable
 
 import pandas as pd
 
-from .company_resolver import ResolvedInstrument, resolve_instrument
+from .company_resolver import InstrumentResolutionError, ResolvedInstrument
 from .config import Settings
 from .research_planner import (
     ResearchPlan,
@@ -27,6 +27,7 @@ from .research_planner import (
     canonicalize_sector,
     classification_definition,
 )
+from .research_execution import compile_execution_request
 from .research_workflows import get_workflow
 
 
@@ -2336,6 +2337,10 @@ def run_research(
             "Workspace connected",
             f"LSEG session state: {_session_state_text(session)}.",
         )
+        execution = compile_execution_request(plan)
+        plan = execution.plan
+        result.plan = plan
+        result.resolved.extend(execution.resolved)
         client = _LSEGClient(result, progress_callback=progress_callback, cancel_event=cancel_event)
         result.calls.append(f"Session {_session_state_text(session)}")
 
@@ -2369,8 +2374,6 @@ def run_research(
                 "Resolving instruments",
                 f"Resolving {len(plan.entities)} named company or ticker reference(s).",
             )
-            for entity in plan.entities:
-                result.resolved.append(resolve_instrument(entity))
             rics = [item.ric for item in result.resolved]
             _emit_progress(
                 progress_callback,
@@ -2455,6 +2458,10 @@ def run_research(
     except LSEGNoMatches as exc:
         _persist_research_trace(result, settings, "no_match", exc)
         _emit_progress(progress_callback, 100, "No validated matches", str(exc))
+        raise
+    except InstrumentResolutionError as exc:
+        _persist_research_trace(result, settings, "resolution_failed", exc)
+        _emit_progress(progress_callback, None, "Company not found", str(exc))
         raise
     except LSEGResearchError as exc:
         _persist_research_trace(result, settings, "failed", exc)

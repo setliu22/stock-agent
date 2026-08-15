@@ -136,10 +136,14 @@ def test_numeric_range_and_reverse_order_are_not_dropped(tmp_path: Path) -> None
     assert build_research_plan("find stocks with forward P/E at most 20", settings(tmp_path)).screen.forward_pe_max == 20
 
 
-def test_generated_intent_failure_cannot_erase_deterministic_plan(tmp_path: Path, monkeypatch) -> None:
+def test_generated_intent_cannot_participate_in_complete_deterministic_plan(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.setattr(
         "portfolio.research_planner._llm_intent_draft",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("provider unavailable")),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("complete deterministic plans must bypass the model")
+        ),
     )
     plan = build_research_plan(
         "find US technology stocks with P/E below 20",
@@ -149,7 +153,8 @@ def test_generated_intent_failure_cannot_erase_deterministic_plan(tmp_path: Path
     assert plan.screen.country_code == "US"
     assert plan.screen.sector == "Technology"
     assert plan.screen.pe_max == 20
-    assert plan.planner == "deterministic_llm_fallback"
+    assert plan.planner == "deterministic"
+    assert plan.intent_resolution["llm_used"] is False
 
 
 def test_malformed_normalized_plans_fail_closed() -> None:

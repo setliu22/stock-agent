@@ -5,6 +5,7 @@ from datetime import date
 import pytest
 
 from portfolio.agent import StockAgent
+from portfolio.company_resolver import AmbiguousInstrumentError, InstrumentResolutionError
 from portfolio.config import Settings
 from portfolio.database import PortfolioDatabase
 from portfolio.models import Purchase
@@ -35,6 +36,44 @@ def test_research_failure_does_not_substitute_yahoo_snapshot(tmp_path, monkeypat
     text = agent.research("research a utilities company")
     assert "No Yahoo quote snapshot was substituted" in text
     assert "Exxon" not in text
+
+
+def test_instrument_resolution_failure_does_not_suggest_connection_diagnostics(
+    tmp_path, monkeypatch
+) -> None:
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
+    database = PortfolioDatabase(settings.database_path)
+    agent = StockAgent(settings, database)
+
+    monkeypatch.setattr(
+        "portfolio.agent.run_research",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            InstrumentResolutionError("No listed security matched 'zbra'.")
+        ),
+    )
+    text = agent.research("do some research on zbra")
+
+    assert "company or ticker" in text
+    assert "Check the ticker or include the company name" in text
+    assert "Test LSEG.command" not in text
+
+
+def test_ambiguous_instrument_asks_for_ticker(tmp_path, monkeypatch) -> None:
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
+    database = PortfolioDatabase(settings.database_path)
+    agent = StockAgent(settings, database)
+
+    monkeypatch.setattr(
+        "portfolio.agent.run_research",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AmbiguousInstrumentError("Multiple listed securities matched 'Acme': ACME, ACM.")
+        ),
+    )
+    text = agent.research("research Acme")
+
+    assert "multiple possible listed securities" in text
+    assert "Specify the ticker" in text
+    assert "Test LSEG.command" not in text
 
 
 def test_research_forwards_live_progress_updates(tmp_path, monkeypatch) -> None:

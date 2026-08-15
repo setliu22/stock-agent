@@ -636,7 +636,7 @@ def _extract_entities(text: str, mode: str) -> list[str]:
                 return and_parts
     match = re.search(
         r"\b(?:analy[sz]e|research|study|examine|assess|review|investigate|evaluate|look\s+up|"
-        r"tell\s+me\s+about|show|find|deep\s+dive\s+(?:on|into)?)\s+(.+)$",
+        r"tell\s+me\s+about|show|find|deep\s+dive)\s+(?:(?:on|about|into|of)\s+)?(.+)$",
         cleaned, re.I,
     )
     if match:
@@ -2433,6 +2433,16 @@ def build_research_plan(
     # in which the LLM is needed. A prior plan supplies context, never proof
     # that a current-turn stateside/taxonomy/objective phrase was honored.
     unresolved_slots = _unresolved_semantic_slots(text, deterministic or prior_plan)
+
+    # Complete deterministic requests do not need semantic interpretation.
+    # Groq is reserved for wording that leaves a material slot unresolved; it
+    # cannot veto or rewrite an already executable local plan.
+    if deterministic is not None and not unresolved_slots:
+        deterministic.intent_resolution = {
+            "llm_used": False,
+            "resolution": "deterministic_complete",
+        }
+        return deterministic
 
     if not settings.groq_api_key:
         if deterministic is not None and not unresolved_slots:

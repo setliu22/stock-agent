@@ -13,11 +13,27 @@ import re
 from typing import Any, Iterable, Mapping, Sequence
 
 
-_REQUEST_WORDS = {
-    "analyze", "analyse", "research", "review", "investigate", "evaluate",
-    "stock", "company", "shares", "using", "use", "with", "via", "lseg",
-    "refinitiv", "workspace", "please", "tell", "me", "about", "look", "up",
-}
+_TOOL_PREFIX = re.compile(
+    r"^(?:use|using)\s+(?:lseg|refinitiv)(?:\s+workspace)?\s+to\s+",
+    re.IGNORECASE,
+)
+
+_REQUEST_PREFIX = re.compile(
+    r"^(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?(?:"
+    r"(?:(?:do|conduct|perform|give\s+me)\s+)?(?:some|a|an)?\s*"
+    r"(?:research|analysis|review|assessment|deep\s+dive)\s*"
+    r"(?:on|about|into|of|for)?\s+|"
+    r"(?:analy[sz]e|research|study|examine|assess|evaluate|investigate|review)\s*"
+    r"(?:on|about|into|of)?\s+|"
+    r"tell\s+me\s+about\s+|look\s+up\s+"
+    r")",
+    re.IGNORECASE,
+)
+
+_TOOL_SUFFIX = re.compile(
+    r"\s+(?:using|with|via)\s+(?:lseg|refinitiv)(?:\s+workspace)?\s*$",
+    re.IGNORECASE,
+)
 
 _US_EXCHANGES = {
     "NMS", "NGM", "NCM", "NAS", "NASDAQ", "NYQ", "NYSE", "ASE", "AMEX",
@@ -40,15 +56,18 @@ class InstrumentResolutionError(RuntimeError):
     """Raised when a company or ticker cannot be resolved safely."""
 
 
+class AmbiguousInstrumentError(InstrumentResolutionError):
+    """Raised when multiple distinct listed securities are equally plausible."""
+
+
 def extract_security_reference(text: str) -> str:
     cleaned = re.sub(r"[^\w.&'/-]+", " ", str(text), flags=re.UNICODE).strip()
     if not cleaned:
         raise InstrumentResolutionError("No company name or ticker was provided.")
-
-    tokens = cleaned.split()
-    kept = [token for token in tokens if token.casefold() not in _REQUEST_WORDS]
-    result = " ".join(kept).strip(" ,.;:")
-    return result or cleaned
+    candidate = _TOOL_PREFIX.sub("", cleaned, count=1)
+    candidate = _REQUEST_PREFIX.sub("", candidate, count=1)
+    candidate = _TOOL_SUFFIX.sub("", candidate, count=1).strip(" ,.;:")
+    return candidate or cleaned
 
 
 def is_probable_ticker(value: str) -> bool:
@@ -106,7 +125,7 @@ def _score_quote(query: str, quote: Mapping[str, Any]) -> tuple[int, str]:
     text_words = set(re.findall(r"[a-z0-9]+", text))
     score += 8 * len(q_words & text_words)
 
-    if symbol.upper() == query.upper():
+    if is_explicit_ticker(query) and symbol.upper() == query.upper():
         score += 150
 
     return (score, symbol)
@@ -119,10 +138,29 @@ def choose_best_yahoo_quote(query: str, quotes: Sequence[Mapping[str, Any]]) -> 
 
     ranked = sorted(candidates, key=lambda quote: _score_quote(query, quote), reverse=True)
     best = ranked[0]
-    if _score_quote(query, best)[0] < 20:
+    best_score = _score_quote(query, best)[0]
+    if best_score < 20:
         names = ", ".join(str(quote.get("symbol")) for quote in ranked[:5])
         raise InstrumentResolutionError(
             f"The company name {query!r} was ambiguous. Candidate tickers: {names}."
+        )
+    exact_symbols = [
+        quote for quote in ranked
+        if is_explicit_ticker(query)
+        and str(quote.get("symbol") or "").strip().casefold() == query.strip().casefold()
+    ]
+    if exact_symbols:
+        return exact_symbols[0]
+    tied = [
+        quote for quote in ranked
+        if best_score - _score_quote(query, quote)[0] <= 10
+    ]
+    distinct_symbols = list(dict.fromkeys(
+        str(quote.get("symbol") or "").strip() for quote in tied
+    ))
+    if len(distinct_symbols) > 1:
+        raise AmbiguousInstrumentError(
+            f"Multiple listed securities matched {query!r}: {', '.join(distinct_symbols[:5])}."
         )
     return best
 
@@ -276,7 +314,27 @@ def _search_lseg_company(query: str) -> ResolvedInstrument | None:
         ranked.append((score, row))
     if not ranked:
         return None
-    _, row = max(ranked, key=lambda item: item[0])
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    best_score, row = ranked[0]
+    exact = [
+        candidate_row
+        for _, candidate_row in ranked
+        if is_explicit_ticker(query)
+        and ticker_col is not None
+        and str(candidate_row.get(ticker_col) or "").strip().casefold() == query.casefold()
+    ]
+    if exact:
+        row = exact[0]
+    else:
+        tied = [candidate_row for score, candidate_row in ranked if best_score - score <= 10]
+        identities = list(dict.fromkeys(
+            str(candidate_row.get(ticker_col) or candidate_row.get(ric_col) or "").strip()
+            for candidate_row in tied
+        ))
+        if len(identities) > 1:
+            raise AmbiguousInstrumentError(
+                f"Multiple listed securities matched {query!r}: {', '.join(identities[:5])}."
+            )
     ric = str(row.get(ric_col)).strip()
     ticker = str(row.get(ticker_col) or ric.split(".", 1)[0]).strip().upper() if ticker_col is not None else ric.split(".", 1)[0]
     company = str(row.get(title_col) or "").strip() or None if title_col is not None else None

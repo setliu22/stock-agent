@@ -87,28 +87,14 @@ def intent_payload(**overrides: Any) -> dict[str, Any]:
     return values
 
 
-def test_explicit_deterministic_anchors_win_over_conflicting_llm_draft(
+def test_complete_deterministic_anchors_bypass_llm(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
         "portfolio.research_planner._llm_intent_draft",
-        lambda *_args, **_kwargs: intent_draft(
-            country_code="CA",
-            industry="Biotechnology & Medical Research",
-            market_cap_max=1_000_000_000,
-            forward_pe_max=99,
-            limit=3,
-            investment_horizon="short_term",
-            objectives=("positive_signals",),
-            grounding={
-                "country_code": "US",
-                "sector": None,
-                "industry": "industrial",
-                "investment_horizon": "long term",
-                "objectives": {"positive_signals": "stands out"},
-                "topics": {},
-            },
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("complete deterministic plans must bypass the model")
         ),
     )
 
@@ -127,35 +113,33 @@ def test_explicit_deterministic_anchors_win_over_conflicting_llm_draft(
     assert plan.investment_horizon == "long_term"
     assert plan.selection_objectives == ["positive_signals"]
     assert plan.workflow == "sector_opportunity"
-    assert {"market_cap_max", "forward_pe_max", "limit", "investment_horizon"}.issubset(
-        plan.intent_resolution["deterministic_conflicts"]
-    )
-    assert "industry:unsupported_grounding" in plan.intent_resolution[
-        "rejected_generated_fields"
-    ]
+    assert plan.intent_resolution == {
+        "llm_used": False,
+        "resolution": "deterministic_complete",
+    }
 
 
-@pytest.mark.parametrize("model_error", [ValueError("malformed JSON"), RuntimeError("provider outage")])
-def test_bad_or_unavailable_model_falls_back_for_clear_deterministic_request(
+def test_clear_deterministic_request_does_not_call_model(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    model_error: Exception,
 ) -> None:
-    def fail(*_args: Any, **_kwargs: Any) -> LLMIntentDraft:
-        raise model_error
-
-    monkeypatch.setattr("portfolio.research_planner._llm_intent_draft", fail)
+    monkeypatch.setattr(
+        "portfolio.research_planner._llm_intent_draft",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("complete deterministic plans must bypass the model")
+        ),
+    )
 
     plan = build_research_plan(
         "find US technology stocks with P/E below 20",
         settings(tmp_path),
     )
 
-    assert plan.planner == "deterministic_llm_fallback"
+    assert plan.planner == "deterministic"
     assert plan.screen.country_code == "US"
     assert plan.screen.sector == "Technology"
     assert plan.screen.pe_max == 20
-    assert plan.intent_resolution["fallback_reason"] == type(model_error).__name__
+    assert plan.intent_resolution["llm_used"] is False
 
 
 def test_listing_country_policy_rejects_before_llm_interpretation(
@@ -200,7 +184,9 @@ def test_stateside_follow_up_retains_prior_biotech_classification(
 
     plan = build_research_plan(follow_up, settings(tmp_path), prior_plan=prior)
 
-    assert plan.planner == "hybrid_llm_validated"
+    assert plan.planner == (
+        "hybrid_llm_validated" if "stateside" in follow_up else "deterministic_contextual"
+    )
     assert plan.screen.country_code == "US"
     assert plan.screen.sector == "Healthcare"
     assert plan.screen.industry == "Biotechnology & Medical Research"
@@ -243,17 +229,8 @@ def test_lowercase_us_pronoun_cannot_become_a_country_filter(
 ) -> None:
     monkeypatch.setattr(
         "portfolio.research_planner._llm_intent_draft",
-        lambda *_args, **_kwargs: intent_draft(
-            country_code="US",
-            grounding={
-                "country_code": "us",
-                "sector": None,
-                "industry": None,
-                "investment_horizon": None,
-                "objectives": {},
-                "topics": {},
-            },
-            interpretation="Treat us as a country.",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("complete deterministic plans must bypass the model")
         ),
     )
 
@@ -261,9 +238,7 @@ def test_lowercase_us_pronoun_cannot_become_a_country_filter(
 
     assert plan.screen.country_code is None
     assert plan.screen.industry == "Biotechnology & Medical Research"
-    assert "country_code:unsupported_grounding" in plan.intent_resolution[
-        "rejected_generated_fields"
-    ]
+    assert plan.intent_resolution["llm_used"] is False
 
 
 def test_unresolved_stateside_wording_never_falls_back_to_broader_screen(
@@ -364,16 +339,14 @@ def test_numeric_anchor_is_compiled_even_when_llm_resolves_universe_wording(
     assert plan.screen.pe_max == 10
 
 
-def test_invented_entity_falls_back_to_explicit_deterministic_company(
+def test_model_cannot_replace_explicit_deterministic_company(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
         "portfolio.research_planner._llm_intent_draft",
-        lambda *_args, **_kwargs: intent_draft(
-            subject_kind="company",
-            entities=("Microsoft",),
-            interpretation="Research Microsoft.",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("explicit company requests must bypass the model")
         ),
     )
 
@@ -381,7 +354,8 @@ def test_invented_entity_falls_back_to_explicit_deterministic_company(
 
     assert plan.entities == ["Apple"]
     assert plan.workflow == "company_deep_dive"
-    assert plan.planner == "deterministic_llm_fallback"
+    assert plan.planner == "deterministic"
+    assert plan.intent_resolution["llm_used"] is False
 
 
 def test_invented_entity_in_ambiguous_request_requires_clarification(
@@ -600,10 +574,8 @@ def test_generated_general_route_cannot_veto_explicit_screen_anchors(
 ) -> None:
     monkeypatch.setattr(
         "portfolio.research_planner._llm_intent_draft",
-        lambda *_args, **_kwargs: intent_draft(
-            route="general",
-            subject_kind="none",
-            interpretation="Incorrectly classify an explicit screen as general.",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("explicit screen requests must bypass the model")
         ),
     )
 
@@ -612,7 +584,8 @@ def test_generated_general_route_cannot_veto_explicit_screen_anchors(
         settings(tmp_path),
     )
 
-    assert plan.planner == "deterministic_llm_fallback"
+    assert plan.planner == "deterministic"
+    assert plan.intent_resolution["llm_used"] is False
     assert plan.screen.country_code == "US"
     assert plan.screen.sector == "Industrials"
     assert plan.screen.pe_max == 20
