@@ -18,6 +18,21 @@ from portfolio.market_regime import MarketRegimeSnapshot
 from portfolio.supabase_auth import AuthResult, SupabaseAuth, friendly_auth_error
 
 
+def tab_drag_target(
+    current_index: int,
+    tab_count: int,
+    horizontal_delta: int,
+    *,
+    threshold: int = 56,
+) -> int | None:
+    """Return the adjacent page selected by a horizontal tab-strip drag."""
+    if abs(horizontal_delta) < threshold or tab_count < 2:
+        return None
+    step = 1 if horizontal_delta < 0 else -1
+    target = max(0, min(tab_count - 1, current_index + step))
+    return target if target != current_index else None
+
+
 class PurchaseDialog(tk.Toplevel):
     def __init__(self, parent: tk.Misc) -> None:
         super().__init__(parent)
@@ -108,6 +123,7 @@ class StockAgentApp(tk.Tk):
         self.cancel_event: threading.Event | None = None
         self._send_button_hovered = False
         self.market_refresh_busy = False
+        self._tab_drag_anchor_x: int | None = None
         self._configure_style()
         self._build_ui()
         self.after(100, self._poll_results)
@@ -168,11 +184,37 @@ class StockAgentApp(tk.Tk):
         notebook.add(self.holdings_tab, text="Portfolio")
         notebook.add(self.market_tab, text="Market")
         notebook.add(self.account_tab, text="Account")
+        notebook.bind("<ButtonPress-1>", self._start_tab_drag, add="+")
+        notebook.bind("<B1-Motion>", self._continue_tab_drag, add="+")
+        notebook.bind("<ButtonRelease-1>", self._finish_tab_drag, add="+")
         self._build_chat_tab()
         self._build_holdings_tab()
         self._build_market_tab()
         self._build_account_tab()
         self.after(250, self.refresh_market_regime)
+
+    def _start_tab_drag(self, event: tk.Event) -> None:
+        try:
+            self.notebook.index(f"@{event.x},{event.y}")
+        except tk.TclError:
+            self._tab_drag_anchor_x = None
+            return
+        self._tab_drag_anchor_x = event.x
+
+    def _continue_tab_drag(self, event: tk.Event) -> None:
+        if self._tab_drag_anchor_x is None:
+            return
+        delta = event.x - self._tab_drag_anchor_x
+        target = tab_drag_target(
+            self.notebook.index("current"), len(self.notebook.tabs()), delta
+        )
+        if target is None:
+            return
+        self.notebook.select(target)
+        self._tab_drag_anchor_x = event.x
+
+    def _finish_tab_drag(self, _event: tk.Event) -> None:
+        self._tab_drag_anchor_x = None
 
     def _build_chat_tab(self) -> None:
         actions = ttk.Frame(self.chat_tab)
