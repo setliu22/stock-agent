@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 from portfolio.config import Settings
 from portfolio.controller import StockAgentController
 from portfolio.cloud_portfolios import CloudPortfolio, CloudPurchase, CloudSession
 from portfolio.models import Purchase
+from portfolio.market_regime import MarketRegimeSnapshot
 from portfolio.portfolio_import import parse_portfolio_update_json_message
 
 
@@ -64,6 +65,22 @@ def test_controller_builds_common_session_portfolio_history(tmp_path, monkeypatc
         (date(2026, 8, 10), 430),
         (date(2026, 8, 11), 450),
     ]
+
+
+def test_controller_delegates_market_regime(tmp_path, monkeypatch) -> None:
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
+    controller = StockAgentController(settings=settings)
+    expected = MarketRegimeSnapshot(
+        regime="Test regime",
+        summary="Test summary",
+        emphasis=(),
+        indicators=(),
+        missing_evidence=(),
+        generated_at=datetime.now(timezone.utc),
+    )
+    monkeypatch.setattr("portfolio.controller.build_market_regime", lambda: expected)
+
+    assert controller.market_regime() is expected
 
 
 class _FakeCloudClient:

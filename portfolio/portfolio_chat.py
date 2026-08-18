@@ -86,7 +86,7 @@ def missing_prompt(draft: PurchaseDraft) -> str:
     return (
         f"I found: {draft.summary()}.\n"
         f"Reply once with the missing {joined}. Example: "
-        'Portfolio A, ticker PLTR, 5 shares, $22.40, 2026-07-21. '
+        'Retirement, ticker ABCD, 5 shares, $22.40, 2026-07-21. '
         "Anything still unclear after your reply will be stored as N/A; an unknown portfolio uses Unsorted."
     )
 

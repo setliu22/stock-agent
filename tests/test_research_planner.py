@@ -31,6 +31,16 @@ def test_company_request_strips_research_preposition(tmp_path) -> None:
     assert plan.intent_resolution["llm_used"] is False
 
 
+def test_structurally_ambiguous_security_request_requires_semantic_planning(tmp_path) -> None:
+    with pytest.raises(ResearchClarificationNeeded):
+        build_research_plan("research a stock whose identifier may be zbra", settings(tmp_path))
+
+
+def test_unconstrained_stock_request_does_not_silently_run_market_cap_screen(tmp_path) -> None:
+    with pytest.raises(ResearchClarificationNeeded):
+        build_research_plan("research stocks", settings(tmp_path))
+
+
 def test_comparison_request_extracts_two_entities(tmp_path) -> None:
     plan = build_research_plan(
         "Compare Nvidia and AMD on valuation and profitability",
@@ -169,9 +179,7 @@ def test_result_limit_and_supported_metric_can_coexist(tmp_path) -> None:
     ],
 )
 def test_conceptual_sector_wording_is_not_compiled_as_candidate_screen(tmp_path, wording) -> None:
-    from portfolio.research_planner import NotResearchRequest
-
-    with pytest.raises(NotResearchRequest):
+    with pytest.raises(ResearchClarificationNeeded):
         build_research_plan(wording, settings(tmp_path))
 
 
@@ -180,27 +188,12 @@ def test_plain_screen_rejects_topics_it_would_not_retrieve(tmp_path) -> None:
         build_research_plan("study biotech stocks and recent news", settings(tmp_path))
 
 
-def test_unspecified_sector_investment_request_becomes_candidate_screen(tmp_path) -> None:
-    plan = build_research_plan(
-        "do some research on a utilities company that might be a good investment",
-        settings(tmp_path),
-    )
-    assert plan.mode == "screen"
-    assert plan.entities == []
-    assert plan.screen.sector == "Utilities"
-    assert plan.screen.candidate_search is True
-    assert plan.screen.sort_by == "quality_value"
-
-
-def test_bargain_buy_in_industrial_sector_uses_sector_opportunity(tmp_path) -> None:
-    plan = build_research_plan(
-        "Can you do some research on a potential bargain buy in the industrial sector?",
-        settings(tmp_path),
-    )
-    assert plan.workflow == "sector_opportunity"
-    assert plan.mode == "screen"
-    assert plan.screen.sector == "Industrials"
-    assert plan.screen.candidate_search is True
+def test_semantic_candidate_wording_requires_semantic_provider(tmp_path) -> None:
+    with pytest.raises(ResearchClarificationNeeded):
+        build_research_plan(
+            "research a sector company that might be a good investment",
+            settings(tmp_path),
+        )
 
 
 def test_llm_sector_alias_is_normalized() -> None:
@@ -236,34 +229,6 @@ def test_lowercase_us_is_country_only_in_explicit_stock_geography(tmp_path) -> N
     assert pronoun.screen.industry == "Biotechnology & Medical Research"
 
 
-@pytest.mark.parametrize(
-    "wording",
-    [
-        "do some research on a promising us industrials stock",
-        "find an undervalued us technology company",
-        "screen attractive us healthcare equities",
-        "research one well-covered us financial stock",
-    ],
-)
-def test_lowercase_us_as_noun_phrase_modifier_is_geography(tmp_path, wording) -> None:
-    plan = build_research_plan(wording, settings(tmp_path))
-    assert plan.screen.country_code == "US"
-
-
-@pytest.mark.parametrize(
-    "wording",
-    [
-        "show us biotech stocks",
-        "tell us about industrial stocks",
-        "help us find technology companies",
-        "give us an overview of healthcare equities",
-    ],
-)
-def test_lowercase_us_as_recipient_remains_a_pronoun(tmp_path, wording) -> None:
-    plan = build_research_plan(wording, settings(tmp_path))
-    assert plan.screen.country_code is None
-
-
 def test_candidate_request_without_peer_group_names_missing_constraint(tmp_path) -> None:
     with pytest.raises(
         ResearchClarificationNeeded,
@@ -275,26 +240,6 @@ def test_candidate_request_without_peer_group_names_missing_constraint(tmp_path)
         )
 
 
-@pytest.mark.parametrize(
-    "wording",
-    [
-        "do analyses of stocc. find most promising one in us biotech industry",
-        "do analysis of stoc. select best one in us biotech industry",
-        "take a look and find the strongest candidate in us biotech industry",
-    ],
-)
-def test_generic_candidate_description_compiles_as_taxonomy_screen(tmp_path, wording) -> None:
-    plan = build_research_plan(wording, settings(tmp_path))
-
-    assert plan.mode == "screen"
-    assert plan.workflow == "sector_opportunity"
-    assert plan.entities == []
-    assert plan.screen.country_code == "US"
-    assert plan.screen.industry == "Biotechnology & Medical Research"
-    assert plan.screen.candidate_search is True
-    assert "positive_signals" in plan.selection_objectives
-
-
 def test_esg_request_is_rejected_before_lseg_when_entitlement_is_disabled(tmp_path) -> None:
     with pytest.raises(
         UnsupportedResearchConstraint,
@@ -303,91 +248,7 @@ def test_esg_request_is_rejected_before_lseg_when_entitlement_is_disabled(tmp_pa
         build_research_plan("analyze Apple's ESG profile", settings(tmp_path))
 
 
-def test_contextual_screen_refinement_inherits_and_replaces_dimensions(tmp_path) -> None:
-    biotech = build_research_plan("can you study biotech stocks", settings(tmp_path))
-    us_biotech = build_research_plan("study us stocks", settings(tmp_path), prior_plan=biotech)
-
-    expression = build_screen_expression(us_biotech.screen)
-    assert us_biotech.planner == "deterministic_contextual"
-    assert us_biotech.context_parent_request == "can you study biotech stocks"
-    assert us_biotech.to_dict()["effective_request"] == (
-        "can you study biotech stocks study us stocks"
-    )
-    assert us_biotech.screen.country_code == "US"
-    assert us_biotech.screen.industry == "Biotechnology & Medical Research"
-    assert 'IN(TR.HQCountryCode,"US")' in expression
-    assert 'IN(TR.TRBCIndustryCode,"56202010")' in expression
-
-    technology = build_research_plan(
-        "study technology stocks instead", settings(tmp_path), prior_plan=us_biotech
-    )
-    assert technology.screen.country_code == "US"
-    assert technology.screen.sector == "Technology"
-    assert technology.screen.industry is None
-
-    canadian = build_research_plan(
-        "study Canadian stocks instead", settings(tmp_path), prior_plan=us_biotech
-    )
-    assert canadian.screen.country_code == "CA"
-    assert canadian.screen.industry is None
-
-    candidate = build_research_plan(
-        "find a promising undervalued biotech stock under $500M market cap",
-        settings(tmp_path),
-    )
-    candidate_us = build_research_plan(
-        "study us stocks", settings(tmp_path), prior_plan=candidate
-    )
-    assert candidate_us.workflow == "sector_opportunity"
-    assert candidate_us.screen.country_code == "US"
-    assert candidate_us.screen.market_cap_max == 500_000_000
-    assert candidate_us.screen.candidate_search is True
-    assert "promising undervalued" in candidate_us.effective_request
-
-    all_stocks = build_research_plan(
-        "study all US stocks", settings(tmp_path), prior_plan=candidate
-    )
-    assert all_stocks.workflow == "stock_screen"
-    assert all_stocks.screen.country_code == "US"
-    assert all_stocks.screen.sector is None
-    assert all_stocks.screen.industry is None
-    assert all_stocks.screen.market_cap_max is None
-    assert all_stocks.screen.candidate_search is False
-    assert all_stocks.screen.limit == 15
-    assert all_stocks.screen.sort_by == "market_cap"
-
-    fresh = build_research_plan(
-        "start a new screen for US technology stocks",
-        settings(tmp_path),
-        prior_plan=candidate,
-    )
-    assert fresh.planner == "deterministic"
-    assert fresh.context_parent_request is None
-    assert fresh.screen.country_code == "US"
-    assert fresh.screen.sector == "Technology"
-    assert fresh.screen.market_cap_max is None
-    assert fresh.screen.candidate_search is False
-
-    global_screen = build_research_plan(
-        "study global stocks", settings(tmp_path), prior_plan=us_biotech
-    )
-    assert global_screen.screen.country_code is None
-    assert global_screen.screen.sector is None
-    assert global_screen.screen.industry is None
-
-
-def test_contextual_screen_action_variants_compile(tmp_path) -> None:
+def test_contextual_screen_change_requires_semantic_provider(tmp_path) -> None:
     prior = build_research_plan("study biotech stocks", settings(tmp_path))
-    for text in (
-        "focus on us stocks",
-        "narrow to US stocks",
-        "filter for US stocks",
-        "what about US stocks?",
-    ):
-        plan = build_research_plan(text, settings(tmp_path), prior_plan=prior)
-        assert plan.screen.country_code == "US", text
-        assert plan.screen.industry == "Biotechnology & Medical Research", text
-
-    replacement = build_research_plan("US stocks instead", settings(tmp_path), prior_plan=prior)
-    assert replacement.screen.country_code == "US"
-    assert replacement.screen.industry is None
+    with pytest.raises(ResearchClarificationNeeded):
+        build_research_plan("change the previous screen", settings(tmp_path), prior_plan=prior)

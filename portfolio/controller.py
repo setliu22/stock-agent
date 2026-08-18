@@ -13,6 +13,7 @@ from .cloud_portfolios import CloudPurchase, SupabasePortfolioClient
 from .database import PortfolioDatabase
 from .event_risk import run_portfolio_event_risk_review
 from .market_data import current_price, recent_closes
+from .market_regime import MarketRegimeSnapshot, build_market_regime
 from .models import Holding, HoldingSnapshot, PortfolioHistoryPoint, Purchase
 
 
@@ -122,6 +123,9 @@ class StockAgentController:
             )
             for as_of in sorted(common_dates)
         ]
+
+    def market_regime(self) -> MarketRegimeSnapshot:
+        return build_market_regime()
 
     def holdings_text(self) -> str:
         return self.agent.show_holdings()

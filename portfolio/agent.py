@@ -317,11 +317,9 @@ class StockAgent:
         if (
             self._last_research_result is not None
             and self._screen_refinement_available
-            and self._is_screen_refinement(text, self._last_research_result.plan)
+            and not operational_command
+            and _is_research_request(text, semantic_fallback=bool(self.settings.groq_api_key))
         ):
-            # Capture the successful plan before research() deliberately clears
-            # stale result context. The planner will inherit only omitted screen
-            # constraints and will replace constraints stated in this turn.
             prior_plan = self._last_research_result.plan
             return self.research(
                 text,
@@ -492,88 +490,6 @@ class StockAgent:
             )
         )
         return (refers_to_prior_result and research_question) or direct_follow_up
-
-    @staticmethod
-    def _is_screen_refinement(text: str, prior_plan: ResearchPlan) -> bool:
-        """Recognize a new screen turn that refines the last screen.
-
-        Evidence questions such as "why is this company undervalued?" are
-        handled separately. This path is only for plural-universe requests, so
-        "study Apple stock" remains a fresh company deep dive.
-        """
-        if prior_plan.mode != "screen":
-            return False
-        lower = re.sub(r"\s+", " ", text.casefold()).strip()
-        explicit_fresh_screen = bool(
-            re.search(
-                r"\b(?:new|fresh)\s+screen\b|\bstart\s+(?:over|a\s+new\s+screen)\b|"
-                r"\bfrom\s+scratch\b|\b(?:just|only)\s+list\b|"
-                r"\b(?:global|worldwide|international)\b[^.;,]{0,30}\b(?:stocks|companies|equities)\b|"
-                r"\b(?:stocks|companies|equities)\b[^.;,]{0,20}\bglobally\b|"
-                r"\ball\b[^.;,]{0,45}\b(?:stocks|companies|equities)\b",
-                lower,
-            )
-        )
-        if explicit_fresh_screen:
-            return False
-        action = bool(
-            re.search(
-                r"\b(?:study|research|screen|analy[sz]e|examine|assess|evaluate|review|investigate|"
-                r"find|list|show(?:\s+me)?|return|display|give\s+me|focus\s+on|narrow\s+to|"
-                r"filter\s+(?:for|to)|what\s+about)\b",
-                lower,
-            )
-        )
-        plural_universe = bool(re.search(r"\b(?:stocks|companies|equities)\b", lower))
-        contextual_universe = bool(
-            re.search(r"\b(?:names|ones|candidates|picks)\b", lower)
-            or re.search(
-                r"\b(?:stateside|domestic|american|u\.?s\.?|united\s+states|canadian|"
-                r"british|u\.?k\.?|european|japanese|chinese|australian|indian)\b",
-                lower,
-            )
-        )
-        replacement = plural_universe and bool(re.search(r"\binstead\b", lower))
-        terse_contextual = bool(
-            re.fullmatch(
-                r"\s*(?:(?:what\s+about|maybe)\s+)?"
-                r"(?:stateside|domestic|american|u\.?s\.?|united\s+states|canadian|british|"
-                r"u\.?k\.?|japanese|chinese|indian)"
-                r"(?:[- ]headquartered)?\s+(?:names|ones|stocks|companies|equities|picks|candidates)"
-                r"(?:\s*,?\s*please)?\??\s*",
-                lower,
-            )
-        )
-        numeric_refinement = bool(
-            re.search(
-                r"\b(?:first|top|show(?:\s+me)?|give\s+me|return|display)\s+\d+\b"
-                r"[^.;,]{0,45}\b(?:stocks|companies|equities|names)\b",
-                lower,
-            )
-        )
-        contextual_geography = bool(
-            re.search(
-                r"\b(?:stateside|domestic|american|u\.?s\.?|united\s+states|canadian|"
-                r"british|u\.?k\.?|european|japanese|chinese|australian|indian)\b",
-                lower,
-            )
-            and (
-                contextual_universe
-                or plural_universe
-                or re.search(
-                    r"\b(?:same|those|them|that|only|headquartered|restrict|focus|"
-                    r"how\s+about|what\s+about)\b",
-                    lower,
-                )
-            )
-        )
-        return (
-            (action and (plural_universe or contextual_universe))
-            or replacement
-            or terse_contextual
-            or numeric_refinement
-            or contextual_geography
-        )
 
     def show_holdings(self) -> str:
         holdings = self.database.holdings()

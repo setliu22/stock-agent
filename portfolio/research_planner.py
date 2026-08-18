@@ -13,6 +13,7 @@ import math
 import re
 from typing import Any, Callable
 
+from .company_resolver import is_explicit_ticker, is_probable_ticker
 from .config import Settings
 from .research_workflows import WORKFLOWS, get_workflow
 
@@ -582,12 +583,6 @@ def _named_security_subject(text: str) -> str | None:
     }
     if lower in country_subjects:
         return None
-    if lower in {
-        "quantum computing", "robotics", "cybersecurity", "fintech", "renewable energy",
-        "clean energy", "investment bank", "investment banks", "regional bank",
-        "regional banks", "mining", "steel",
-    }:
-        return None
     return subject
 
 
@@ -595,22 +590,6 @@ def _extract_entities(text: str, mode: str) -> list[str]:
     if mode in {"screen", "market_news"}:
         return []
     cleaned = text.strip()
-    named_as = re.search(
-        r"\b(?:analy[sz]e|research|study|examine|assess|review|investigate|evaluate)\s+"
-        r"(?:a|an)\s+.+?\s+named\s+(.+)$",
-        cleaned,
-        re.I,
-    )
-    if named_as:
-        return [_strip_topic_tail(named_as.group(1))]
-    qualified = re.search(
-        r"\b(?:analy[sz]e|research|study|examine|assess|review|investigate|evaluate)\s+"
-        r"([^,]+),\s+(?:a|an)\s+.+?\s+company\b",
-        cleaned,
-        re.I,
-    )
-    if qualified:
-        return [_strip_topic_tail(qualified.group(1))]
     if mode == "compare":
         match = re.search(r"\b(?:compare|evaluate|review)\s+(.+)$", cleaned, re.I)
         if match:
@@ -1142,11 +1121,11 @@ def _deterministic_plan(text: str) -> ResearchPlan:
     )
     classification_collection = bool(re.search(r"\b(?:stocks|companies|equities)\b", lower))
     unspecified_sector_company = bool(
-        (detected_sector or detected_industry)
-        and (
-            opportunity_words
-            or generic_classification_company
+        (
+            (detected_sector or detected_industry)
+            or (opportunity_words and generic_classification_company)
         )
+        and (opportunity_words or generic_classification_company)
         and not (explicit_screen_word and not opportunity_words)
     )
 
@@ -1156,16 +1135,7 @@ def _deterministic_plan(text: str) -> ResearchPlan:
         r"\b(promising|undervalued|cheap|bargain|best|good|strong|attractive|a|an|some|any)\b",
         named_find_subject.casefold(),
     ) if named_find_subject else None
-    explicitly_named_company = bool(
-        re.search(
-            r"^\s*(?:analy[sz]e|research|study|examine|assess|review|investigate|evaluate)\s+"
-            r"(?:(?:a|an)\s+.+?\s+named\s+.+|[^,]+,\s+(?:a|an)\s+.+?\s+company)\b",
-            text,
-            re.I,
-        )
-    )
-
-    if explicitly_named_company or named_security_subject:
+    if named_security_subject:
         mode, workflow = "company", "company_deep_dive"
     elif unspecified_sector_company:
         mode, workflow = "screen", "sector_opportunity"
@@ -1184,7 +1154,7 @@ def _deterministic_plan(text: str) -> ResearchPlan:
             lower,
         )
         or re.search(r"\b(?:stocks?|companies|equities)\b[^.;,]{0,20}\binstead\b", lower)
-    ) and re.search(r"\b(stocks?|companies|equities)\b", lower):
+    ) and re.search(r"\b(stocks|companies|equities)\b", lower):
         mode, workflow = "screen", "stock_screen"
     else:
         mode, workflow = "company", "company_deep_dive"
@@ -1220,146 +1190,6 @@ def _deterministic_plan(text: str) -> ResearchPlan:
         screen=screen,
         raw_request=text,
         planner="deterministic",
-    ).normalized()
-
-
-def _contextual_screen_plan(text: str, prior_plan: ResearchPlan) -> ResearchPlan:
-    """Overlay an explicit follow-up turn on a prior successful screen plan.
-
-    A geography-only turn such as ``study us stocks`` inherits the prior TRBC
-    classification. Any taxonomy or country stated in the new turn replaces
-    that dimension. Other omitted constraints remain intact, which makes the
-    effective LSEG request visible and deterministic instead of relying on an
-    LLM to reconstruct conversation state.
-    """
-    if prior_plan.mode != "screen":
-        raise UnsupportedResearchConstraint(
-            "Only a prior stock screen can be refined with an abbreviated universe request."
-        )
-
-    lower = re.sub(r"\s+", " ", text.casefold()).strip()
-    if re.search(
-        r"\b(?:remove|drop|clear|ignore)\b[^.;,]{0,35}"
-        r"\b(?:filter|constraint|limit|country|geography|sector|industry|market\s+cap|p/?e|ev/?ebitda)\b",
-        lower,
-    ):
-        raise UnsupportedResearchConstraint(
-            "Removing an inherited screen constraint requires a complete replacement request; "
-            "the constraint was not silently discarded."
-        )
-
-    explicit_fresh_screen = bool(
-        re.search(
-            r"\b(?:new|fresh)\s+screen\b|\bstart\s+(?:over|a\s+new\s+screen)\b|"
-            r"\bfrom\s+scratch\b|\b(?:just|only)\s+list\b|"
-            r"\b(?:global|worldwide|international)\b[^.;,]{0,30}\b(?:stocks|companies|equities)\b|"
-            r"\b(?:stocks|companies|equities)\b[^.;,]{0,20}\bglobally\b",
-            lower,
-        )
-    )
-    if explicit_fresh_screen:
-        return _deterministic_plan(text)
-
-    current = _deterministic_plan(text)
-    if current.mode != "screen":
-        raise UnsupportedResearchConstraint(
-            "The follow-up could not be compiled as a stock-screen refinement."
-        )
-
-    reset_all_filters = bool(
-        re.search(r"\ball\b[^.;,]{0,45}\b(?:stocks|companies|equities)\b", lower)
-        or (
-            re.search(r"\binstead\b", lower)
-            and re.search(r"\b(?:stocks|companies|equities)\b", lower)
-            and not (current.screen.sector or current.screen.industry)
-        )
-    )
-    merged = (
-        ScreenFilters()
-        if reset_all_filters
-        else ScreenFilters(**asdict(prior_plan.screen))
-    )
-    clear_taxonomy = reset_all_filters or bool(
-        re.search(
-            r"\bacross\s+all\s+(?:sectors|industries)\b",
-            lower,
-        )
-    )
-    if clear_taxonomy:
-        merged.sector = None
-        merged.industry = None
-    if current.screen.industry:
-        # An explicit lower-level classification replaces both inherited TRBC
-        # dimensions; normalized() restores its exact parent sector.
-        merged.sector = None
-        merged.industry = current.screen.industry
-    elif current.screen.sector:
-        # An explicit economic sector broadens/replaces an inherited industry,
-        # rather than creating an impossible cross-taxonomy conjunction.
-        merged.sector = current.screen.sector
-        merged.industry = None
-
-    if current.screen.country_code:
-        merged.country_code = current.screen.country_code
-
-    numeric_fields = (
-        "market_cap_min", "market_cap_max", "pe_max", "forward_pe_max",
-        "ev_ebitda_max", "dividend_yield_min", "total_return_3m_min",
-    )
-    for field_name in numeric_fields:
-        value = getattr(current.screen, field_name)
-        if value is not None:
-            setattr(merged, field_name, value)
-
-    if current.screen.universe:
-        merged.universe = current.screen.universe
-    if current.screen.limit_explicit:
-        merged.limit = current.screen.limit
-        merged.limit_explicit = True
-
-    inherited_objectives = [] if reset_all_filters else prior_plan.selection_objectives
-    selection_objectives = list(
-        dict.fromkeys([*inherited_objectives, *current.selection_objectives])
-    )
-    inherited_candidate_search = prior_plan.screen.candidate_search and not reset_all_filters
-    merged.candidate_search = bool(
-        inherited_candidate_search or current.screen.candidate_search or selection_objectives
-    )
-    if merged.candidate_search and not (merged.sector or merged.industry):
-        raise UnsupportedResearchConstraint(
-            "A promising/value candidate refinement requires a supported sector or industry."
-        )
-    if merged.candidate_search:
-        merged.sort_by = "quality_value"
-    elif prior_plan.screen.candidate_search and (reset_all_filters or clear_taxonomy):
-        merged.sort_by = current.screen.sort_by
-
-    lookback_is_explicit = bool(
-        re.search(
-            r"\b(?:last|past|over(?:\s+the)?(?:\s+past)?)\s+\d+\s*(?:days?|weeks?|months?|years?)\b",
-            lower,
-        )
-        or re.search(r"\b(?:today|this\s+week|this\s+month|last\s+quarter)\b", lower)
-    )
-    horizon_is_explicit = bool(
-        re.search(r"\b(?:short[- ]term|next\s+few\s+weeks|next\s+quarter|long[- ]term|multi[- ]year|years)\b", lower)
-    )
-    topics = list(dict.fromkeys([*prior_plan.topics, *current.topics]))
-    workflow = "sector_opportunity" if merged.candidate_search else "stock_screen"
-    return ResearchPlan(
-        mode="screen",
-        workflow=workflow,
-        entities=[],
-        topics=topics,
-        selection_objectives=selection_objectives,
-        lookback_days=current.lookback_days if lookback_is_explicit else prior_plan.lookback_days,
-        investment_horizon=(
-            current.investment_horizon if horizon_is_explicit else prior_plan.investment_horizon
-        ),
-        screen=merged,
-        raw_request=text,
-        planner="deterministic_contextual",
-        context_parent_request=prior_plan.effective_request,
     ).normalized()
 
 
@@ -1943,24 +1773,6 @@ def _actionable_semantic_clarification(exc: UnsupportedResearchConstraint) -> st
     return None
 
 
-def _clearly_conceptual_request(text: str) -> bool:
-    """Bound conceptual prompts away from executable stock-screen semantics."""
-    if _named_security_subject(text):
-        return False
-    lower = re.sub(r"\s+", " ", text.casefold()).strip()
-    patterns = (
-        r"\bwhat\b[^?.!]{0,100}\bmeans?\b",
-        r"\b(?:best practices|best way)\b[^?.!]{0,100}\b"
-        r"(?:research(?:ing)?|analy[sz](?:e|ing)|valu(?:e|ing)|screen(?:ing)?)\b",
-        r"\bresearch\s+whether\b",
-        r"\bwhat\s+makes?\b[^?.!]{0,100}\b(?:stocks?|companies|equities)\b[^?.!]{0,40}"
-        r"\b(?:attractive|good|promising|undervalued)\b",
-        r"\b(?:research|study|analy[sz]e)\b[^?.!]{0,100}\bbefore\s+i\b",
-        r"\b(?:research|study|analy[sz]e)\b[^?.!]{0,80}\b(?:strong|weak)\s+dollar\s+risks?\b",
-    )
-    return any(re.search(pattern, lower) for pattern in patterns)
-
-
 def _explicit_entity_plan(plan: ResearchPlan, text: str) -> bool:
     if not plan.entities or not all(_entity_is_grounded(entity, text) for entity in plan.entities):
         return False
@@ -1969,6 +1781,64 @@ def _explicit_entity_plan(plan: ResearchPlan, text: str) -> bool:
         or _entity_is_generic_reference(entity)
         for entity in plan.entities
     )
+
+
+def _entity_reference_is_structurally_explicit(value: str) -> bool:
+    """Accept identifier-shaped or proper-name-shaped references without semantics."""
+    reference = value.strip()
+    if is_explicit_ticker(reference):
+        return True
+    if is_probable_ticker(reference) and len(reference) <= 5:
+        return True
+    words = re.findall(r"[A-Za-z][A-Za-z0-9&.'-]*", reference)
+    return bool(words and len(words) <= 8 and any(word[0].isupper() for word in words))
+
+
+def _deterministic_plan_is_complete(plan: ResearchPlan) -> bool:
+    """Require structural evidence before bypassing semantic interpretation."""
+    if plan.mode in {"company", "compare"}:
+        return bool(plan.entities) and all(
+            _entity_reference_is_structurally_explicit(entity) for entity in plan.entities
+        )
+    if plan.mode == "screen":
+        direct_command = re.match(
+            r"^\s*(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?"
+            r"(?:screen|find|show|list|research|study|analy[sz]e|review|evaluate|assess)\b",
+            plan.raw_request,
+            re.I,
+        )
+        subordinate_clause = re.search(
+            r"^\s*(?:what|why|how|when|where|who|which)\b|"
+            r"\b(?:whether|unless|although|because|before|after|while)\b",
+            plan.raw_request,
+            re.I,
+        )
+        if not direct_command or subordinate_clause:
+            return False
+        screen = plan.screen
+        constrained = bool(
+            screen.country_code
+            or screen.sector
+            or screen.industry
+            or screen.universe
+            or screen.candidate_search
+            or screen.limit_explicit
+            or any(
+                getattr(screen, field_name) is not None
+                for field_name in (
+                    "market_cap_min",
+                    "market_cap_max",
+                    "pe_max",
+                    "forward_pe_max",
+                    "ev_ebitda_max",
+                    "dividend_yield_min",
+                    "total_return_3m_min",
+                )
+            )
+        )
+        explicitly_screened = bool(re.search(r"\b(?:screen|screener)\b", plan.raw_request, re.I))
+        return constrained or explicitly_screened
+    return plan.mode == "market_news"
 
 
 def _explicit_list_only(text: str, plan: ResearchPlan) -> bool:
@@ -2112,7 +1982,7 @@ def _reconcile_intent(
     if draft.route == "needs_clarification" or draft.clarification or draft.confidence < 0.7:
         question = draft.clarification or "Could you clarify the company or stock universe you want researched?"
         raise ResearchClarificationNeeded(question)
-    if draft.route == "general" and prior_plan is None:
+    if draft.route == "general":
         raise NotResearchRequest("The request is general conversation, not an LSEG research instruction.")
     if draft.route == "evidence_follow_up" and deterministic is None:
         raise ResearchClarificationNeeded(
@@ -2126,7 +1996,7 @@ def _reconcile_intent(
     # when deterministic parsing could not understand the shorthand.
     base = deterministic
     inherited_only = False
-    if prior_plan is not None and base is None:
+    if prior_plan is not None and base is None and draft.route == "refine_screen":
         if prior_plan.mode != "screen":
             raise ResearchClarificationNeeded("The previous result is not a stock screen that can be refined.")
         inherited_only = True
@@ -2406,19 +2276,18 @@ def build_research_plan(
     settings: Settings,
     prior_plan: ResearchPlan | None = None,
 ) -> ResearchPlan:
-    if _clearly_conceptual_request(text):
-        raise NotResearchRequest(
-            "The request asks for a concept or research method, not an executable LSEG company or universe study."
-        )
     deterministic: ResearchPlan | None = None
     deterministic_clarification: str | None = None
     unresolved_slots: set[str] = set()
     try:
         deterministic = (
-            _contextual_screen_plan(text, prior_plan)
-            if prior_plan is not None
-            else _deterministic_plan(text)
+            _deterministic_plan(text)
         )
+        if prior_plan is not None and deterministic.mode == "screen":
+            # Whether a new screen replaces or refines prior state is semantic.
+            # Preserve the deterministic plan only for explicit named-company
+            # requests, which cannot inherit screen filters.
+            deterministic = None
     except UnsupportedResearchConstraint as exc:
         if not _semantic_planning_error(exc):
             # Material policy and explicit-constraint failures are rejected
@@ -2427,6 +2296,9 @@ def build_research_plan(
             # reinterpreted by generated intent.
             raise
         deterministic_clarification = _actionable_semantic_clarification(exc)
+
+    if deterministic is not None and not _deterministic_plan_is_complete(deterministic):
+        deterministic = None
 
     # Required semantic postconditions are derived from the current wording
     # even when deterministic structural planning failed—the exact situation

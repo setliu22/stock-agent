@@ -27,8 +27,8 @@ _US_GEOGRAPHY_FILTER = re.compile(
 def normalize_research_request(message: str) -> str:
     """Normalize lowercase ``us`` only when it clearly means United States.
 
-    The ordinary pronoun remains untouched, so text such as ``tell us about
-    Apple`` is not changed. This fixes requests such as ``analyze us stocks``.
+    The ordinary pronoun remains untouched unless adjacent financial context
+    makes the geographic meaning explicit.
     """
 
     normalized = _US_BEFORE_FINANCE_TERM.sub("US", message)

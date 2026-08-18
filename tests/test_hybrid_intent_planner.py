@@ -8,6 +8,7 @@ import pytest
 from portfolio.config import Settings
 from portfolio.research_planner import (
     LLMIntentDraft,
+    NotResearchRequest,
     ResearchClarificationNeeded,
     UnsupportedResearchConstraint,
     _extract_json,
@@ -99,8 +100,8 @@ def test_complete_deterministic_anchors_bypass_llm(
     )
 
     plan = build_research_plan(
-        "Looking across the top 7 US industrial stocks with market cap under $5B "
-        "and forward P/E below 18, which name stands out long term?",
+        "screen the top 7 promising US industrial stocks with market cap under $5B "
+        "and forward P/E below 18 for the long term",
         settings(tmp_path),
     )
 
@@ -140,6 +141,29 @@ def test_clear_deterministic_request_does_not_call_model(
     assert plan.screen.sector == "Technology"
     assert plan.screen.pe_max == 20
     assert plan.intent_resolution["llm_used"] is False
+
+
+def test_fuzzy_security_wording_uses_validated_semantic_entity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "portfolio.research_planner._llm_intent_draft",
+        lambda *_args, **_kwargs: intent_draft(
+            subject_kind="company",
+            entities=("zbra",),
+            interpretation="Research the explicitly mentioned ticker.",
+        ),
+    )
+
+    plan = build_research_plan(
+        "research a stock i think it's called zbra",
+        settings(tmp_path),
+    )
+
+    assert plan.mode == "company"
+    assert plan.entities == ["zbra"]
+    assert plan.planner == "hybrid_llm_validated"
 
 
 def test_listing_country_policy_rejects_before_llm_interpretation(
@@ -184,9 +208,7 @@ def test_stateside_follow_up_retains_prior_biotech_classification(
 
     plan = build_research_plan(follow_up, settings(tmp_path), prior_plan=prior)
 
-    assert plan.planner == (
-        "hybrid_llm_validated" if "stateside" in follow_up else "deterministic_contextual"
-    )
+    assert plan.planner == "hybrid_llm_validated"
     assert plan.screen.country_code == "US"
     assert plan.screen.sector == "Healthcare"
     assert plan.screen.industry == "Biotechnology & Medical Research"
@@ -705,7 +727,7 @@ def test_explicit_nonsemantic_anchors_survive_llm_only_structural_resolution(
     assert {"insiders", "ownership"}.issubset(plan.topics)
 
 
-def test_general_route_cannot_veto_router_supplied_prior_screen(
+def test_general_route_with_prior_screen_remains_non_executable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -716,10 +738,8 @@ def test_general_route_cannot_veto_router_supplied_prior_screen(
         lambda *_args, **_kwargs: intent_draft(route="general", subject_kind="none"),
     )
 
-    plan = build_research_plan("give me 7 stocks", settings(tmp_path), prior_plan=prior)
-
-    assert plan.screen.industry == "Biotechnology & Medical Research"
-    assert plan.screen.limit == 7
+    with pytest.raises(NotResearchRequest):
+        build_research_plan("give me 7 stocks", settings(tmp_path), prior_plan=prior)
 
 
 def test_cheap_candidate_wording_cannot_lose_relative_value_objective(

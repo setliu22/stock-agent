@@ -14,6 +14,7 @@ from typing import Any
 from portfolio.config import save_supabase_settings
 from portfolio.controller import StockAgentController
 from portfolio.cloud_portfolios import friendly_cloud_error
+from portfolio.market_regime import MarketRegimeSnapshot
 from portfolio.supabase_auth import AuthResult, SupabaseAuth, friendly_auth_error
 
 
@@ -106,6 +107,7 @@ class StockAgentApp(tk.Tk):
         self.stop_requested = False
         self.cancel_event: threading.Event | None = None
         self._send_button_hovered = False
+        self.market_refresh_busy = False
         self._configure_style()
         self._build_ui()
         self.after(100, self._poll_results)
@@ -160,13 +162,17 @@ class StockAgentApp(tk.Tk):
         self.notebook = notebook
         self.chat_tab = ttk.Frame(notebook, padding=16)
         self.holdings_tab = ttk.Frame(notebook, padding=(4, 18, 4, 4))
+        self.market_tab = ttk.Frame(notebook, padding=(4, 18, 4, 4))
         self.account_tab = ttk.Frame(notebook, padding=16)
         notebook.add(self.chat_tab, text="Chat")
         notebook.add(self.holdings_tab, text="Portfolio")
+        notebook.add(self.market_tab, text="Market")
         notebook.add(self.account_tab, text="Account")
         self._build_chat_tab()
         self._build_holdings_tab()
+        self._build_market_tab()
         self._build_account_tab()
+        self.after(250, self.refresh_market_regime)
 
     def _build_chat_tab(self) -> None:
         actions = ttk.Frame(self.chat_tab)
@@ -353,6 +359,104 @@ class StockAgentApp(tk.Tk):
         value = ttk.Label(cell, textvariable=variable, style="MetricValue.TLabel")
         value.pack(anchor="w", pady=(5, 0))
         return value
+
+    def _build_market_tab(self) -> None:
+        header = ttk.Frame(self.market_tab)
+        header.pack(fill="x", pady=(0, 14))
+        title_block = ttk.Frame(header)
+        title_block.pack(side="left", fill="x", expand=True)
+        ttk.Label(title_block, text="Market framework", style="Title.TLabel").pack(anchor="w")
+        self.market_status = tk.StringVar(value="Waiting for current macro observations")
+        ttk.Label(title_block, textvariable=self.market_status, style="Muted.TLabel").pack(
+            anchor="w", pady=(2, 0)
+        )
+        self.market_refresh_button = ttk.Button(
+            header,
+            text="Refresh data",
+            style="Accent.TButton",
+            command=self.refresh_market_regime,
+        )
+        self.market_refresh_button.pack(side="right")
+
+        overview = ttk.Frame(self.market_tab, style="Surface.TFrame", padding=(20, 16))
+        overview.pack(fill="x", pady=(0, 14))
+        self.market_regime_title = tk.StringVar(value="Regime not calculated")
+        self.market_regime_summary = tk.StringVar(
+            value="The Fed policy-rate and balance-sheet directions determine the framework quadrant."
+        )
+        ttk.Label(
+            overview, textvariable=self.market_regime_title, style="SurfaceSection.TLabel"
+        ).pack(anchor="w")
+        tk.Label(
+            overview,
+            textvariable=self.market_regime_summary,
+            background=self.SURFACE,
+            foreground=self.MUTED,
+            font=("Helvetica", 11),
+            justify="left",
+            anchor="w",
+            wraplength=1030,
+        ).pack(fill="x", pady=(6, 0))
+
+        columns = ("indicator", "latest", "trend", "as_of", "source")
+        self.market_tree = ttk.Treeview(
+            self.market_tab, columns=columns, show="headings", height=5
+        )
+        headings = {
+            "indicator": "Indicator",
+            "latest": "Latest",
+            "trend": "Trend",
+            "as_of": "As of",
+            "source": "Source",
+        }
+        widths = {
+            "indicator": 270,
+            "latest": 130,
+            "trend": 350,
+            "as_of": 120,
+            "source": 190,
+        }
+        for column in columns:
+            self.market_tree.heading(column, text=headings[column])
+            self.market_tree.column(
+                column,
+                width=widths[column],
+                anchor="w" if column in {"indicator", "trend", "source"} else "center",
+            )
+        self.market_tree.tag_configure("unavailable", foreground=self.MUTED)
+        self.market_tree.pack(fill="x", pady=(0, 14))
+
+        ttk.Label(self.market_tab, text="What to emphasize", style="Section.TLabel").pack(
+            anchor="w", pady=(2, 8)
+        )
+        self.market_emphasis = tk.Text(
+            self.market_tab,
+            height=7,
+            wrap="word",
+            background=self.BG,
+            foreground=self.TEXT,
+            insertbackground=self.TEXT,
+            relief="flat",
+            borderwidth=0,
+            font=("Helvetica", 11),
+            padx=0,
+            pady=0,
+        )
+        self.market_emphasis.pack(fill="both", expand=True)
+        self.market_emphasis.insert(
+            "1.0", "Refresh the data to generate evidence-based portfolio considerations."
+        )
+        self.market_emphasis.configure(state="disabled")
+        self.market_missing = tk.StringVar(
+            value="This view is a market-condition checklist, not a buy or sell signal."
+        )
+        ttk.Label(
+            self.market_tab,
+            textvariable=self.market_missing,
+            style="Muted.TLabel",
+            wraplength=1050,
+            justify="left",
+        ).pack(fill="x", anchor="w", pady=(10, 0))
 
     def _build_account_tab(self) -> None:
         settings = self.controller.settings
@@ -645,6 +749,14 @@ class StockAgentApp(tk.Tk):
                     self._set_auth_busy(False)
                     self.refresh_holdings(refresh_prices=False)
                     continue
+                if kind == "market_regime":
+                    self.market_refresh_busy = False
+                    self.market_refresh_button.configure(state="normal")
+                    if isinstance(payload, MarketRegimeSnapshot):
+                        self._render_market_regime(payload)
+                    else:
+                        self.market_status.set(str(payload))
+                    continue
                 response = str(payload)
                 self._finish_progress(response)
                 self._append("Agent", response)
@@ -851,6 +963,60 @@ class StockAgentApp(tk.Tk):
             return
         prompt = query if len(query.split()) > 2 else f"Analyze {query} using LSEG"
         self._submit_prompt(prompt)
+
+    def refresh_market_regime(self) -> None:
+        if self.market_refresh_busy:
+            return
+        self.market_refresh_busy = True
+        self.market_status.set("Refreshing FRED and market observations...")
+        self.market_refresh_button.configure(state="disabled")
+
+        def worker() -> None:
+            try:
+                snapshot = self.controller.market_regime()
+                self.results.put(("market_regime", snapshot))
+            except Exception as exc:
+                self.results.put(
+                    ("market_regime", f"Refresh failed: {type(exc).__name__}: {exc}")
+                )
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _render_market_regime(self, snapshot: MarketRegimeSnapshot) -> None:
+        self.market_regime_title.set(snapshot.regime)
+        self.market_regime_summary.set(snapshot.summary)
+        for item in self.market_tree.get_children():
+            self.market_tree.delete(item)
+        for indicator in snapshot.indicators:
+            tags = ("unavailable",) if indicator.status != "available" else ()
+            self.market_tree.insert(
+                "",
+                "end",
+                tags=tags,
+                values=(
+                    indicator.label,
+                    indicator.latest,
+                    indicator.trend,
+                    indicator.as_of,
+                    indicator.source,
+                ),
+            )
+        self.market_emphasis.configure(state="normal")
+        self.market_emphasis.delete("1.0", "end")
+        self.market_emphasis.insert(
+            "1.0", "\n".join(f"- {item}" for item in snapshot.emphasis)
+        )
+        self.market_emphasis.configure(state="disabled")
+        missing = " ".join(snapshot.missing_evidence)
+        self.market_missing.set(
+            f"Not yet measured: {missing} This is a market-condition checklist, not a buy or sell signal."
+        )
+        timestamp = snapshot.generated_at.astimezone().strftime("%-I:%M %p")
+        unavailable = sum(
+            indicator.status != "available" for indicator in snapshot.indicators
+        )
+        suffix = f" | {unavailable} unavailable" if unavailable else ""
+        self.market_status.set(f"Updated {timestamp}{suffix}")
 
     def refresh_holdings(self, *, refresh_prices: bool = True) -> None:
         for item in self.holdings_tree.get_children():

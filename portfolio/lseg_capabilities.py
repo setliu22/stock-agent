@@ -253,10 +253,10 @@ def concise_capability_summary() -> str:
             "• Exact installed-package function and class inventory: data/lseg_capabilities.json.",
             "",
             "Examples:",
-            "• Analyze Palantir's valuation, estimates, news, and peers.",
-            "• Compare Nvidia and AMD on profitability and price momentum.",
-            "• Screen US technology companies above $10B with forward P/E below 40.",
-            "• Show Apple's suppliers, ownership, and recent filings.",
+            "• Analyze a ticker's valuation, estimates, news, and peers.",
+            "• Compare two named securities on profitability and price momentum.",
+            "• Screen a supported sector with explicit valuation constraints.",
+            "• Request suppliers, ownership, or filings for one resolved company.",
         ]
     )
 

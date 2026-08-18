@@ -234,50 +234,8 @@ def test_request_failure_follow_up_uses_prior_trace(tmp_path, monkeypatch) -> No
     assert "Reuters story urn:newsml:example" in analysis_wording
 
 
-def test_study_geography_follow_up_reruns_lseg_with_prior_biotech_context(
-    tmp_path, monkeypatch
-) -> None:
-    from portfolio.lseg_research import ResearchResult, build_screen_expression
-
-    settings = Settings(tmp_path, tmp_path / "portfolio.db", "fake-groq-key", "test-model", "desktop.workspace")
-    agent = StockAgent(settings, PortfolioDatabase(settings.database_path))
-    plans = []
-
-    def fake_run(plan, *_args, **_kwargs):
-        plans.append(plan)
-        return ResearchResult(plan=plan)
-
-    monkeypatch.setattr("portfolio.agent.run_research", fake_run)
-    monkeypatch.setattr(
-        "portfolio.agent.concise_report",
-        lambda result, *_args, **_kwargs: f"LSEG screen: {build_screen_expression(result.plan.screen)}",
-    )
-    monkeypatch.setattr(
-        agent,
-        "_general_chat",
-        lambda _text: (_ for _ in ()).throw(AssertionError("research must not use generic chat")),
-    )
-    monkeypatch.setattr(
-        "portfolio.agent.answer_follow_up",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("a constraint refinement must rerun LSEG")
-        ),
-    )
-
-    first = agent.handle("can you study biotech stocks")
-    second = agent.handle("study us stocks")
-
-    assert len(plans) == 2
-    assert 'IN(TR.TRBCIndustryCode,"56202010")' in first
-    assert 'IN(TR.HQCountryCode,"US")' in second
-    assert 'IN(TR.TRBCIndustryCode,"56202010")' in second
-    assert plans[1].screen.country_code == "US"
-    assert plans[1].screen.industry == "Biotechnology & Medical Research"
-    assert plans[1].context_parent_request == "can you study biotech stocks"
-
-
-def test_failed_contextual_refinement_discards_prior_result(tmp_path, monkeypatch) -> None:
-    from portfolio.lseg_research import LSEGNoMatches, ResearchResult
+def test_contextual_request_without_semantic_provider_preserves_prior_result(tmp_path, monkeypatch) -> None:
+    from portfolio.lseg_research import ResearchResult
 
     settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
     agent = StockAgent(settings, PortfolioDatabase(settings.database_path))
@@ -286,17 +244,16 @@ def test_failed_contextual_refinement_discards_prior_result(tmp_path, monkeypatc
     def fake_run(plan, *_args, **_kwargs):
         nonlocal calls
         calls += 1
-        if calls == 2:
-            raise LSEGNoMatches("No U.S. matches")
         return ResearchResult(plan=plan)
 
     monkeypatch.setattr("portfolio.agent.run_research", fake_run)
     monkeypatch.setattr("portfolio.agent.concise_report", lambda *_args, **_kwargs: "Biotech screen")
 
     assert agent.handle("can you study biotech stocks") == "Biotech screen"
-    failure = agent.handle("study us stocks")
-    assert failure.startswith("No adequately supported company was found")
-    assert agent._last_research_result is None
+    response = agent.handle("study us stocks")
+    assert "need one clarification" in response
+    assert calls == 1
+    assert agent._last_research_result is not None
 
 
 def test_unrelated_turn_prevents_stale_screen_inheritance(tmp_path, monkeypatch) -> None:
@@ -498,16 +455,13 @@ def test_ambiguous_screen_shorthand_reaches_contextual_planner(tmp_path, monkeyp
     from portfolio.lseg_research import ResearchResult
     from portfolio.research_planner import ResearchPlan, ScreenFilters
 
-    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", "fake-key", "test-model", "desktop.workspace")
     prior_plan = ResearchPlan(
         mode="screen",
         workflow="stock_screen",
         screen=ScreenFilters(industry="Biotechnology & Medical Research"),
         raw_request="study biotech stocks",
     ).normalized()
-    assert not StockAgent._is_screen_refinement("why is this company undervalued?", prior_plan)
-    assert not StockAgent._is_screen_refinement("study global stocks", prior_plan)
-
     def exercise(refinement: str) -> None:
         agent = StockAgent(settings, PortfolioDatabase(settings.database_path))
         agent._last_research_result = ResearchResult(plan=prior_plan)
@@ -539,8 +493,7 @@ def test_ambiguous_screen_shorthand_reaches_contextual_planner(tmp_path, monkeyp
         assert planned_with == [(refinement, prior_plan)]
         assert len(run_calls) == 1
 
-    for refinement in ("focus on names headquartered stateside", "what about American names?"):
-        exercise(refinement)
+    exercise("research US stocks")
 
 
 def test_planner_clarification_returns_without_lseg_call(tmp_path, monkeypatch) -> None:
@@ -743,8 +696,6 @@ def test_planner_general_route_uses_general_chat_without_lseg_call(tmp_path, mon
 
 
 def test_ambiguous_equity_wording_and_terse_context_reach_planner(tmp_path, monkeypatch) -> None:
-    from portfolio.research_planner import ResearchPlan, ScreenFilters
-
     settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
     agent = StockAgent(settings, PortfolioDatabase(settings.database_path))
     seen = []
@@ -756,24 +707,6 @@ def test_ambiguous_equity_wording_and_terse_context_reach_planner(tmp_path, monk
 
     assert agent.handle("hunt for an underappreciated industrial name") == "planned"
     assert seen == ["hunt for an underappreciated industrial name"]
-
-    prior = ResearchPlan(
-        mode="screen",
-        workflow="stock_screen",
-        screen=ScreenFilters(industry="Biotechnology & Medical Research"),
-        raw_request="study biotech stocks",
-    ).normalized()
-    assert StockAgent._is_screen_refinement("American names?", prior)
-    assert StockAgent._is_screen_refinement("stateside names, please", prior)
-    for wording in (
-        "show 7 stocks",
-        "show me 7 stocks",
-        "give me 7 stocks",
-        "first 7 stocks",
-        "show 7 names",
-        "show me 7 names",
-    ):
-        assert StockAgent._is_screen_refinement(wording, prior), wording
 
 
 def test_contextual_clarification_preserves_prior_screen_without_lseg(tmp_path, monkeypatch) -> None:
@@ -808,7 +741,6 @@ def test_contextual_clarification_preserves_prior_screen_without_lseg(tmp_path, 
     assert "Which country" in response
     assert agent._last_research_result is prior_result
     assert agent._screen_refinement_available is True
-    assert StockAgent._is_screen_refinement("US-headquartered names", prior_plan)
 
 
 def test_broad_but_guarded_candidate_wording_reaches_semantic_planner(tmp_path, monkeypatch) -> None:
@@ -830,24 +762,3 @@ def test_broad_but_guarded_candidate_wording_reaches_semantic_planner(tmp_path, 
         assert agent.handle(request) == "planned", request
 
     assert seen == list(requests)
-
-
-def test_natural_geography_followups_reach_prior_screen_planner() -> None:
-    from portfolio.research_planner import ResearchPlan, ScreenFilters
-
-    prior = ResearchPlan(
-        mode="screen",
-        workflow="stock_screen",
-        screen=ScreenFilters(industry="Biotechnology & Medical Research"),
-        raw_request="study biotech stocks",
-    ).normalized()
-
-    for wording in (
-        "only US names",
-        "those headquartered in the US",
-        "same but American",
-        "how about US names",
-        "restrict that to US companies",
-        "focus only on US names",
-    ):
-        assert StockAgent._is_screen_refinement(wording, prior), wording
