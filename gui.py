@@ -27,12 +27,12 @@ def tab_drag_target(
     tab_count: int,
     horizontal_delta: int,
     *,
-    threshold: int = 56,
+    threshold: int = 44,
 ) -> int | None:
     """Return the adjacent page selected by a horizontal tab-strip drag."""
     if abs(horizontal_delta) < threshold or tab_count < 2:
         return None
-    step = 1 if horizontal_delta < 0 else -1
+    step = 1 if horizontal_delta > 0 else -1
     target = max(0, min(tab_count - 1, current_index + step))
     return target if target != current_index else None
 
@@ -200,9 +200,9 @@ class StockAgentApp(tk.Tk):
         self.after(250, self.refresh_market_regime)
 
     def _start_tab_drag(self, event: tk.Event) -> None:
-        try:
-            self.notebook.index(f"@{event.x},{event.y}")
-        except tk.TclError:
+        # Include the blank area after the last tab so the whole top strip can
+        # be scrubbed, not only the text inside an individual tab.
+        if not 0 <= event.y <= 44:
             self._tab_drag_anchor_x = None
             return
         self._tab_drag_anchor_x = event.x
