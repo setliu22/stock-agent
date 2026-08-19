@@ -13,7 +13,7 @@ import importlib.metadata
 import importlib.util
 import json
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -187,16 +187,6 @@ CAPABILITIES: tuple[Capability, ...] = (
     Capability("delivery.cfs.file_sets.Definition", "Bulk Delivery", "List CFS file sets."),
     Capability("delivery.cfs.file_downloader.Definition.retrieve", "Bulk Delivery", "Download CFS files."),
 )
-
-
-def capability_context(*, implemented_only: bool = False) -> str:
-    items: Iterable[Capability] = CAPABILITIES
-    if implemented_only:
-        items = (item for item in items if item.execution == "implemented")
-    return "\n".join(
-        f"- {item.name}: {item.purpose}"
-        for item in items
-    )
 
 
 def _catalog_records(path: Path | None = None) -> list[dict[str, Any]]:

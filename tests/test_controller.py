@@ -119,6 +119,15 @@ class _FakeCloudClient:
         self.signed_in = False
         self.updated = []
 
+    def sign_up(self, email, _password):
+        self.signed_in = True
+        self.session = CloudSession("a", "r", 9999999999, "user-1", email)
+        return "Account created and signed in."
+
+    @property
+    def current_email(self):
+        return self.session.email if hasattr(self, "session") else ""
+
     def sign_in(self, _email, _password):
         self.signed_in = True
         return CloudSession("a", "r", 9999999999, "user-1", "person@example.com")
@@ -157,7 +166,7 @@ def test_account_sign_in_restores_cloud_holdings_and_sign_out_clears_cache(tmp_p
     assert fake.signed_out
 
 
-def test_account_sign_in_uploads_local_holdings_when_cloud_is_empty(tmp_path, monkeypatch):
+def test_account_sign_in_replaces_stale_local_holdings_when_cloud_is_empty(tmp_path, monkeypatch):
     settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
     controller = StockAgentController(settings=settings)
     controller.database.record_purchase(Purchase("MSFT", 3, 200, date(2026, 1, 1)))
@@ -166,8 +175,43 @@ def test_account_sign_in_uploads_local_holdings_when_cloud_is_empty(tmp_path, mo
 
     controller.account_sign_in("person@example.com", "password")
 
-    assert len(fake.created) == 1
-    assert fake.created[0]["ticker"] == "MSFT"
+    assert controller.holdings() == []
+    assert fake.created == []
+
+
+def test_account_sign_up_reuses_new_session_without_second_login(tmp_path, monkeypatch):
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
+    controller = StockAgentController(settings=settings)
+    fake = _FakeCloudClient()
+    monkeypatch.setattr("portfolio.controller.SupabasePortfolioClient.from_project", lambda _root: fake)
+
+    result = controller.account_sign_up("person@example.com", "password")
+
+    assert result.signed_in
+    assert result.email == "person@example.com"
+    assert controller.cloud_client is fake
+
+
+def test_failed_cloud_hydration_signs_out_and_clears_local_cache(tmp_path, monkeypatch):
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
+    controller = StockAgentController(settings=settings)
+    controller.database.record_purchase(Purchase("MSFT", 1, 200, date(2026, 1, 1)))
+    fake = _FakeCloudClient()
+    monkeypatch.setattr("portfolio.controller.SupabasePortfolioClient.from_project", lambda _root: fake)
+    monkeypatch.setattr(
+        controller,
+        "_hydrate_local_portfolio",
+        lambda _client: (_ for _ in ()).throw(RuntimeError("schema unavailable")),
+    )
+
+    try:
+        controller.account_sign_in("person@example.com", "password")
+    except RuntimeError:
+        pass
+
+    assert fake.signed_out
+    assert controller.cloud_client is None
+    assert controller.holdings() == []
 
 
 def test_post_login_purchase_syncs_before_logout(tmp_path, monkeypatch):

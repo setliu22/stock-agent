@@ -9,7 +9,7 @@ from typing import Callable
 from .agent import StockAgent
 from .company_resolver import company_name_to_ticker, extract_security_reference, is_explicit_ticker
 from .config import Settings, get_settings
-from .cloud_portfolios import CloudPurchase, SupabasePortfolioClient
+from .cloud_portfolios import AuthResult, CloudPurchase, SupabasePortfolioClient
 from .database import PortfolioDatabase
 from .event_risk import run_portfolio_position_risk_review
 from .market_data import current_price, recent_closes
@@ -196,38 +196,51 @@ class StockAgentController:
         )
         return review.to_text()
 
-    def review_event_risk(self, progress_callback=None, cancel_event=None) -> str:
-        return self.review_position_risk(progress_callback, cancel_event)
+    def account_sign_up(self, email: str, password: str) -> AuthResult:
+        client = SupabasePortfolioClient.from_project(self.settings.project_root)
+        message = client.sign_up(email, password)
+        if not client.signed_in:
+            return AuthResult(message, False, email.strip())
+        self.cloud_client = client
+        try:
+            self._hydrate_local_portfolio(client)
+        except Exception:
+            self.account_sign_out()
+            raise
+        return AuthResult(message, True, client.current_email or email.strip())
 
-    def account_sign_in(self, email: str, password: str) -> str:
+    def account_sign_in(self, email: str, password: str) -> AuthResult:
         """Authenticate and hydrate the disposable local portfolio cache."""
         client = SupabasePortfolioClient.from_project(self.settings.project_root)
         session = client.sign_in(email, password)
+        self.cloud_client = client
+        try:
+            self._hydrate_local_portfolio(client)
+        except Exception:
+            self.account_sign_out()
+            raise
+        return AuthResult("Signed in successfully.", True, session.email)
+
+    def account_sign_out(self) -> AuthResult:
+        """Revoke any cached session and always clear the local portfolio cache."""
+        try:
+            client = self.cloud_client
+            if client is None:
+                try:
+                    client = SupabasePortfolioClient.from_project(self.settings.project_root)
+                except (OSError, TypeError, ValueError):
+                    client = None
+            if client is not None:
+                client.sign_out()
+        finally:
+            self.cloud_client = None
+            self.database.replace_with_snapshot([])
+        return AuthResult("Signed out.", False)
+
+    def _hydrate_local_portfolio(self, client: SupabasePortfolioClient) -> None:
         portfolio = self._account_portfolio(client)
         remote = client.list_purchases(portfolio.id)
-        local = self.database.list_purchases()
-        if remote:
-            self.database.replace_with_snapshot(_local_purchases(remote))
-        elif local:
-            for purchase in local:
-                client.create_purchase(
-                    portfolio_id=portfolio.id,
-                    security_name=purchase.ticker,
-                    ticker=purchase.ticker,
-                    quantity=purchase.quantity,
-                    purchase_price=purchase.price,
-                    purchased_at=purchase.purchased_at.isoformat(),
-                    note=purchase.note,
-                )
-        self.cloud_client = client
-        return session.email
-
-    def account_sign_out(self) -> None:
-        """Clear the local cache only after the cloud session is available."""
-        if self.cloud_client is not None:
-            self.cloud_client.sign_out()
-        self.cloud_client = None
-        self.database.replace_with_snapshot([])
+        self.database.replace_with_snapshot(_local_purchases(remote))
 
     def sync_local_portfolio(self) -> int:
         """Upload local purchases not yet present in the signed-in account."""

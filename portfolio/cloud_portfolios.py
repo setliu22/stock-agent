@@ -13,8 +13,9 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import ssl
 import threading
-from typing import Any, Iterable
+from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -42,6 +43,28 @@ class CloudRequestError(CloudPortfolioError):
     """Raised when the Supabase REST API returns an error."""
 
 
+@dataclass(frozen=True, slots=True)
+class AuthResult:
+    message: str
+    signed_in: bool
+    email: str | None = None
+
+
+def is_certificate_error(error: BaseException) -> bool:
+    """Recognize TLS verification errors even when a client wrapped them."""
+    current: BaseException | None = error
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        if isinstance(current, ssl.SSLCertVerificationError):
+            return True
+        text = str(current).casefold()
+        if "certificate_verify_failed" in text or "certificate verify failed" in text:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def friendly_cloud_error(error: BaseException) -> str:
     """Turn common first-time Supabase setup failures into actionable messages."""
     message = str(error).strip() or type(error).__name__
@@ -59,6 +82,16 @@ def friendly_cloud_error(error: BaseException) -> str:
             "then sign in again."
         )
     return message
+
+
+def friendly_auth_error(error: BaseException) -> str:
+    if is_certificate_error(error):
+        return (
+            "Python could not verify Supabase's security certificate. "
+            "Run \u201cInstall Stock Agent.command\u201d again so the trusted certificate "
+            "bundle is installed, then retry. Do not disable SSL verification."
+        )
+    return f"Supabase request failed: {friendly_cloud_error(error)}"
 
 
 @dataclass(slots=True)
@@ -196,6 +229,9 @@ class SupabasePortfolioClient:
         email = email.strip()
         if not email or not password:
             raise CloudAuthenticationError("Email and password are required.")
+        # Email confirmation may return no new token, so discard any cached
+        # session before creating a different account.
+        self.sign_out()
         payload = self._raw_request(
             "POST",
             "/auth/v1/signup",
@@ -485,57 +521,6 @@ class SupabasePortfolioClient:
             os.chmod(self.session_path, 0o600)
         except OSError:
             pass
-
-
-
-def save_cloud_configuration(
-    project_root: Path,
-    *,
-    project_url: str,
-    publishable_key: str,
-) -> None:
-    """Persist non-secret Supabase connection settings in the project .env file."""
-
-    clean_url = project_url.strip().rstrip("/")
-    clean_key = publishable_key.strip()
-    if not clean_url.startswith("https://"):
-        raise ValueError("Supabase URL must begin with https://.")
-    if not clean_key:
-        raise ValueError("Supabase publishable key cannot be blank.")
-    env_path = project_root.resolve() / ".env"
-    _upsert_env_values(
-        env_path,
-        {
-            "SUPABASE_URL": clean_url,
-            "SUPABASE_PUBLISHABLE_KEY": clean_key,
-            "SUPABASE_REQUEST_TIMEOUT": "20",
-        },
-    )
-
-
-def _upsert_env_values(path: Path, values: dict[str, str]) -> None:
-    existing_lines: list[str] = []
-    if path.exists():
-        existing_lines = path.read_text(encoding="utf-8").splitlines()
-    remaining = dict(values)
-    output: list[str] = []
-    for line in existing_lines:
-        stripped = line.strip()
-        replaced = False
-        for key in list(remaining):
-            if stripped.startswith(f"{key}="):
-                output.append(f"{key}={remaining.pop(key)}")
-                replaced = True
-                break
-        if not replaced:
-            output.append(line)
-    if output and output[-1].strip():
-        output.append("")
-    if remaining:
-        output.append("# Cloud portfolios (Supabase free project)")
-        output.extend(f"{key}={value}" for key, value in remaining.items())
-    path.write_text("\n".join(output).rstrip() + "\n", encoding="utf-8")
-
 def _purchase_payload(
     *,
     portfolio_id: str,

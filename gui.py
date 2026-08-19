@@ -14,13 +14,12 @@ from typing import Any
 
 from portfolio.config import save_supabase_settings
 from portfolio.controller import StockAgentController
-from portfolio.cloud_portfolios import friendly_cloud_error
+from portfolio.cloud_portfolios import AuthResult, friendly_auth_error
 from portfolio.market_regime import (
     MacroResearchPolicy,
     MarketRegimeSnapshot,
     RESEARCH_WEIGHT_KEYS,
 )
-from portfolio.supabase_auth import AuthResult, SupabaseAuth, friendly_auth_error
 
 
 def tab_drag_target(
@@ -112,7 +111,6 @@ class StockAgentApp(tk.Tk):
         self.geometry("1280x820")
         self.minsize(1100, 700)
         self.controller = StockAgentController()
-        self.supabase_auth: SupabaseAuth | None = None
         self.auth_busy = False
         self.results: queue.Queue[tuple[str, Any]] = queue.Queue()
         self.research_started_at: float | None = None
@@ -804,15 +802,9 @@ class StockAgentApp(tk.Tk):
         self.account_status_label.grid(row=9, column=0, columnspan=3, sticky="ew")
 
         if settings.supabase_url and settings.supabase_publishable_key:
-            try:
-                self.supabase_auth = SupabaseAuth(
-                    settings.supabase_url, settings.supabase_publishable_key
-                )
-                self.account_status.set(
-                    "Connection settings loaded. Create an account or sign in."
-                )
-            except Exception as exc:
-                self.account_status.set(friendly_auth_error(exc))
+            self.account_status.set(
+                "Connection settings loaded. Create an account or sign in."
+            )
 
     def _toggle_supabase_key(self) -> None:
         self.supabase_key_entry.configure(show="" if self.show_supabase_key.get() else "•")
@@ -835,7 +827,6 @@ class StockAgentApp(tk.Tk):
             url = self.supabase_url.get().strip()
             key = self.supabase_key.get().strip()
             save_supabase_settings(url, key)
-            self.supabase_auth = SupabaseAuth(url, key)
         except Exception as exc:
             self.account_status.set(friendly_auth_error(exc))
             return False
@@ -850,10 +841,6 @@ class StockAgentApp(tk.Tk):
             return
         if action != "sign_out" and not self._save_supabase_connection():
             return
-        if self.supabase_auth is None:
-            self.account_status.set("Save your Supabase connection settings first.")
-            return
-
         email = self.auth_email.get().strip()
         password = self.auth_password.get()
         if action != "sign_out" and (not email or not password):
@@ -874,18 +861,13 @@ class StockAgentApp(tk.Tk):
         ).start()
 
     def _auth_worker(self, action: str, email: str, password: str) -> None:
-        assert self.supabase_auth is not None
         try:
             if action == "sign_up":
-                result = self.supabase_auth.sign_up(email, password)
-                if result.signed_in:
-                    self.controller.account_sign_in(email, password)
+                result = self.controller.account_sign_up(email, password)
             elif action == "sign_in":
-                result = self.supabase_auth.sign_in(email, password)
-                self.controller.account_sign_in(email, password)
+                result = self.controller.account_sign_in(email, password)
             else:
-                self.controller.account_sign_out()
-                result = self.supabase_auth.sign_out()
+                result = self.controller.account_sign_out()
             self.results.put(("auth", result))
         except Exception as exc:
             if action in {"sign_in", "sign_up"}:
@@ -893,12 +875,7 @@ class StockAgentApp(tk.Tk):
                     self.controller.account_sign_out()
                 except Exception:
                     pass
-                try:
-                    self.supabase_auth.sign_out()
-                except Exception:
-                    pass
-            message = friendly_cloud_error(exc)
-            self.results.put(("auth_error", friendly_auth_error(RuntimeError(message))))
+            self.results.put(("auth_error", friendly_auth_error(exc)))
 
     def _send_event(self, _event: tk.Event) -> str:
         self._send_or_stop()
@@ -1240,9 +1217,6 @@ class StockAgentApp(tk.Tk):
         self.input_box.delete("1.0", "end")
         self.input_box.insert("1.0", prompt)
         self.input_box.focus_set()
-
-    def prepare_event_risk_prompt(self) -> None:
-        self.prepare_position_risk_prompt()
 
     def research_stock(self) -> None:
         query = simpledialog.askstring(

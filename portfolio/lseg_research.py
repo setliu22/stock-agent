@@ -1800,14 +1800,6 @@ def _date_column(frame: pd.DataFrame) -> Any | None:
     return None
 
 
-def _value_at_or_before(series: pd.Series, dates: pd.Series, cutoff: pd.Timestamp) -> float | None:
-    valid = pd.DataFrame({"date": dates, "value": pd.to_numeric(series, errors="coerce")}).dropna()
-    valid = valid[valid["date"] <= cutoff].sort_values("date")
-    if valid.empty:
-        return None
-    return float(valid.iloc[-1]["value"])
-
-
 def _retrieve_estimate_history(ld: Any, client: _LSEGClient, result: ResearchResult, resolved: ResolvedInstrument) -> None:
     frame = _safe_get_data(
         ld, client, resolved.ric, ESTIMATE_HISTORY_FIELDS,
@@ -3641,27 +3633,9 @@ def answer_follow_up(result: ResearchResult, question: str, settings: Settings) 
         return fallback
 
 
-# Compatibility wrappers retained for older tests and external scripts.
-@dataclass
-class LSEGResearchResult:
-    resolved: ResolvedInstrument
-    values: dict[str, Any] = field(default_factory=dict)
-    warnings: list[str] = field(default_factory=list)
-
-
 def _extract_values(frame: Any, requested_fields: tuple[str, ...]) -> dict[str, Any]:
     canonical = _canonicalize(frame, requested_fields)
     if canonical.empty:
         return {}
     row = canonical.iloc[0]
     return {field_name: row[field_name] for field_name in requested_fields if field_name in canonical.columns}
-
-
-def deterministic_summary(result: LSEGResearchResult) -> str:
-    name = result.resolved.company_name or result.resolved.query
-    lines = [f"{name} ({result.resolved.ric})"]
-    for field_name, value in result.values.items():
-        lines.append(f"• {FIELD_LABELS.get(field_name, field_name)}: {_format_number(value)}")
-    if result.warnings:
-        lines.append("Unavailable: " + "; ".join(result.warnings))
-    return "\n".join(lines)

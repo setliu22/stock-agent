@@ -115,7 +115,3 @@ def infer_workflow(mode: str, *, candidate_search: bool = False) -> str:
 def get_workflow(workflow_id: str | None, mode: str, *, candidate_search: bool = False) -> WorkflowDefinition:
     resolved_id = workflow_id if workflow_id in WORKFLOWS else infer_workflow(mode, candidate_search=candidate_search)
     return WORKFLOWS[resolved_id]
-
-
-def workflow_context() -> str:
-    return "\n".join(f"- {key}: {value.purpose}" for key, value in WORKFLOWS.items())

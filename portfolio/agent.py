@@ -7,7 +7,6 @@ from datetime import date, datetime, timedelta, timezone
 from dataclasses import dataclass
 from enum import Enum
 import json
-import os
 import re
 from typing import Any, Callable
 
@@ -268,7 +267,6 @@ class StockAgent:
         if not text:
             return "Enter a request."
 
-        lower = text.casefold()
         command = _operational_command(text)
         if self._pending_task is not None and self._pending_task.kind == "portfolio_update":
             if _is_cancel_request(text):
@@ -518,7 +516,6 @@ class StockAgent:
         text: str,
         result: ResearchResult | None = None,
     ) -> bool:
-        lower = text.casefold()
         if is_request_diagnostics_follow_up(text, result):
             return True
         if result is not None and can_answer_follow_up_deterministically(result, text):
@@ -697,13 +694,6 @@ class StockAgent:
             cancel_event=cancel_event,
         )
         return review.to_text()
-
-    def review_event_risk(
-        self,
-        progress_callback: ProgressCallback | None = None,
-        cancel_event: Any | None = None,
-    ) -> str:
-        return self.review_position_risk(progress_callback, cancel_event)
 
     @property
     def _pending_portfolio_import(self) -> bool:

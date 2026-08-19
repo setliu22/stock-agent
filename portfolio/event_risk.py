@@ -231,24 +231,6 @@ def score_portfolio_position_risk(
     )
 
 
-def score_portfolio_event_risk(
-    holdings: Iterable[Holding],
-    result: Any,
-    *,
-    today: date | None = None,
-    horizon_days: int = 90,
-    macro_snapshot: MarketRegimeSnapshot | None = None,
-) -> PortfolioPositionRiskReview:
-    """Compatibility wrapper for the former event-only scorer."""
-    return score_portfolio_position_risk(
-        holdings,
-        result,
-        macro_snapshot or _incomplete_macro_snapshot(),
-        today=today,
-        horizon_days=horizon_days,
-    )
-
-
 def run_portfolio_position_risk_review(
     settings: Any,
     holdings: Iterable[Holding],
@@ -304,11 +286,6 @@ def run_portfolio_position_risk_review(
     if progress_callback:
         progress_callback(100, "Position review complete", "Thesis, valuation, macro, and event evidence was scored separately.")
     return review
-
-
-def run_portfolio_event_risk_review(*args: Any, **kwargs: Any) -> PortfolioPositionRiskReview:
-    """Compatibility wrapper for the former event-only workflow."""
-    return run_portfolio_position_risk_review(*args, **kwargs)
 
 
 def _score_company_thesis(
@@ -699,19 +676,6 @@ def _conclusion(item: HoldingPositionRisk) -> str:
     if item.rating == "TRIM":
         return "Multiple independent risks support reviewing position size, subject to your thesis, target value, taxes, and risk tolerance."
     return "Severe thesis risk plus corroborating evidence makes this an exit candidate for immediate human review, not an automatic order."
-
-
-def _incomplete_macro_snapshot() -> MarketRegimeSnapshot:
-    from datetime import datetime, timezone
-
-    return MarketRegimeSnapshot(
-        regime="Regime incomplete",
-        summary="Macro observations were not supplied to the compatibility scorer.",
-        emphasis=("Refresh the Market tab before relying on macro fit.",),
-        indicators=(),
-        missing_evidence=("Current macro observations",),
-        generated_at=datetime.now(timezone.utc),
-    )
 
 
 def _llm_summary(review: PortfolioPositionRiskReview, settings: Any) -> str | None:

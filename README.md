@@ -61,18 +61,17 @@ passwords are never saved by Stock Agent.
 
 Email authentication and new-user signup must be enabled in the Supabase
 project. When email confirmation is enabled, follow the confirmation link
-before signing in. Supabase authentication does not by itself upload portfolio
-or research data: database tables, Row Level Security policies, and an explicit
-sync feature are still required before the app can store data remotely.
+before signing in. Portfolio purchases are synchronized only while signed in;
+research prompts and results are not uploaded to Supabase.
 
 The installer adds a current trusted certificate bundle and configures the
 packaged application to use it. If the Account tab reports a certificate error,
 rerun `Install Stock Agent.command`. Do not disable certificate verification.
 
-The archive-backed cloud portfolio layer is documented in
-`README-CLOUD-PORTFOLIOS.md`. Run `supabase/schema.sql` once in the Supabase SQL
-Editor before using its REST client; the Account tab currently handles
-authentication while the cloud portfolio client remains a tested backend layer.
+Run `supabase/schema.sql` once in the Supabase SQL Editor before using cloud
+portfolios. Row Level Security limits each signed-in user to their own data.
+Signing out clears the disposable local portfolio cache; signing back in restores
+the account's cloud snapshot.
 
 After the first Git checkout or manual update, double-click:
 
@@ -81,9 +80,9 @@ Update Stock Agent.command
 ```
 
 The updater refuses to overwrite local source edits, downloads a safe
-fast-forward of the current branch, then reinstalls dependencies, runs the test
-suite, and rebuilds `Stock Agent.app`. Existing `.env` settings and portfolio
-data are preserved.
+fast-forward of the current branch, reuses a compatible virtual environment,
+refreshes dependencies, runs the test suite, and rebuilds `Stock Agent.app`.
+Existing `.env` settings and portfolio data are preserved.
 
 ## Research architecture
 
@@ -133,7 +132,7 @@ Specialized operations such as custom-instrument writes, derivative pricing, cur
 
 ## Install or replace the project
 
-Keep the `.env` file in your existing `stock-agent` folder, then run the rebuild package supplied with this release. The rebuild preserves `.env`, `.git`, and `data/portfolio.db`, removes the obsolete application files, creates a new `.venv`, installs dependencies, exports the capability inventory, runs tests, and rebuilds `Stock Agent.app`.
+Keep the `.env` file in your existing `stock-agent` folder, then run the rebuild package supplied with this release. The rebuild preserves `.env`, `.git`, and `data/portfolio.db`, reuses a compatible `.venv` when available, installs dependencies, exports the capability inventory, runs tests, and rebuilds `Stock Agent.app`.
 
 Keep LSEG Workspace open and signed in while running research.
 

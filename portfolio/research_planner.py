@@ -15,7 +15,7 @@ from typing import Any, Callable
 
 from .company_resolver import is_explicit_ticker, is_probable_ticker
 from .config import Settings
-from .market_regime import RESEARCH_WEIGHT_KEYS, ResearchWeights
+from .market_regime import ResearchWeights
 from .research_workflows import WORKFLOWS, get_workflow
 
 
@@ -734,10 +734,6 @@ def _validate_request_constraints(text: str) -> tuple[str | None, str | None, st
     sectors = _detected_values(lower, _SECTOR_ALIASES, str)
     industries = _detected_values(lower, _INDUSTRY_ALIASES, lambda item: item.label)
     countries: list[str] = []
-    taxonomy_terms = "|".join(
-        re.escape(item)
-        for item in sorted((*_SECTOR_ALIASES, *_INDUSTRY_ALIASES), key=len, reverse=True)
-    )
     geography_head = rf"(?:{_FINANCIAL_SECURITY_NOUN_PATTERN}|sector|industry)"
     for phrase, code in _COUNTRY_WORDS.items():
         if phrase == "us":

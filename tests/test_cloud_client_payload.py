@@ -1,6 +1,6 @@
 import pytest
 
-from portfolio.cloud_portfolios import _purchase_payload
+from portfolio.cloud_portfolios import _purchase_payload, friendly_cloud_error
 
 
 def test_purchase_payload_uses_nulls_and_marks_incomplete_records_draft():
@@ -43,3 +43,11 @@ def test_purchase_payload_rejects_invalid_numbers():
             purchased_at=None,
             note="",
         )
+
+
+def test_missing_supabase_schema_has_actionable_message():
+    message = friendly_cloud_error(
+        RuntimeError("Could not find the table 'public.portfolios' in the schema cache")
+    )
+
+    assert "run the complete contents of supabase/schema.sql" in message

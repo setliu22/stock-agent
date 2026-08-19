@@ -87,15 +87,19 @@ print "  $SYSTEM_PYTHON"
 "$SYSTEM_PYTHON" --version 2>&1 | tee -a "$INSTALL_LOG"
 success "Compatible Python selected"
 
-step "[3/10] Creating a fresh virtual environment"
-rm -rf "$PROJECT_ROOT/.venv"
-"$SYSTEM_PYTHON" -m venv "$PROJECT_ROOT/.venv" 2>&1 | tee -a "$INSTALL_LOG"
-if [[ ${pipestatus[1]} -ne 0 ]]; then
-    fail "The virtual environment could not be created."
-fi
 PYTHON="$PROJECT_ROOT/.venv/bin/python"
+step "[3/10] Preparing the virtual environment"
+if [[ -x "$PYTHON" ]] && "$PYTHON" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3,11) else 1)' >/dev/null 2>&1; then
+    success "Existing .venv is compatible and will be reused"
+else
+    rm -rf "$PROJECT_ROOT/.venv"
+    "$SYSTEM_PYTHON" -m venv "$PROJECT_ROOT/.venv" 2>&1 | tee -a "$INSTALL_LOG"
+    if [[ ${pipestatus[1]} -ne 0 ]]; then
+        fail "The virtual environment could not be created."
+    fi
+    success "New .venv created"
+fi
 [[ -x "$PYTHON" ]] || fail "The new virtual environment has no executable Python."
-success "Fresh .venv created"
 
 export PYTHONPATH="$PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
@@ -130,10 +134,8 @@ modules = [
     "yfinance",
     "langchain_groq",
     "lseg.data",
-    "supabase",
     "portfolio",
     "portfolio.certificates",
-    "portfolio.supabase_auth",
     "portfolio.controller",
     "portfolio.company_resolver",
     "portfolio.lseg_research",
