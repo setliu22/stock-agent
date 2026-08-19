@@ -11,7 +11,7 @@ from .company_resolver import company_name_to_ticker, extract_security_reference
 from .config import Settings, get_settings
 from .cloud_portfolios import CloudPurchase, SupabasePortfolioClient
 from .database import PortfolioDatabase
-from .event_risk import run_portfolio_event_risk_review
+from .event_risk import run_portfolio_position_risk_review
 from .market_data import current_price, recent_closes
 from .market_regime import (
     MacroResearchPolicy,
@@ -147,6 +147,7 @@ class StockAgentController:
                 source="custom",
             )
         self.agent.set_research_policy(self._research_policy)
+        self.agent.set_market_snapshot(snapshot)
         return snapshot
 
     def research_policy(self) -> MacroResearchPolicy:
@@ -181,14 +182,22 @@ class StockAgentController:
     def return_text(self) -> str:
         return self.agent.calculate_return()
 
-    def review_event_risk(self, progress_callback=None, cancel_event=None) -> str:
-        review = run_portfolio_event_risk_review(
+    def review_position_risk(self, progress_callback=None, cancel_event=None) -> str:
+        holdings = self.holdings()
+        if not holdings:
+            return "No portfolio holdings are available for position-risk review."
+        snapshot = self._market_snapshot or self.market_regime()
+        review = run_portfolio_position_risk_review(
             self.settings,
-            self.holdings(),
+            holdings,
+            macro_snapshot=snapshot,
             progress_callback=progress_callback,
             cancel_event=cancel_event,
         )
         return review.to_text()
+
+    def review_event_risk(self, progress_callback=None, cancel_event=None) -> str:
+        return self.review_position_risk(progress_callback, cancel_event)
 
     def account_sign_in(self, email: str, password: str) -> str:
         """Authenticate and hydrate the disposable local portfolio cache."""

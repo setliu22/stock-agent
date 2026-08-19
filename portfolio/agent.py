@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from dataclasses import dataclass
 import os
 import re
@@ -12,7 +12,7 @@ from typing import Any, Callable
 from .company_resolver import AmbiguousInstrumentError, InstrumentResolutionError
 from .config import Settings
 from .database import PortfolioDatabase
-from .event_risk import run_portfolio_event_risk_review
+from .event_risk import run_portfolio_position_risk_review
 from .lseg_capabilities import capability_answer
 from .lseg_research import (
     LSEGNoMatches,
@@ -31,7 +31,12 @@ from .research_planner import (
     build_research_plan,
 )
 from .market_data import current_price
-from .market_regime import MacroResearchPolicy, macro_default_policy
+from .market_regime import (
+    MacroResearchPolicy,
+    MarketRegimeSnapshot,
+    build_market_regime,
+    macro_default_policy,
+)
 from .models import Purchase
 from .portfolio_import import (
     PortfolioImportError,
@@ -86,6 +91,13 @@ _EVENT_RISK_INTENT = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+_POSITION_RISK_INTENT = re.compile(
+    r"\b(?:review|check|assess|scan|flag|identify)\b.*"
+    r"\b(?:my\s+)?(?:portfolio|holdings?|positions?)\b.*"
+    r"\b(?:risk|sell|sold|trim|reduce|exit|thesis)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
 
 ProgressCallback = Callable[[int | None, str, str], None]
 
@@ -132,6 +144,8 @@ def _is_event_risk_request(text: str) -> bool:
     lower = text.casefold()
     return bool(
         _EVENT_RISK_INTENT.search(text)
+        or _POSITION_RISK_INTENT.search(text)
+        or "position risk" in lower
         or "event risk" in lower
         or "earnings risk" in lower
         or "should be sold" in lower
@@ -183,9 +197,13 @@ class StockAgent:
         self._recent_chat: deque[ConversationTurn] = deque(maxlen=1)
         self._turn_sequence = 0
         self._research_policy = macro_default_policy("Regime incomplete")
+        self._market_snapshot: MarketRegimeSnapshot | None = None
 
     def set_research_policy(self, policy: MacroResearchPolicy) -> None:
         self._research_policy = policy
+
+    def set_market_snapshot(self, snapshot: MarketRegimeSnapshot) -> None:
+        self._market_snapshot = snapshot
 
     def handle(
         self,
@@ -334,7 +352,7 @@ class StockAgent:
             )
         if _is_event_risk_request(text):
             self._screen_refinement_available = False
-            return self.review_event_risk(progress_callback, cancel_event)
+            return self.review_position_risk(progress_callback, cancel_event)
         if _is_research_request(
             text,
             semantic_fallback=bool(self.settings.groq_api_key) and not operational_command,
@@ -350,7 +368,7 @@ class StockAgent:
             _is_event_risk_request(text)
         ):
             self._screen_refinement_available = False
-            return self.review_event_risk(progress_callback, cancel_event)
+            return self.review_position_risk(progress_callback, cancel_event)
         if match := _PURCHASE_PATTERN.search(text):
             self._screen_refinement_available = False
             purchase = Purchase(
@@ -551,18 +569,36 @@ class StockAgent:
             lines.append(f"Prices unavailable for: {', '.join(unavailable)}")
         return "\n".join(lines)
 
+    def review_position_risk(
+        self,
+        progress_callback: ProgressCallback | None = None,
+        cancel_event: Any | None = None,
+    ) -> str:
+        holdings = self.database.holdings()
+        if not holdings:
+            return "No portfolio holdings are available for position-risk review."
+        snapshot = self._market_snapshot
+        if (
+            snapshot is None
+            or datetime.now(timezone.utc) - snapshot.generated_at > timedelta(minutes=15)
+        ):
+            snapshot = build_market_regime()
+            self._market_snapshot = snapshot
+        review = run_portfolio_position_risk_review(
+            self.settings,
+            holdings,
+            macro_snapshot=snapshot,
+            progress_callback=progress_callback,
+            cancel_event=cancel_event,
+        )
+        return review.to_text()
+
     def review_event_risk(
         self,
         progress_callback: ProgressCallback | None = None,
         cancel_event: Any | None = None,
     ) -> str:
-        review = run_portfolio_event_risk_review(
-            self.settings,
-            self.database.holdings(),
-            progress_callback=progress_callback,
-            cancel_event=cancel_event,
-        )
-        return review.to_text()
+        return self.review_position_risk(progress_callback, cancel_event)
 
     @property
     def _pending_portfolio_import(self) -> bool:

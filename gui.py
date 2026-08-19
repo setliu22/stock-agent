@@ -7,6 +7,7 @@ import queue
 import threading
 import time
 import tkinter as tk
+from tkinter import font as tkfont
 from tkinter import messagebox, simpledialog, ttk
 from tkinter.scrolledtext import ScrolledText
 from typing import Any
@@ -95,13 +96,13 @@ class PurchaseDialog(tk.Toplevel):
 
 
 class StockAgentApp(tk.Tk):
-    BG = "#0B0D10"
-    SURFACE = "#13171C"
-    SURFACE_ALT = "#181D23"
-    BORDER = "#2A3038"
-    TEXT = "#F5F5F7"
-    MUTED = "#9DA5B0"
-    ACCENT = "#55C2D9"
+    BG = "#0D0F12"
+    SURFACE = "#15181D"
+    SURFACE_ALT = "#1B1F25"
+    BORDER = "#2B3139"
+    TEXT = "#F2F4F7"
+    MUTED = "#929AA6"
+    ACCENT = "#5AC8E8"
     POSITIVE = "#34C759"
     NEGATIVE = "#FF453A"
 
@@ -127,8 +128,19 @@ class StockAgentApp(tk.Tk):
         self.cancel_event: threading.Event | None = None
         self._send_button_hovered = False
         self.market_refresh_busy = False
+        self.portfolio_refresh_busy = False
+        self.portfolio_refresh_generation = 0
         self._tab_drag_anchor_x: int | None = None
         self._rendering_research_weights = False
+        families = set(tkfont.families(self))
+        self.ui_font = next(
+            (name for name in ("SF Pro Text", "Helvetica Neue", "Arial", "DejaVu Sans") if name in families),
+            "TkDefaultFont",
+        )
+        self.mono_font = next(
+            (name for name in ("SF Mono", "Menlo", "DejaVu Sans Mono") if name in families),
+            "TkFixedFont",
+        )
         self._configure_style()
         self._build_ui()
         self.after(100, self._poll_results)
@@ -141,51 +153,100 @@ class StockAgentApp(tk.Tk):
             pass
         self.configure(background=self.BG)
         style.configure("TFrame", background=self.BG)
-        style.configure("TLabel", background=self.BG, foreground=self.TEXT, font=("Helvetica", 12))
-        style.configure("Title.TLabel", background=self.BG, foreground=self.TEXT, font=("Helvetica", 24, "bold"))
-        style.configure("Section.TLabel", background=self.BG, foreground=self.TEXT, font=("Helvetica", 15, "bold"))
-        style.configure("SurfaceSection.TLabel", background=self.SURFACE, foreground=self.TEXT, font=("Helvetica", 14, "bold"))
-        style.configure("Muted.TLabel", background=self.BG, foreground=self.MUTED, font=("Helvetica", 11))
+        style.configure("TLabel", background=self.BG, foreground=self.TEXT, font=(self.ui_font, 11))
+        style.configure("AppTitle.TLabel", background=self.BG, foreground=self.TEXT, font=(self.ui_font, 15, "bold"))
+        style.configure("Title.TLabel", background=self.BG, foreground=self.TEXT, font=(self.ui_font, 22, "bold"))
+        style.configure("Section.TLabel", background=self.BG, foreground=self.TEXT, font=(self.ui_font, 13, "bold"))
+        style.configure("SurfaceSection.TLabel", background=self.SURFACE, foreground=self.TEXT, font=(self.ui_font, 13, "bold"))
+        style.configure("Muted.TLabel", background=self.BG, foreground=self.MUTED, font=(self.ui_font, 10))
         style.configure("Surface.TFrame", background=self.SURFACE)
-        style.configure("MetricLabel.TLabel", background=self.SURFACE, foreground=self.MUTED, font=("Helvetica", 10))
-        style.configure("MetricValue.TLabel", background=self.SURFACE, foreground=self.TEXT, font=("Helvetica", 18, "bold"))
-        style.configure("Positive.MetricValue.TLabel", background=self.SURFACE, foreground=self.POSITIVE, font=("Helvetica", 18, "bold"))
-        style.configure("Negative.MetricValue.TLabel", background=self.SURFACE, foreground=self.NEGATIVE, font=("Helvetica", 18, "bold"))
-        style.configure("ProgressTitle.TLabel", font=("Helvetica", 12, "bold"))
-        style.configure("ProgressDetail.TLabel", foreground=self.MUTED, font=("Helvetica", 10))
-        style.configure("TButton", background=self.SURFACE_ALT, foreground=self.TEXT, bordercolor=self.BORDER, padding=(14, 8), font=("Helvetica", 11))
-        style.map("TButton", background=[("active", "#242B33")], foreground=[("disabled", "#666D76")])
-        style.configure("Accent.TButton", background=self.ACCENT, foreground="#071014", bordercolor=self.ACCENT, font=("Helvetica", 11, "bold"))
-        style.map("Accent.TButton", background=[("active", "#74D0E1")])
-        style.configure("Segment.TButton", padding=(12, 5), font=("Helvetica", 10))
-        style.configure("Selected.Segment.TButton", background="#173E48", foreground=self.ACCENT, bordercolor=self.ACCENT, padding=(12, 5), font=("Helvetica", 10, "bold"))
-        style.configure("TNotebook", background=self.BG, borderwidth=0)
-        style.configure("TNotebook.Tab", background=self.BG, foreground=self.MUTED, padding=(20, 10), font=("Helvetica", 11))
-        style.map("TNotebook.Tab", background=[("selected", self.BG)], foreground=[("selected", self.ACCENT), ("active", self.TEXT)])
-        style.configure("Treeview", background=self.SURFACE, fieldbackground=self.SURFACE, foreground=self.TEXT, bordercolor=self.BORDER, rowheight=38, font=("Helvetica", 11))
-        style.configure("Market.Treeview", rowheight=32, font=("Helvetica", 10))
+        style.configure(
+            "Panel.TFrame",
+            background=self.SURFACE,
+            bordercolor=self.BORDER,
+            lightcolor=self.BORDER,
+            darkcolor=self.BORDER,
+            borderwidth=1,
+            relief="solid",
+        )
+        style.configure("MetricLabel.TLabel", background=self.SURFACE, foreground=self.MUTED, font=(self.ui_font, 9))
+        style.configure("MetricValue.TLabel", background=self.SURFACE, foreground=self.TEXT, font=(self.ui_font, 17, "bold"))
+        style.configure("Positive.MetricValue.TLabel", background=self.SURFACE, foreground=self.POSITIVE, font=(self.ui_font, 17, "bold"))
+        style.configure("Negative.MetricValue.TLabel", background=self.SURFACE, foreground=self.NEGATIVE, font=(self.ui_font, 17, "bold"))
+        style.configure("ProgressTitle.TLabel", background=self.SURFACE, font=(self.ui_font, 10, "bold"))
+        style.configure("ProgressDetail.TLabel", background=self.SURFACE, foreground=self.MUTED, font=(self.ui_font, 9))
+        style.configure(
+            "TButton",
+            background=self.SURFACE_ALT,
+            foreground=self.TEXT,
+            bordercolor=self.BORDER,
+            lightcolor=self.BORDER,
+            darkcolor=self.BORDER,
+            borderwidth=1,
+            relief="flat",
+            padding=(12, 7),
+            font=(self.ui_font, 10),
+        )
+        style.map("TButton", background=[("active", "#242A32"), ("pressed", "#20252C")], foreground=[("disabled", "#666D76")])
+        style.configure("Toolbar.TButton", padding=(10, 6), font=(self.ui_font, 9))
+        style.configure("Accent.TButton", background=self.ACCENT, foreground="#071014", bordercolor=self.ACCENT, lightcolor=self.ACCENT, darkcolor=self.ACCENT, font=(self.ui_font, 10, "bold"))
+        style.map("Accent.TButton", background=[("active", "#7AD7EF"), ("pressed", "#45B4D4")])
+        style.configure("Segment.TButton", padding=(10, 4), font=(self.ui_font, 9))
+        style.configure("Selected.Segment.TButton", background="#193841", foreground=self.ACCENT, bordercolor="#32616D", padding=(10, 4), font=(self.ui_font, 9, "bold"))
+        style.configure("TNotebook", background=self.BG, borderwidth=0, tabmargins=(0, 0, 0, 0))
+        style.configure("TNotebook.Tab", background=self.BG, foreground=self.MUTED, bordercolor=self.BG, lightcolor=self.BG, darkcolor=self.BG, padding=(18, 9), font=(self.ui_font, 10))
+        style.map(
+            "TNotebook.Tab",
+            background=[("selected", self.SURFACE_ALT), ("active", self.SURFACE)],
+            foreground=[("selected", self.TEXT), ("active", self.TEXT)],
+            bordercolor=[("selected", self.BORDER), ("!selected", self.BG)],
+            lightcolor=[("selected", self.BORDER), ("!selected", self.BG)],
+            darkcolor=[("selected", self.BORDER), ("!selected", self.BG)],
+        )
+        style.configure("Treeview", background=self.SURFACE, fieldbackground=self.SURFACE, foreground=self.TEXT, bordercolor=self.BORDER, lightcolor=self.BORDER, darkcolor=self.BORDER, borderwidth=1, rowheight=36, font=(self.ui_font, 10))
+        style.configure("Market.Treeview", rowheight=31, font=(self.ui_font, 9))
         style.map("Treeview", background=[("selected", "#204A55")], foreground=[("selected", self.TEXT)])
-        style.configure("Treeview.Heading", background=self.SURFACE_ALT, foreground=self.MUTED, bordercolor=self.BORDER, relief="flat", font=("Helvetica", 10, "bold"), padding=(8, 8))
+        style.configure("Treeview.Heading", background=self.SURFACE_ALT, foreground=self.MUTED, bordercolor=self.BORDER, lightcolor=self.BORDER, darkcolor=self.BORDER, relief="flat", font=(self.ui_font, 9, "bold"), padding=(8, 7))
         style.map("Treeview.Heading", background=[("active", "#20262D")])
         style.configure("TEntry", fieldbackground=self.SURFACE_ALT, foreground=self.TEXT, insertcolor=self.TEXT, bordercolor=self.BORDER, padding=8)
         style.map("TEntry", bordercolor=[("focus", self.ACCENT)])
-        style.configure("TCheckbutton", background=self.BG, foreground=self.TEXT, font=("Helvetica", 11))
+        style.configure("TCheckbutton", background=self.BG, foreground=self.TEXT, font=(self.ui_font, 10))
         style.map("TCheckbutton", background=[("active", self.BG)], foreground=[("active", self.TEXT)])
         style.configure("TSeparator", background=self.BORDER)
         style.configure("Horizontal.TProgressbar", background=self.ACCENT, troughcolor=self.SURFACE_ALT, bordercolor=self.BORDER)
+        style.configure(
+            "Horizontal.TScale",
+            background=self.SURFACE,
+            troughcolor=self.SURFACE_ALT,
+            bordercolor=self.BORDER,
+            lightcolor=self.BORDER,
+            darkcolor=self.BORDER,
+            sliderrelief="flat",
+        )
+        style.configure(
+            "Vertical.TScrollbar",
+            background=self.SURFACE_ALT,
+            troughcolor=self.SURFACE,
+            bordercolor=self.BORDER,
+            lightcolor=self.BORDER,
+            darkcolor=self.BORDER,
+            arrowcolor=self.MUTED,
+        )
 
     def _build_ui(self) -> None:
-        outer = ttk.Frame(self, padding=(24, 14, 24, 24))
+        outer = ttk.Frame(self, padding=(20, 12, 20, 20))
         outer.pack(fill="both", expand=True)
-        ttk.Label(outer, text="Stock Agent", style="Section.TLabel").pack(anchor="w", pady=(0, 8))
+        ttk.Label(outer, text="Stock Agent", style="AppTitle.TLabel").pack(
+            anchor="w", pady=(0, 10)
+        )
 
         notebook = ttk.Notebook(outer)
         notebook.pack(fill="both", expand=True)
         self.notebook = notebook
-        self.chat_tab = ttk.Frame(notebook, padding=16)
-        self.holdings_tab = ttk.Frame(notebook, padding=(4, 18, 4, 4))
-        self.market_tab = ttk.Frame(notebook, padding=(4, 18, 4, 4))
-        self.account_tab = ttk.Frame(notebook, padding=16)
+        self.chat_tab = ttk.Frame(notebook, padding=(8, 16, 8, 8))
+        self.holdings_tab = ttk.Frame(notebook, padding=(8, 16, 8, 8))
+        self.market_tab = ttk.Frame(notebook, padding=(8, 16, 8, 8))
+        self.account_tab = ttk.Frame(notebook, padding=(8, 16, 8, 8))
         notebook.add(self.chat_tab, text="Chat")
         notebook.add(self.holdings_tab, text="Portfolio")
         notebook.add(self.market_tab, text="Market")
@@ -197,7 +258,14 @@ class StockAgentApp(tk.Tk):
         self._build_holdings_tab()
         self._build_market_tab()
         self._build_account_tab()
-        self.after(250, self.refresh_market_regime)
+        notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed, add="+")
+
+    def _on_tab_changed(self, _event: tk.Event) -> None:
+        selected = self.notebook.select()
+        if selected == str(self.holdings_tab):
+            self.refresh_holdings()
+        elif selected == str(self.market_tab):
+            self.refresh_market_regime()
 
     def _start_tab_drag(self, event: tk.Event) -> None:
         # Include the blank area after the last tab so the whole top strip can
@@ -223,37 +291,52 @@ class StockAgentApp(tk.Tk):
         self._tab_drag_anchor_x = None
 
     def _build_chat_tab(self) -> None:
-        actions = ttk.Frame(self.chat_tab)
-        actions.pack(fill="x", pady=(0, 12))
+        header = ttk.Frame(self.chat_tab)
+        header.pack(fill="x", pady=(0, 12))
+        ttk.Label(header, text="Research", style="Title.TLabel").pack(side="left")
+        actions = ttk.Frame(header)
+        actions.pack(side="right")
         for text, command in (
-            ("Record purchase", self.record_purchase),
-            ("Show holdings", lambda: self._run_direct("holdings", self.controller.holdings_text)),
-            ("Calculate return", lambda: self._run_direct("return", self.controller.return_text)),
-            ("Review event risk", self.prepare_event_risk_prompt),
+            ("Record", self.record_purchase),
+            ("Holdings", lambda: self._run_direct("holdings", self.controller.holdings_text)),
+            ("Returns", lambda: self._run_direct("return", self.controller.return_text)),
+            ("Position risk", self.prepare_position_risk_prompt),
             ("Deep research", self.research_stock),
-            ("LSEG capabilities", lambda: self._submit_prompt("What can LSEG do?")),
+            ("LSEG info", lambda: self._submit_prompt("What can LSEG do?")),
         ):
-            ttk.Button(actions, text=text, command=command).pack(side="left", expand=True, fill="x", padx=5)
+            ttk.Button(actions, text=text, style="Toolbar.TButton", command=command).pack(
+                side="left", padx=(6, 0)
+            )
 
         transcript_frame = ttk.Frame(self.chat_tab)
         transcript_frame.pack(fill="both", expand=True)
         self.transcript = ScrolledText(
             transcript_frame,
             wrap="word",
-            font=("Menlo", 13),
+            font=(self.mono_font, 11),
             background=self.SURFACE,
             foreground=self.TEXT,
             insertbackground="#ffffff",
-            padx=14,
-            pady=12,
+            selectbackground="#285665",
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground=self.BORDER,
+            highlightcolor=self.BORDER,
+            padx=16,
+            pady=14,
+            spacing1=2,
+            spacing3=3,
         )
         self.transcript.pack(fill="both", expand=True)
         self.transcript.insert("end", "Agent:\nReady. Enter a request below.\n\n")
         self.transcript.configure(state="disabled")
 
-        self.progress_frame = ttk.Frame(self.chat_tab, padding=(10, 8))
+        self.progress_frame = ttk.Frame(
+            self.chat_tab, style="Panel.TFrame", padding=(12, 9)
+        )
         self.progress_frame.pack(fill="x", pady=(10, 0))
-        progress_header = ttk.Frame(self.progress_frame)
+        progress_header = ttk.Frame(self.progress_frame, style="Surface.TFrame")
         progress_header.pack(fill="x")
         self.progress_status = ttk.Label(
             progress_header,
@@ -261,7 +344,9 @@ class StockAgentApp(tk.Tk):
             style="ProgressTitle.TLabel",
         )
         self.progress_status.pack(side="left", anchor="w")
-        self.progress_percent = ttk.Label(progress_header, text="0%")
+        self.progress_percent = ttk.Label(
+            progress_header, text="0%", style="ProgressTitle.TLabel"
+        )
         self.progress_percent.pack(side="right", anchor="e")
         self.progress_bar = ttk.Progressbar(
             self.progress_frame,
@@ -271,7 +356,7 @@ class StockAgentApp(tk.Tk):
             value=0,
         )
         self.progress_bar.pack(fill="x", pady=(6, 4))
-        progress_footer = ttk.Frame(self.progress_frame)
+        progress_footer = ttk.Frame(self.progress_frame, style="Surface.TFrame")
         progress_footer.pack(fill="x")
         self.progress_detail = ttk.Label(
             progress_footer,
@@ -280,6 +365,7 @@ class StockAgentApp(tk.Tk):
         )
         self.progress_detail.pack(side="left", fill="x", expand=True, anchor="w")
         self.progress_elapsed = ttk.Label(progress_footer, text="")
+        self.progress_elapsed.configure(style="ProgressDetail.TLabel")
         self.progress_elapsed.pack(side="right", anchor="e", padx=(12, 0))
 
         input_frame = ttk.Frame(self.chat_tab)
@@ -288,15 +374,27 @@ class StockAgentApp(tk.Tk):
             input_frame,
             height=4,
             wrap="word",
-            font=("Menlo", 13),
+            font=(self.mono_font, 11),
             background=self.SURFACE,
             foreground=self.TEXT,
             insertbackground="#ffffff",
-            padx=10,
-            pady=8,
+            selectbackground="#285665",
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground=self.BORDER,
+            highlightcolor=self.ACCENT,
+            padx=12,
+            pady=10,
         )
         self.input_box.pack(side="left", fill="both", expand=True)
-        self.send_button = ttk.Button(input_frame, text="Send", command=self._send_or_stop, width=16)
+        self.send_button = ttk.Button(
+            input_frame,
+            text="Send",
+            style="Accent.TButton",
+            command=self._send_or_stop,
+            width=14,
+        )
         self.send_button.pack(side="left", padx=(12, 0), fill="y")
         self.send_button.bind("<Enter>", self._on_send_button_enter)
         self.send_button.bind("<Leave>", self._on_send_button_leave)
@@ -315,19 +413,28 @@ class StockAgentApp(tk.Tk):
 
         toolbar = ttk.Frame(header)
         toolbar.pack(side="right", anchor="e")
-        ttk.Button(toolbar, text="Record purchase", command=self.record_purchase).pack(side="left")
+        ttk.Button(
+            toolbar, text="Record purchase", style="Toolbar.TButton", command=self.record_purchase
+        ).pack(side="left")
         ttk.Button(
             toolbar,
-            text="Review event risk",
-            command=self.prepare_event_risk_prompt,
+            text="Review position risk",
+            style="Toolbar.TButton",
+            command=self.prepare_position_risk_prompt,
         ).pack(side="left", padx=8)
-        ttk.Button(toolbar, text="Refresh prices", style="Accent.TButton", command=self.refresh_holdings).pack(side="left")
+        self.portfolio_refresh_button = ttk.Button(
+            toolbar,
+            text="Refresh prices",
+            style="Accent.TButton",
+            command=self.refresh_holdings,
+        )
+        self.portfolio_refresh_button.pack(side="left")
 
         self.portfolio_value = tk.StringVar(value="—")
         self.portfolio_cost = tk.StringVar(value="—")
         self.portfolio_gain = tk.StringVar(value="—")
         self.portfolio_return = tk.StringVar(value="—")
-        summary = ttk.Frame(self.holdings_tab, style="Surface.TFrame", padding=(20, 16))
+        summary = ttk.Frame(self.holdings_tab, style="Panel.TFrame", padding=(20, 15))
         summary.pack(fill="x", pady=(0, 14))
         for column in range(4):
             summary.columnconfigure(column, weight=1, uniform="metric")
@@ -336,7 +443,7 @@ class StockAgentApp(tk.Tk):
         self.portfolio_gain_label = self._metric(summary, 2, "Total gain", self.portfolio_gain)
         self.portfolio_return_label = self._metric(summary, 3, "Total return", self.portfolio_return)
 
-        performance = ttk.Frame(self.holdings_tab, style="Surface.TFrame", padding=(18, 14))
+        performance = ttk.Frame(self.holdings_tab, style="Panel.TFrame", padding=(18, 13))
         performance.pack(fill="x", pady=(0, 14))
         performance_header = ttk.Frame(performance, style="Surface.TFrame")
         performance_header.pack(fill="x", pady=(0, 8))
@@ -398,7 +505,7 @@ class StockAgentApp(tk.Tk):
         self.holdings_tree.tag_configure("negative", foreground=self.NEGATIVE)
         self.holdings_tree.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
-        self.refresh_holdings()
+        self.refresh_holdings(refresh_prices=False)
 
     def _metric(self, parent: ttk.Frame, column: int, title: str, variable: tk.StringVar) -> ttk.Label:
         cell = ttk.Frame(parent, style="Surface.TFrame", padding=(12, 0))
@@ -426,7 +533,7 @@ class StockAgentApp(tk.Tk):
         )
         self.market_refresh_button.pack(side="right")
 
-        overview = ttk.Frame(self.market_tab, style="Surface.TFrame", padding=(20, 16))
+        overview = ttk.Frame(self.market_tab, style="Panel.TFrame", padding=(20, 15))
         overview.pack(fill="x", pady=(0, 14))
         self.market_regime_title = tk.StringVar(value="Regime not calculated")
         self.market_regime_summary = tk.StringVar(
@@ -440,13 +547,13 @@ class StockAgentApp(tk.Tk):
             textvariable=self.market_regime_summary,
             background=self.SURFACE,
             foreground=self.MUTED,
-            font=("Helvetica", 11),
+            font=(self.ui_font, 10),
             justify="left",
             anchor="w",
             wraplength=1030,
         ).pack(fill="x", pady=(6, 0))
 
-        policy = ttk.Frame(self.market_tab, style="Surface.TFrame", padding=(18, 12))
+        policy = ttk.Frame(self.market_tab, style="Panel.TFrame", padding=(18, 12))
         policy.pack(fill="x", pady=(0, 14))
         policy_header = ttk.Frame(policy, style="Surface.TFrame")
         policy_header.pack(fill="x", pady=(0, 8))
@@ -459,7 +566,7 @@ class StockAgentApp(tk.Tk):
             textvariable=self.research_weight_status,
             background=self.SURFACE,
             foreground=self.MUTED,
-            font=("Helvetica", 10),
+            font=(self.ui_font, 9),
         ).pack(side="left", padx=(12, 0))
         controls = ttk.Frame(policy_header, style="Surface.TFrame")
         controls.pack(side="right")
@@ -499,7 +606,7 @@ class StockAgentApp(tk.Tk):
                 textvariable=value_label,
                 background=self.SURFACE,
                 foreground=self.TEXT,
-                font=("Helvetica", 10, "bold"),
+                font=(self.ui_font, 9, "bold"),
             ).pack(side="right")
             variable = tk.DoubleVar(value=25)
             self.research_weight_vars[key] = variable
@@ -519,7 +626,7 @@ class StockAgentApp(tk.Tk):
             textvariable=self.research_instruction,
             background=self.SURFACE,
             foreground=self.MUTED,
-            font=("Helvetica", 9),
+            font=(self.ui_font, 8),
             justify="left",
             anchor="w",
             wraplength=930,
@@ -574,7 +681,8 @@ class StockAgentApp(tk.Tk):
             insertbackground=self.TEXT,
             relief="flat",
             borderwidth=0,
-            font=("Helvetica", 11),
+            highlightthickness=0,
+            font=(self.ui_font, 10),
             padx=0,
             pady=0,
         )
@@ -877,12 +985,14 @@ class StockAgentApp(tk.Tk):
                     self.account_status.set(result.message)
                     self.auth_password.set("")
                     self._set_auth_busy(False)
+                    self._invalidate_portfolio_refresh()
                     self.refresh_holdings(refresh_prices=False)
                     continue
                 if kind == "auth_error":
                     self.account_status.set(str(payload))
                     self.auth_password.set("")
                     self._set_auth_busy(False)
+                    self._invalidate_portfolio_refresh()
                     self.refresh_holdings(refresh_prices=False)
                     continue
                 if kind == "market_regime":
@@ -892,6 +1002,22 @@ class StockAgentApp(tk.Tk):
                         self._render_market_regime(payload)
                     else:
                         self.market_status.set(str(payload))
+                    continue
+                if kind == "portfolio_refresh":
+                    if not isinstance(payload, dict):
+                        continue
+                    if payload["generation"] != self.portfolio_refresh_generation:
+                        continue
+                    self.portfolio_refresh_busy = False
+                    self.portfolio_refresh_button.configure(state="normal")
+                    if "error" in payload:
+                        self.portfolio_status.set(payload["error"])
+                    else:
+                        self._render_holdings(
+                            payload["holdings"],
+                            refresh_prices=True,
+                            history=payload["history"],
+                        )
                     continue
                 response = str(payload)
                 self._finish_progress(response)
@@ -1078,16 +1204,19 @@ class StockAgentApp(tk.Tk):
         self.input_box.insert("1.0", prompt)
         self.send_message()
 
-    def prepare_event_risk_prompt(self) -> None:
+    def prepare_position_risk_prompt(self) -> None:
         if self.is_busy:
             return
         self.notebook.select(self.chat_tab)
         self.input_box.delete("1.0", "end")
         self.input_box.insert(
             "1.0",
-            "Review my portfolio for stocks I should review before upcoming earnings or events.",
+            "Review my portfolio positions for reasons to hold, review, trim, or consider exiting.",
         )
         self.input_box.focus_set()
+
+    def prepare_event_risk_prompt(self) -> None:
+        self.prepare_position_risk_prompt()
 
     def research_stock(self) -> None:
         query = simpledialog.askstring(
@@ -1212,17 +1341,69 @@ class StockAgentApp(tk.Tk):
         self.market_status.set(f"Updated {timestamp}{suffix}")
 
     def refresh_holdings(self, *, refresh_prices: bool = True) -> None:
+        if refresh_prices:
+            if self.portfolio_refresh_busy:
+                return
+            self.portfolio_refresh_busy = True
+            self.portfolio_status.set("Refreshing prices and performance...")
+            self.portfolio_refresh_button.configure(state="disabled")
+            generation = self.portfolio_refresh_generation
+
+            def worker() -> None:
+                try:
+                    holdings = self.controller.holding_snapshots()
+                    history = self.controller.portfolio_history()
+                    self.results.put(
+                        (
+                            "portfolio_refresh",
+                            {
+                                "generation": generation,
+                                "holdings": holdings,
+                                "history": history,
+                            },
+                        )
+                    )
+                except Exception as exc:
+                    self.results.put(
+                        (
+                            "portfolio_refresh",
+                            {
+                                "generation": generation,
+                                "error": (
+                                    "Price refresh failed: "
+                                    f"{type(exc).__name__}: {exc}"
+                                ),
+                            },
+                        )
+                    )
+
+            threading.Thread(target=worker, daemon=True).start()
+            return
+
+        try:
+            holdings = self.controller.holdings()
+        except Exception as exc:
+            self.portfolio_status.set(
+                f"Could not load portfolio: {type(exc).__name__}: {exc}"
+            )
+            return
+        self._render_holdings(holdings, refresh_prices=False)
+
+    def _invalidate_portfolio_refresh(self) -> None:
+        self.portfolio_refresh_generation += 1
+        self.portfolio_refresh_busy = False
+        if hasattr(self, "portfolio_refresh_button"):
+            self.portfolio_refresh_button.configure(state="normal")
+
+    def _render_holdings(
+        self,
+        holdings: list[Any],
+        *,
+        refresh_prices: bool,
+        history: list[Any] | None = None,
+    ) -> None:
         for item in self.holdings_tree.get_children():
             self.holdings_tree.delete(item)
-        try:
-            holdings = (
-                self.controller.holding_snapshots()
-                if refresh_prices
-                else self.controller.holdings()
-            )
-        except Exception:
-            self.portfolio_status.set("Price refresh failed")
-            return
         total_cost = sum(holding.total_cost for holding in holdings)
         priced = [
             holding
@@ -1279,10 +1460,7 @@ class StockAgentApp(tk.Tk):
             )
 
         if refresh_prices:
-            try:
-                self.performance_history = self.controller.portfolio_history()
-            except Exception:
-                self.performance_history = []
+            self.performance_history = list(history or [])
             self.portfolio_status.set(
                 f"Prices refreshed {datetime.now().strftime('%-I:%M %p')}"
                 if holdings
@@ -1318,7 +1496,7 @@ class StockAgentApp(tk.Tk):
                 anchor="w",
                 text="Not enough market history for this portfolio",
                 fill=self.MUTED,
-                font=("Helvetica", 11),
+                font=(self.ui_font, 10),
             )
             return
 
@@ -1346,8 +1524,8 @@ class StockAgentApp(tk.Tk):
             coordinates.extend((x, y))
         canvas.create_line(*coordinates, fill=color, width=2, smooth=True)
         canvas.create_oval(coordinates[-2] - 3, coordinates[-1] - 3, coordinates[-2] + 3, coordinates[-1] + 3, fill=color, outline=color)
-        canvas.create_text(left, height - 8, anchor="w", text=points[0].as_of.strftime("%b %-d"), fill=self.MUTED, font=("Helvetica", 9))
-        canvas.create_text(right, height - 8, anchor="e", text=points[-1].as_of.strftime("%b %-d"), fill=self.MUTED, font=("Helvetica", 9))
+        canvas.create_text(left, height - 8, anchor="w", text=points[0].as_of.strftime("%b %-d"), fill=self.MUTED, font=(self.ui_font, 8))
+        canvas.create_text(right, height - 8, anchor="e", text=points[-1].as_of.strftime("%b %-d"), fill=self.MUTED, font=(self.ui_font, 8))
 
 
 def main() -> None:
