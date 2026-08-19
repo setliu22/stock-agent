@@ -14,7 +14,11 @@ from typing import Any
 from portfolio.config import save_supabase_settings
 from portfolio.controller import StockAgentController
 from portfolio.cloud_portfolios import friendly_cloud_error
-from portfolio.market_regime import MarketRegimeSnapshot
+from portfolio.market_regime import (
+    MacroResearchPolicy,
+    MarketRegimeSnapshot,
+    RESEARCH_WEIGHT_KEYS,
+)
 from portfolio.supabase_auth import AuthResult, SupabaseAuth, friendly_auth_error
 
 
@@ -124,6 +128,7 @@ class StockAgentApp(tk.Tk):
         self._send_button_hovered = False
         self.market_refresh_busy = False
         self._tab_drag_anchor_x: int | None = None
+        self._rendering_research_weights = False
         self._configure_style()
         self._build_ui()
         self.after(100, self._poll_results)
@@ -158,6 +163,7 @@ class StockAgentApp(tk.Tk):
         style.configure("TNotebook.Tab", background=self.BG, foreground=self.MUTED, padding=(20, 10), font=("Helvetica", 11))
         style.map("TNotebook.Tab", background=[("selected", self.BG)], foreground=[("selected", self.ACCENT), ("active", self.TEXT)])
         style.configure("Treeview", background=self.SURFACE, fieldbackground=self.SURFACE, foreground=self.TEXT, bordercolor=self.BORDER, rowheight=38, font=("Helvetica", 11))
+        style.configure("Market.Treeview", rowheight=32, font=("Helvetica", 10))
         style.map("Treeview", background=[("selected", "#204A55")], foreground=[("selected", self.TEXT)])
         style.configure("Treeview.Heading", background=self.SURFACE_ALT, foreground=self.MUTED, bordercolor=self.BORDER, relief="flat", font=("Helvetica", 10, "bold"), padding=(8, 8))
         style.map("Treeview.Heading", background=[("active", "#20262D")])
@@ -440,9 +446,97 @@ class StockAgentApp(tk.Tk):
             wraplength=1030,
         ).pack(fill="x", pady=(6, 0))
 
+        policy = ttk.Frame(self.market_tab, style="Surface.TFrame", padding=(18, 12))
+        policy.pack(fill="x", pady=(0, 14))
+        policy_header = ttk.Frame(policy, style="Surface.TFrame")
+        policy_header.pack(fill="x", pady=(0, 8))
+        ttk.Label(
+            policy_header, text="Research weights", style="SurfaceSection.TLabel"
+        ).pack(side="left")
+        self.research_weight_status = tk.StringVar(value="Waiting for macro defaults")
+        tk.Label(
+            policy_header,
+            textvariable=self.research_weight_status,
+            background=self.SURFACE,
+            foreground=self.MUTED,
+            font=("Helvetica", 10),
+        ).pack(side="left", padx=(12, 0))
+        controls = ttk.Frame(policy_header, style="Surface.TFrame")
+        controls.pack(side="right")
+        ttk.Button(
+            controls,
+            text="Use macro defaults",
+            command=self.use_macro_default_weights,
+        ).pack(side="left")
+        self.apply_weights_button = ttk.Button(
+            controls,
+            text="Apply weights",
+            style="Accent.TButton",
+            command=self.apply_research_weights,
+        )
+        self.apply_weights_button.pack(side="left", padx=(8, 0))
+        self.apply_weights_button.configure(state="disabled")
+
+        weight_grid = ttk.Frame(policy, style="Surface.TFrame")
+        weight_grid.pack(fill="x")
+        self.research_weight_vars: dict[str, tk.DoubleVar] = {}
+        self.research_weight_labels: dict[str, tk.StringVar] = {}
+        for column, key in enumerate(RESEARCH_WEIGHT_KEYS):
+            weight_grid.columnconfigure(column, weight=1, uniform="research_weight")
+            cell = ttk.Frame(weight_grid, style="Surface.TFrame", padding=(8, 0))
+            cell.grid(row=0, column=column, sticky="ew")
+            value_label = tk.StringVar(value="25%")
+            self.research_weight_labels[key] = value_label
+            label_row = ttk.Frame(cell, style="Surface.TFrame")
+            label_row.pack(fill="x")
+            ttk.Label(
+                label_row,
+                text=key.replace("_", " ").title(),
+                style="MetricLabel.TLabel",
+            ).pack(side="left")
+            tk.Label(
+                label_row,
+                textvariable=value_label,
+                background=self.SURFACE,
+                foreground=self.TEXT,
+                font=("Helvetica", 10, "bold"),
+            ).pack(side="right")
+            variable = tk.DoubleVar(value=25)
+            self.research_weight_vars[key] = variable
+            ttk.Scale(
+                cell,
+                from_=0,
+                to=100,
+                variable=variable,
+                command=self._research_weight_changed,
+            ).pack(fill="x", pady=(3, 0))
+
+        instruction_row = ttk.Frame(policy, style="Surface.TFrame")
+        instruction_row.pack(fill="x", pady=(8, 0))
+        self.research_instruction = tk.StringVar(value="Macro research context is not ready.")
+        tk.Label(
+            instruction_row,
+            textvariable=self.research_instruction,
+            background=self.SURFACE,
+            foreground=self.MUTED,
+            font=("Helvetica", 9),
+            justify="left",
+            anchor="w",
+            wraplength=930,
+        ).pack(side="left", fill="x", expand=True)
+        ttk.Button(
+            instruction_row,
+            text="Copy instructions",
+            command=self.copy_research_instructions,
+        ).pack(side="right", padx=(12, 0))
+
         columns = ("indicator", "latest", "trend", "as_of", "source")
         self.market_tree = ttk.Treeview(
-            self.market_tab, columns=columns, show="headings", height=5
+            self.market_tab,
+            columns=columns,
+            show="headings",
+            height=5,
+            style="Market.Treeview",
         )
         headings = {
             "indicator": "Indicator",
@@ -473,7 +567,7 @@ class StockAgentApp(tk.Tk):
         )
         self.market_emphasis = tk.Text(
             self.market_tab,
-            height=7,
+            height=3,
             wrap="word",
             background=self.BG,
             foreground=self.TEXT,
@@ -1024,9 +1118,66 @@ class StockAgentApp(tk.Tk):
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def _research_weight_percentages(self) -> dict[str, int]:
+        return {
+            key: round(variable.get())
+            for key, variable in self.research_weight_vars.items()
+        }
+
+    def _research_weight_changed(self, _value: str = "") -> None:
+        if self._rendering_research_weights:
+            return
+        percentages = self._research_weight_percentages()
+        for key, value in percentages.items():
+            self.research_weight_labels[key].set(f"{value}%")
+        total = sum(percentages.values())
+        self.research_weight_status.set(f"Total {total}% | Not applied")
+        self.apply_weights_button.configure(state="normal" if total == 100 else "disabled")
+
+    def _render_research_policy(self, policy: MacroResearchPolicy) -> None:
+        percentages = policy.weights.percentages()
+        self._rendering_research_weights = True
+        try:
+            for key, value in percentages.items():
+                self.research_weight_vars[key].set(value)
+                self.research_weight_labels[key].set(f"{value}%")
+        finally:
+            self._rendering_research_weights = False
+        source = (
+            "Macro defaults"
+            if policy.source == "macro_defaults"
+            else "Custom override (session)"
+        )
+        self.research_weight_status.set(f"Total 100% | {source}")
+        self.research_instruction.set(policy.instruction_text())
+        self.apply_weights_button.configure(state="disabled")
+
+    def apply_research_weights(self) -> None:
+        percentages = self._research_weight_percentages()
+        try:
+            policy = self.controller.set_research_weights(percentages)
+        except ValueError as exc:
+            messagebox.showerror("Invalid research weights", str(exc), parent=self)
+            return
+        self._render_research_policy(policy)
+        self.market_status.set("Custom research weights applied")
+
+    def use_macro_default_weights(self) -> None:
+        policy = self.controller.use_macro_default_weights()
+        self._render_research_policy(policy)
+        self.market_status.set("Macro default research weights restored")
+
+    def copy_research_instructions(self) -> None:
+        instructions = self.controller.research_policy().instruction_text()
+        self.clipboard_clear()
+        self.clipboard_append(instructions)
+        self.update_idletasks()
+        self.market_status.set("Research instructions copied")
+
     def _render_market_regime(self, snapshot: MarketRegimeSnapshot) -> None:
         self.market_regime_title.set(snapshot.regime)
         self.market_regime_summary.set(snapshot.summary)
+        self._render_research_policy(self.controller.research_policy())
         for item in self.market_tree.get_children():
             self.market_tree.delete(item)
         for indicator in snapshot.indicators:

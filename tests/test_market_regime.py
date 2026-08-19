@@ -2,7 +2,16 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from portfolio.market_regime import FRED_SERIES, Observation, build_market_regime
+import pytest
+
+from portfolio.market_regime import (
+    FRED_SERIES,
+    MacroResearchPolicy,
+    Observation,
+    ResearchWeights,
+    build_market_regime,
+    macro_default_policy,
+)
 
 
 def _daily(start: float, end: float, days: int = 120) -> list[Observation]:
@@ -71,3 +80,39 @@ def test_market_regime_keeps_partial_data_failure_visible() -> None:
     assert all(indicator.status == "unavailable" for indicator in snapshot.indicators)
     assert all(indicator.latest == "Unavailable" for indicator in snapshot.indicators)
     assert "FINRA margin debt" in snapshot.missing_evidence[0]
+
+
+def test_macro_regimes_produce_explicit_research_weights() -> None:
+    assert macro_default_policy("Easing and expanding liquidity").weights.percentages() == {
+        "growth": 45,
+        "profitability": 20,
+        "valuation": 15,
+        "balance_sheet": 20,
+    }
+    assert macro_default_policy("Mixed liquidity regime").weights.percentages() == {
+        "growth": 30,
+        "profitability": 30,
+        "valuation": 20,
+        "balance_sheet": 20,
+    }
+    assert macro_default_policy("Tightening and contracting liquidity").weights.percentages() == {
+        "growth": 15,
+        "profitability": 30,
+        "valuation": 25,
+        "balance_sheet": 30,
+    }
+
+
+def test_research_weights_reject_incomplete_or_unbalanced_values() -> None:
+    with pytest.raises(ValueError, match="require"):
+        ResearchWeights.from_mapping({"growth": 1.0})
+    with pytest.raises(ValueError, match="100%"):
+        ResearchWeights.from_percentages(
+            {"growth": 30, "profitability": 30, "valuation": 30, "balance_sheet": 30}
+        )
+    with pytest.raises(ValueError, match="source"):
+        MacroResearchPolicy(
+            "Mixed liquidity regime",
+            ResearchWeights(0.25, 0.25, 0.25, 0.25),
+            source="generated",
+        )

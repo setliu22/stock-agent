@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 from .company_resolver import is_explicit_ticker, is_probable_ticker
 from .config import Settings
+from .market_regime import RESEARCH_WEIGHT_KEYS, ResearchWeights
 from .research_workflows import WORKFLOWS, get_workflow
 
 
@@ -300,6 +301,9 @@ class ResearchPlan:
     planner: str = "deterministic"
     context_parent_request: str | None = None
     intent_resolution: dict[str, Any] = field(default_factory=dict)
+    macro_regime: str | None = None
+    research_weights: dict[str, float] = field(default_factory=dict)
+    research_weight_source: str = "none"
 
     def normalized(self) -> "ResearchPlan":
         self.mode = self.mode if self.mode in {"company", "compare", "screen", "market_news"} else "company"
@@ -316,6 +320,21 @@ class ResearchPlan:
                 "Unsupported selection objectives: " + ", ".join(sorted(unknown_objectives))
             )
         self.selection_objectives = list(dict.fromkeys(self.selection_objectives))
+        if self.research_weights:
+            try:
+                self.research_weights = ResearchWeights.from_mapping(
+                    self.research_weights
+                ).as_dict()
+            except (TypeError, ValueError) as exc:
+                raise UnsupportedResearchConstraint(str(exc)) from exc
+        if self.research_weight_source not in {"none", "macro_defaults", "custom"}:
+            raise UnsupportedResearchConstraint("Unknown research-weight source.")
+        if bool(self.research_weights) != (self.research_weight_source != "none"):
+            raise UnsupportedResearchConstraint(
+                "Research weights and their source must be supplied together."
+            )
+        if self.macro_regime is not None:
+            self.macro_regime = str(self.macro_regime).strip()[:120] or None
         self.topics = [topic for topic in dict.fromkeys(self.topics) if topic in VALID_TOPICS]
         if not self.topics and self.mode not in {"screen", "market_news"}:
             self.topics = list(DEFAULT_TOPICS)

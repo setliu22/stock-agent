@@ -81,6 +81,34 @@ def test_controller_delegates_market_regime(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr("portfolio.controller.build_market_regime", lambda: expected)
 
     assert controller.market_regime() is expected
+    assert controller.research_policy().regime == "Test regime"
+    assert controller.research_policy().weights.percentages()["growth"] == 25
+
+
+def test_controller_preserves_custom_weights_across_macro_refresh(tmp_path, monkeypatch) -> None:
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
+    controller = StockAgentController(settings=settings)
+    controller.set_research_weights(
+        {"growth": 40, "profitability": 30, "valuation": 20, "balance_sheet": 10}
+    )
+    snapshot = MarketRegimeSnapshot(
+        regime="Tightening and contracting liquidity",
+        summary="Test",
+        emphasis=(),
+        indicators=(),
+        missing_evidence=(),
+        generated_at=datetime.now(timezone.utc),
+    )
+    monkeypatch.setattr("portfolio.controller.build_market_regime", lambda: snapshot)
+
+    controller.market_regime()
+
+    assert controller.research_policy().source == "custom"
+    assert controller.research_policy().regime == snapshot.regime
+    assert controller.research_policy().weights.percentages()["growth"] == 40
+    restored = controller.use_macro_default_weights()
+    assert restored.source == "macro_defaults"
+    assert restored.weights.percentages()["growth"] == 15
 
 
 class _FakeCloudClient:

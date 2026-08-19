@@ -13,7 +13,13 @@ from .cloud_portfolios import CloudPurchase, SupabasePortfolioClient
 from .database import PortfolioDatabase
 from .event_risk import run_portfolio_event_risk_review
 from .market_data import current_price, recent_closes
-from .market_regime import MarketRegimeSnapshot, build_market_regime
+from .market_regime import (
+    MacroResearchPolicy,
+    MarketRegimeSnapshot,
+    ResearchWeights,
+    build_market_regime,
+    macro_default_policy,
+)
 from .models import Holding, HoldingSnapshot, PortfolioHistoryPoint, Purchase
 
 
@@ -23,6 +29,10 @@ class StockAgentController:
         self.database = PortfolioDatabase(self.settings.database_path)
         self.agent = StockAgent(self.settings, self.database)
         self.cloud_client: SupabasePortfolioClient | None = None
+        self._market_snapshot: MarketRegimeSnapshot | None = None
+        self._use_macro_defaults = True
+        self._research_policy = macro_default_policy("Regime incomplete")
+        self.agent.set_research_policy(self._research_policy)
 
     def handle_message(
         self,
@@ -125,7 +135,45 @@ class StockAgentController:
         ]
 
     def market_regime(self) -> MarketRegimeSnapshot:
-        return build_market_regime()
+        snapshot = build_market_regime()
+        self._market_snapshot = snapshot
+        default = snapshot.research_policy
+        if self._use_macro_defaults:
+            self._research_policy = default
+        else:
+            self._research_policy = MacroResearchPolicy(
+                regime=snapshot.regime,
+                weights=self._research_policy.weights,
+                source="custom",
+            )
+        self.agent.set_research_policy(self._research_policy)
+        return snapshot
+
+    def research_policy(self) -> MacroResearchPolicy:
+        return self._research_policy
+
+    def set_research_weights(self, percentages: dict[str, float]) -> MacroResearchPolicy:
+        weights = ResearchWeights.from_percentages(percentages)
+        regime = (
+            self._market_snapshot.regime
+            if self._market_snapshot is not None
+            else self._research_policy.regime
+        )
+        self._research_policy = MacroResearchPolicy(regime, weights, source="custom")
+        self._use_macro_defaults = False
+        self.agent.set_research_policy(self._research_policy)
+        return self._research_policy
+
+    def use_macro_default_weights(self) -> MacroResearchPolicy:
+        regime = (
+            self._market_snapshot.regime
+            if self._market_snapshot is not None
+            else self._research_policy.regime
+        )
+        self._research_policy = macro_default_policy(regime)
+        self._use_macro_defaults = True
+        self.agent.set_research_policy(self._research_policy)
+        return self._research_policy
 
     def holdings_text(self) -> str:
         return self.agent.show_holdings()

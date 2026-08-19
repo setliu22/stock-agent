@@ -28,6 +28,30 @@ Deep LSEG research now reports its actual workflow while it runs. The interface 
 
 A local macOS stock-research application using LSEG Workspace, the LSEG Data Library for Python, and an optional Groq model.
 
+## Macro-aware research policy
+
+The Market tab retrieves the effective federal funds rate, Federal Reserve
+assets, CPI, the U.S. high-yield option-adjusted spread, and VIX without using
+an LLM. It classifies the rate and balance-sheet directions into a liquidity
+regime and maps that regime to four explicit research weights: growth,
+profitability, valuation, and balance-sheet resilience.
+
+Candidate screens apply those weights locally to validated LSEG fields. Growth
+uses forward revenue and EPS consensus plus long-term growth; profitability
+uses margins, ROE, and ROA; valuation uses positive forward and enterprise
+multiples; balance-sheet resilience uses forecast free cash flow and cash
+relative to debt. Missing factors reduce reported coverage and are never filled
+with generated values. Banks and insurers are not scored on corporate leverage
+or EV/EBITDA ratios that are not economically comparable for those businesses.
+
+The active weights and generated research instructions are visible in the
+Market tab. Sliders allow a session-only override when the four values total
+100%, and **Use macro defaults** restores the current regime policy. The same
+bounded policy is attached to research traces and Groq context, but Groq cannot
+change the weights, LSEG fields, filters, or score calculation. The resulting
+score prioritizes a research shortlist; it is not a return forecast or trading
+recommendation.
+
 ## Supabase account
 
 The Account tab supports Supabase email signup, sign-in, and sign-out. Enter the
@@ -80,8 +104,8 @@ The deterministic workflow compiler supports:
 For a request such as `research a promising industrials stock`, the application:
 
 1. Builds a broad LSEG industrials universe.
-2. Retrieves value, quality, cash-flow, expectations, analyst-target, momentum, and risk fields.
-3. Uses a coverage-aware multi-factor ranking.
+2. Retrieves forward growth, profitability, valuation, cash, debt, and cash-flow fields.
+3. Uses a coverage-aware ranking with the visible macro or custom category weights.
 4. Deeply researches five finalists using comparable core data, histories, Reuters evidence, peers, and filings.
 5. Re-ranks finalists using deep-dive evidence coverage.
 6. Optionally enriches only the selected leader with explicitly requested, bounded event, ownership, or insider context.

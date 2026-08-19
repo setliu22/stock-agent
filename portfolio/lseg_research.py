@@ -21,6 +21,7 @@ import pandas as pd
 
 from .company_resolver import InstrumentResolutionError, ResolvedInstrument
 from .config import Settings
+from .market_regime import ResearchWeights, macro_default_policy
 from .research_planner import (
     ResearchPlan,
     ScreenFilters,
@@ -141,7 +142,10 @@ SCREEN_FIELDS: tuple[str, ...] = (
     "TR.DividendYield", "TR.TotalReturn3Mo",
     "TR.ReturnonAvgTotEqtyPctNetIncomeBeforeExtraItemsTTM", "TR.ROAPercentTrailing12M",
     "TR.PriceTargetMean", "TR.EpsPreSurprisePct", "TR.EPSMean(Period=FY1)",
-    "TR.EpsSmartEst(Period=FY1)", "TR.FCFMean(Period=FY1)", "TR.F.DebtTot",
+    "TR.EPSMean(Period=FY2)", "TR.RevenueMean(Period=FY1)",
+    "TR.RevenueMean(Period=FY2)", "TR.LTGMean", "TR.EpsSmartEst(Period=FY1)",
+    "TR.PretaxMarginPercent(Period=FY0)", "TR.OperatingProfitMarginPct5YrAvg",
+    "TR.FCFMean(Period=FY1)", "TR.F.DebtTot", "TR.F.CashCashEquiv",
     "TR.Volatility30D",
 )
 
@@ -902,7 +906,10 @@ def build_screen_expression(filters: ScreenFilters) -> str:
     return "SCREEN(" + build_screen_body(filters) + ")"
 
 
-def _rank_candidate_screen(frame: pd.DataFrame) -> pd.DataFrame:
+def _rank_candidate_screen(
+    frame: pd.DataFrame,
+    research_weights: dict[str, float] | None = None,
+) -> pd.DataFrame:
     """Rank candidates using independent evidence families and coverage.
 
     The score is not an investment recommendation. It is a transparent shortlist
@@ -926,18 +933,37 @@ def _rank_candidate_screen(frame: pd.DataFrame) -> pd.DataFrame:
     output["Target Upside"] = target.div(price).sub(1).where(price > 0)
 
     eps_mean = numeric("TR.EPSMean(Period=FY1)")
+    eps_fy2 = numeric("TR.EPSMean(Period=FY2)")
     smart = numeric("TR.EpsSmartEst(Period=FY1)")
     output["Smart Gap"] = smart.sub(eps_mean).div(eps_mean.abs()).where(eps_mean.abs() > 0)
+    output["Forward EPS Growth"] = eps_fy2.div(eps_mean).sub(1).where(
+        (eps_mean > 0) & (eps_fy2 > 0)
+    )
+    revenue_fy1 = numeric("TR.RevenueMean(Period=FY1)")
+    revenue_fy2 = numeric("TR.RevenueMean(Period=FY2)")
+    output["Forward Revenue Growth"] = revenue_fy2.div(revenue_fy1).sub(1).where(
+        (revenue_fy1 > 0) & (revenue_fy2 > 0)
+    )
 
     debt = numeric("TR.F.DebtTot")
     fcf = numeric("TR.FCFMean(Period=FY1)")
-    output["FCF to Debt"] = fcf.div(debt.abs()).where(debt.abs() > 0)
+    cash = numeric("TR.F.CashCashEquiv")
+
+    def resilience_to_debt(numerator: pd.Series) -> pd.Series:
+        ratio = numerator.div(debt.abs()).where(debt.abs() > 0)
+        finite = ratio.replace([math.inf, -math.inf], float("nan")).dropna()
+        debt_free_score = max(float(finite.max()), 0.0) + 1.0 if not finite.empty else 1.0
+        return ratio.mask((debt.abs() == 0) & numerator.notna() & (numerator >= 0), debt_free_score)
+
+    output["FCF to Debt"] = resilience_to_debt(fcf)
+    output["Cash to Debt"] = resilience_to_debt(cash)
     sector_codes = output.get("TR.TRBCEconSectorCode", pd.Series("", index=output.index)).map(_normalized_code)
     # Corporate leverage and EV/EBITDA are not comparable primary factors for
     # banks and insurers. Keep those rows eligible through price/book, ROE and
     # other applicable factors instead of rewarding an economically invalid ratio.
     financial_rows = sector_codes.eq("55")
     output.loc[financial_rows, "FCF to Debt"] = pd.NA
+    output.loc[financial_rows, "Cash to Debt"] = pd.NA
     output["Applicable EV/EBITDA"] = numeric("TR.EVToEBITDA").mask(financial_rows)
 
     positive_signal_sets: dict[Any, set[str]] = {index: set() for index in output.index}
@@ -961,9 +987,22 @@ def _rank_candidate_screen(frame: pd.DataFrame) -> pd.DataFrame:
         {index: ", ".join(sorted(families)) for index, families in positive_signal_sets.items()}
     )
 
-    components: list[tuple[str, pd.Series, float, str]] = []
+    try:
+        weights = ResearchWeights.from_mapping(
+            research_weights
+            or macro_default_policy("Regime incomplete").weights.as_dict()
+        ).as_dict()
+    except (TypeError, ValueError) as exc:
+        raise LSEGResearchError(f"Invalid research ranking weights: {exc}") from exc
+    components: list[tuple[str, pd.Series, str]] = []
 
-    def add(family: str, field: str, weight: float, *, higher_is_better: bool = True, positive_only: bool = False) -> None:
+    def add(
+        family: str,
+        field: str,
+        *,
+        higher_is_better: bool = True,
+        positive_only: bool = False,
+    ) -> None:
         values = numeric(field)
         if positive_only:
             values = values.where(values > 0)
@@ -973,21 +1012,32 @@ def _rank_candidate_screen(frame: pd.DataFrame) -> pd.DataFrame:
         percentile = values.rank(pct=True, method="average")
         if not higher_is_better:
             percentile = 1.0 - percentile + (1.0 / valid.sum())
-        components.append((family, percentile.where(valid), weight, field))
+        components.append((family, percentile.where(valid), field))
 
-    add("valuation", "TR.PtoEPSMeanEst(Period=FY1)", 0.13, higher_is_better=False, positive_only=True)
-    add("valuation", "Applicable EV/EBITDA", 0.09, higher_is_better=False, positive_only=True)
-    add("valuation", "TR.PriceToSalesPerShare", 0.07, higher_is_better=False, positive_only=True)
-    add("valuation", "TR.PriceToBVPerShare", 0.07, higher_is_better=False, positive_only=True)
-    add("quality", "TR.ReturnonAvgTotEqtyPctNetIncomeBeforeExtraItemsTTM", 0.13)
-    add("quality", "TR.ROAPercentTrailing12M", 0.09)
-    add("cash_flow", "FCF to Debt", 0.09)
-    add("income", "TR.DividendYield", 0.06)
-    add("momentum", "TR.TotalReturn3Mo", 0.09)
-    add("expectations", "Target Upside", 0.10)
-    add("expectations", "TR.EpsPreSurprisePct", 0.07)
-    add("expectations", "Smart Gap", 0.07)
-    add("risk", "TR.Volatility30D", 0.08, higher_is_better=False, positive_only=True)
+    add("growth", "Forward Revenue Growth")
+    add("growth", "Forward EPS Growth")
+    add("growth", "TR.LTGMean")
+    add("profitability", "TR.ReturnonAvgTotEqtyPctNetIncomeBeforeExtraItemsTTM")
+    add("profitability", "TR.ROAPercentTrailing12M")
+    add("profitability", "TR.PretaxMarginPercent(Period=FY0)")
+    add("profitability", "TR.OperatingProfitMarginPct5YrAvg")
+    add(
+        "valuation",
+        "TR.PtoEPSMeanEst(Period=FY1)",
+        higher_is_better=False,
+        positive_only=True,
+    )
+    add(
+        "valuation", "Applicable EV/EBITDA", higher_is_better=False, positive_only=True
+    )
+    add(
+        "valuation", "TR.PriceToSalesPerShare", higher_is_better=False, positive_only=True
+    )
+    add(
+        "valuation", "TR.PriceToBVPerShare", higher_is_better=False, positive_only=True
+    )
+    add("balance_sheet", "FCF to Debt")
+    add("balance_sheet", "Cash to Debt")
 
     if not components:
         output["Research Score"] = pd.NA
@@ -1007,21 +1057,29 @@ def _rank_candidate_screen(frame: pd.DataFrame) -> pd.DataFrame:
         value_evidence = value_evidence.add((values > 0).astype(int), fill_value=0).astype(int)
     output["Value Evidence Count"] = value_evidence
 
-    weighted_sum = pd.Series(0.0, index=output.index)
-    available_weight = pd.Series(0.0, index=output.index)
+    weighted_sum = pd.Series(0.0, index=output.index, dtype="float64")
+    available_weight = pd.Series(0.0, index=output.index, dtype="float64")
     family_sets: dict[Any, set[str]] = {index: set() for index in output.index}
     evidence_count = pd.Series(0, index=output.index, dtype="int64")
-    for family, percentile, weight, _field in components:
-        valid = percentile.notna()
-        weighted_sum = weighted_sum.add(percentile.fillna(0) * weight, fill_value=0)
-        available_weight = available_weight.add(valid.astype(float) * weight, fill_value=0)
-        evidence_count = evidence_count.add(valid.astype(int), fill_value=0).astype(int)
+    for family, family_weight in weights.items():
+        family_components = [percentile for name, percentile, _field in components if name == family]
+        if not family_components:
+            output[f"{family.replace('_', ' ').title()} Score"] = pd.NA
+            continue
+        component_frame = pd.concat(family_components, axis=1)
+        family_score = component_frame.mean(axis=1, skipna=True)
+        valid = family_score.notna()
+        output[f"{family.replace('_', ' ').title()} Score"] = family_score.mul(100)
+        weighted_sum = weighted_sum.add(family_score.fillna(0) * family_weight, fill_value=0)
+        available_weight = available_weight.add(valid.astype(float) * family_weight, fill_value=0)
+        component_count = component_frame.notna().sum(axis=1).astype(int)
+        evidence_count = evidence_count.add(component_count, fill_value=0).astype(int)
         for index in output.index[valid]:
             family_sets[index].add(family)
 
     raw_score = weighted_sum.div(available_weight.where(available_weight > 0)).mul(100)
     family_count = pd.Series({index: len(value) for index, value in family_sets.items()}, dtype="int64")
-    coverage_factor = family_count.div(7).clip(lower=0.45, upper=1.0)
+    coverage_factor = family_count.div(4).clip(lower=0.45, upper=1.0)
     output["Research Score"] = raw_score.mul(coverage_factor)
     output["Evidence Count"] = evidence_count
     output["Evidence Family Count"] = family_count
@@ -1048,6 +1106,7 @@ def apply_screen_filters(
     *,
     truncate: bool = True,
     strict: bool = True,
+    research_weights: dict[str, float] | None = None,
 ) -> pd.DataFrame:
     output = frame.copy()
     tests = (
@@ -1113,7 +1172,7 @@ def apply_screen_filters(
             allowed = set(definition.codes)
             output = output[output[definition.code_field].map(_normalized_code).isin(allowed)]
     if filters.candidate_search or filters.sort_by == "quality_value":
-        ranked = _rank_candidate_screen(output).reset_index(drop=True)
+        ranked = _rank_candidate_screen(output, research_weights).reset_index(drop=True)
         return ranked.head(filters.limit) if truncate else ranked
     sort_field = {
         "market_cap": "TR.CompanyMarketCap",
@@ -1293,7 +1352,13 @@ def _retrieve_screen(ld: Any, client: _LSEGClient, result: ResearchResult) -> No
         label="Stock-screen enrichment",
     )
     frame = _combine_screen_core_and_enrichment(core, enrichment)
-    full_ranked = apply_screen_filters(frame, filters, truncate=False, strict=True)
+    full_ranked = apply_screen_filters(
+        frame,
+        filters,
+        truncate=False,
+        strict=True,
+        research_weights=result.plan.research_weights or None,
+    )
     if full_ranked.empty:
         raise LSEGNoMatches(
             "The LSEG screen ran successfully, but no companies met every validated numeric and classification constraint."
@@ -2313,6 +2378,11 @@ def run_research(
 
     _raise_if_cancelled(cancel_event)
     plan = plan.normalized()
+    if not plan.research_weights:
+        fallback_policy = macro_default_policy(plan.macro_regime or "Regime incomplete")
+        plan.macro_regime = fallback_policy.regime
+        plan.research_weights = fallback_policy.weights.as_dict()
+        plan.research_weight_source = fallback_policy.source
     workflow = get_workflow(plan.workflow, plan.mode, candidate_search=plan.screen.candidate_search)
     _emit_progress(
         progress_callback,
@@ -2322,6 +2392,11 @@ def run_research(
     )
     result = ResearchResult(plan=plan)
     result.metrics["workflow"] = workflow.to_dict()
+    result.metrics["macro_research_policy"] = {
+        "regime": plan.macro_regime,
+        "weights": plan.research_weights,
+        "source": plan.research_weight_source,
+    }
     session = None
     try:
         _emit_progress(
@@ -2722,20 +2797,42 @@ def _deterministic_screen_report(result: ResearchResult) -> str:
             alternatives.append(f"{_company_name(result, other)} ({other.ric})" + (f" score {_format_number(score)}" if score is not None else ""))
             if len(alternatives) >= 2:
                 break
+        category_scores: list[str] = []
+        if row is not None:
+            for category in ("Growth", "Profitability", "Valuation", "Balance Sheet"):
+                score = _numeric(row.get(f"{category} Score"))
+                if score is not None:
+                    category_scores.append(f"{category.lower()} {_format_number(score)}")
+        score_context = (
+            " Category scores were " + ", ".join(category_scores) + "."
+            if category_scores
+            else ""
+        )
         if alternatives:
-            lines.append("Why selected: It had the strongest post-deep-dive score among adequately covered finalists. Other finalists were " + "; ".join(alternatives) + ".")
+            lines.append("Why selected: It had the strongest post-deep-dive score among adequately covered finalists." + score_context + " Other finalists were " + "; ".join(alternatives) + ".")
         else:
-            lines.append("Why selected: It was the only finalist that met the required screen and deep-evidence postconditions.")
+            lines.append("Why selected: It was the only finalist that met the required screen and deep-evidence postconditions." + score_context)
         families = result.metrics.get(f"{ric}:evidence_families", [])
         lines.append(
             f"Coverage: screened {int(result.metrics.get('screen_universe_count', len(frame)))} companies; "
             f"deeply researched {int(result.metrics.get('deep_dive_count', len(result.resolved)))}; "
             f"selected candidate has {len(families)} evidence families. Universe scope was capped at the top "
-            f"{int(result.metrics.get('screen_universe_cap', 200))} qualifying companies by USD market capitalization."
+            f"{int(result.metrics.get('screen_universe_cap', 200))} qualifying companies by USD market capitalization. "
+            f"Ranking used {result.plan.research_weight_source.replace('_', ' ')} weights for "
+            f"{result.plan.macro_regime or 'an incomplete macro regime'}."
         )
         return "\n".join(lines)
 
     lines = [f"Screen results ({min(len(frame), 10)} shown)"]
+    if result.plan.research_weights:
+        lines.append(
+            "Ranking weights: "
+            + " | ".join(
+                f"{key.replace('_', ' ').title()} {value * 100:.0f}%"
+                for key, value in result.plan.research_weights.items()
+            )
+            + f" ({result.plan.research_weight_source.replace('_', ' ')})"
+        )
     if expression:
         lines.append(f"Criteria: {expression}")
     for _, row in frame.head(10).iterrows():
@@ -2790,6 +2887,7 @@ def _evidence_payload(result: ResearchResult) -> dict[str, Any]:
         "request": result.plan.raw_request,
         "workflow": result.plan.workflow,
         "investment_horizon": result.plan.investment_horizon,
+        "macro_research_policy": result.metrics.get("macro_research_policy"),
         "resolved": [
             {"name": _company_name(result, item), "ticker": item.ticker, "ric": item.ric}
             for item in result.resolved
@@ -2833,6 +2931,7 @@ def research_context_payload(
     payload: dict[str, Any] = {
         "request": result.plan.raw_request[:1_000],
         "workflow": result.plan.workflow,
+        "macro_research_policy": result.metrics.get("macro_research_policy"),
         "selected": (
             {
                 "name": _company_name(result, selected),
@@ -2980,6 +3079,7 @@ def _llm_report(result: ResearchResult, settings: Settings, cancel_event: Any | 
                     "Identify major opportunities, catalysts, risks, contradictions, and missing coverage. "
                     "Do not call a company promising because of one metric. Do not issue a buy or sell recommendation. "
                     "Every factual claim must be directly supported by a supplied value, story, headline, filing, or derived metric. "
+                    "Treat the supplied macro research policy as an explanation of deterministic ranking weights, not as evidence about a company. "
                     + format_instruction,
                 ),
                 ("human", evidence),

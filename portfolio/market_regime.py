@@ -6,6 +6,7 @@ import csv
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from io import StringIO
+import math
 from typing import Callable, Iterable
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -17,6 +18,95 @@ FRED_SERIES = {
     "cpi": "CPIAUCSL",
     "high_yield_spread": "BAMLH0A0HYM2",
 }
+
+RESEARCH_WEIGHT_KEYS = ("growth", "profitability", "valuation", "balance_sheet")
+
+
+@dataclass(frozen=True)
+class ResearchWeights:
+    growth: float
+    profitability: float
+    valuation: float
+    balance_sheet: float
+
+    def __post_init__(self) -> None:
+        values = self.as_dict()
+        if any(not math.isfinite(value) or value < 0 for value in values.values()):
+            raise ValueError("Research weights must be finite and nonnegative.")
+        if not math.isclose(sum(values.values()), 1.0, abs_tol=1e-6):
+            raise ValueError("Research weights must add up to 100%.")
+
+    @classmethod
+    def from_mapping(cls, values: dict[str, float]) -> "ResearchWeights":
+        if set(values) != set(RESEARCH_WEIGHT_KEYS):
+            raise ValueError(
+                "Research weights require growth, profitability, valuation, and balance_sheet."
+            )
+        return cls(**{key: float(values[key]) for key in RESEARCH_WEIGHT_KEYS})
+
+    @classmethod
+    def from_percentages(cls, values: dict[str, float]) -> "ResearchWeights":
+        return cls.from_mapping({key: float(value) / 100 for key, value in values.items()})
+
+    def as_dict(self) -> dict[str, float]:
+        return {key: getattr(self, key) for key in RESEARCH_WEIGHT_KEYS}
+
+    def percentages(self) -> dict[str, int]:
+        return {key: round(value * 100) for key, value in self.as_dict().items()}
+
+
+@dataclass(frozen=True)
+class MacroResearchPolicy:
+    regime: str
+    weights: ResearchWeights
+    source: str = "macro_defaults"
+
+    def __post_init__(self) -> None:
+        if not self.regime.strip():
+            raise ValueError("A macro research policy requires a regime label.")
+        if self.source not in {"macro_defaults", "custom"}:
+            raise ValueError("Unknown macro research policy source.")
+
+    def with_weights(self, weights: ResearchWeights) -> "MacroResearchPolicy":
+        return MacroResearchPolicy(self.regime, weights, source="custom")
+
+    def instruction_text(self) -> str:
+        percentages = self.weights.percentages()
+        labels = {
+            "growth": "forward revenue and EPS growth",
+            "profitability": "margins and returns on capital",
+            "valuation": "forward valuation relative to peers",
+            "balance_sheet": "cash flow, cash, and debt resilience",
+        }
+        weights = " | ".join(
+            f"{key.replace('_', ' ').title()} {percentages[key]}%"
+            for key in RESEARCH_WEIGHT_KEYS
+        )
+        highest_value = max(percentages.values())
+        priorities = [labels[key] for key, value in percentages.items() if value == highest_value]
+        priority_text = ", ".join(priorities[:-1])
+        if len(priorities) > 1:
+            priority_text += f" and {priorities[-1]}"
+        else:
+            priority_text = priorities[0]
+        return (
+            f"Current regime: {self.regime}. Deterministic research weights: {weights}. "
+            f"Give the most emphasis to {priority_text}. Treat the score as shortlist priority, "
+            "not a return forecast or buy/sell recommendation. Use only validated retrieved data, "
+            "show missing factor coverage, and do not invent unavailable metrics."
+        )
+
+
+def macro_default_policy(regime: str) -> MacroResearchPolicy:
+    if regime == "Easing and expanding liquidity":
+        weights = ResearchWeights(0.45, 0.20, 0.15, 0.20)
+    elif regime == "Tightening and contracting liquidity":
+        weights = ResearchWeights(0.15, 0.30, 0.25, 0.30)
+    elif regime == "Mixed liquidity regime":
+        weights = ResearchWeights(0.30, 0.30, 0.20, 0.20)
+    else:
+        weights = ResearchWeights(0.25, 0.25, 0.25, 0.25)
+    return MacroResearchPolicy(regime=regime, weights=weights)
 
 
 @dataclass(frozen=True)
@@ -45,6 +135,10 @@ class MarketRegimeSnapshot:
     missing_evidence: tuple[str, ...]
     generated_at: datetime
 
+    @property
+    def research_policy(self) -> MacroResearchPolicy:
+        return macro_default_policy(self.regime)
+
     def to_text(self) -> str:
         lines = [self.regime, self.summary, "", "What to emphasize:"]
         lines.extend(f"- {item}" for item in self.emphasis)
@@ -57,6 +151,17 @@ class MarketRegimeSnapshot:
         if self.missing_evidence:
             lines.extend(("", "Not yet measured:"))
             lines.extend(f"- {item}" for item in self.missing_evidence)
+        weights = self.research_policy.weights.percentages()
+        lines.extend(
+            (
+                "",
+                "Default research weights: "
+                + " | ".join(
+                    f"{key.replace('_', ' ').title()} {weights[key]}%"
+                    for key in RESEARCH_WEIGHT_KEYS
+                ),
+            )
+        )
         lines.extend(("", "This is a market-condition checklist, not a buy or sell signal."))
         return "\n".join(lines)
 

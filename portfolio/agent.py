@@ -31,6 +31,7 @@ from .research_planner import (
     build_research_plan,
 )
 from .market_data import current_price
+from .market_regime import MacroResearchPolicy, macro_default_policy
 from .models import Purchase
 from .portfolio_import import (
     PortfolioImportError,
@@ -181,6 +182,10 @@ class StockAgent:
         self._pending_task: PendingTask | None = None
         self._recent_chat: deque[ConversationTurn] = deque(maxlen=1)
         self._turn_sequence = 0
+        self._research_policy = macro_default_policy("Regime incomplete")
+
+    def set_research_policy(self, policy: MacroResearchPolicy) -> None:
+        self._research_policy = policy
 
     def handle(
         self,
@@ -394,6 +399,9 @@ class StockAgent:
             if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
                 raise ResearchCancelled("Research stopped by user.")
             plan = build_research_plan(query, self.settings, prior_plan=prior_plan)
+            plan.macro_regime = self._research_policy.regime
+            plan.research_weights = self._research_policy.weights.as_dict()
+            plan.research_weight_source = self._research_policy.source
             if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
                 raise ResearchCancelled("Research stopped by user.")
             progress(4, "Research plan ready", f"Workflow: {plan.workflow or plan.mode}.")
@@ -629,7 +637,8 @@ class StockAgent:
             )
             system_message = (
                 "You are a concise stock research assistant. Explain uncertainty clearly. "
-                "Do not claim access to live data unless data was supplied by a tool."
+                "Do not claim access to live data unless data was supplied by a tool. "
+                + self._research_policy.instruction_text()
             )
             use_recent = bool(
                 _is_contextual_chat_follow_up(text)

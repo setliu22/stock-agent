@@ -9,6 +9,7 @@ from portfolio.company_resolver import AmbiguousInstrumentError, InstrumentResol
 from portfolio.config import Settings
 from portfolio.database import PortfolioDatabase
 from portfolio.models import Purchase
+from portfolio.market_regime import MacroResearchPolicy, ResearchWeights
 
 
 def test_show_holdings_without_network(tmp_path) -> None:
@@ -106,6 +107,39 @@ def test_research_forwards_live_progress_updates(tmp_path, monkeypatch) -> None:
     assert any(stage == "Retrieving evidence" for _percent, stage, _detail in events)
     assert events[-1][0] == 100
     assert events[-1][1] == "Research complete"
+
+
+def test_research_plan_receives_validated_macro_policy(tmp_path, monkeypatch) -> None:
+    from portfolio.lseg_research import ResearchResult
+    from portfolio.research_planner import ResearchPlan, ScreenFilters
+
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
+    agent = StockAgent(settings, PortfolioDatabase(settings.database_path))
+    agent.set_research_policy(
+        MacroResearchPolicy(
+            "Mixed liquidity regime",
+            ResearchWeights(0.30, 0.30, 0.20, 0.20),
+        )
+    )
+    plan = ResearchPlan(
+        mode="screen",
+        workflow="stock_screen",
+        screen=ScreenFilters(sector="Technology"),
+    )
+    captured = []
+    monkeypatch.setattr("portfolio.agent.build_research_plan", lambda *_args, **_kwargs: plan)
+
+    def fake_run(compiled, *_args, **_kwargs):
+        captured.append(compiled)
+        return ResearchResult(plan=compiled)
+
+    monkeypatch.setattr("portfolio.agent.run_research", fake_run)
+    monkeypatch.setattr("portfolio.agent.concise_report", lambda *_args, **_kwargs: "Screen")
+
+    assert agent.research("screen technology stocks") == "Screen"
+    assert captured[0].macro_regime == "Mixed liquidity regime"
+    assert captured[0].research_weights["growth"] == 0.30
+    assert captured[0].research_weight_source == "macro_defaults"
 
 
 def test_research_returns_stopped_when_cancelled(tmp_path, monkeypatch) -> None:
@@ -346,6 +380,38 @@ def test_general_chat_keeps_only_one_turn_for_pronoun_follow_up(tmp_path, monkey
     assert response.startswith("It also")
     assert [role for role, _content in calls[1]] == ["system", "human", "assistant", "human"]
     assert calls[1][1][1] == "what does zbra do"
+
+
+def test_general_chat_receives_bounded_macro_policy_context(tmp_path, monkeypatch) -> None:
+    import sys
+    from types import SimpleNamespace
+
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", "fake-key", "test-model", "desktop.workspace")
+    agent = StockAgent(settings, PortfolioDatabase(settings.database_path))
+    agent.set_research_policy(
+        MacroResearchPolicy(
+            "Mixed liquidity regime",
+            ResearchWeights(0.30, 0.30, 0.20, 0.20),
+        )
+    )
+    calls = []
+
+    class FakeChatGroq:
+        def __init__(self, **_kwargs):
+            pass
+
+        def invoke(self, messages):
+            calls.append(messages)
+            return SimpleNamespace(content="Answer")
+
+    monkeypatch.setitem(sys.modules, "langchain_groq", SimpleNamespace(ChatGroq=FakeChatGroq))
+
+    assert agent._general_chat("How should I think about stock selection?") == "Answer"
+    system = calls[0][0][1]
+    assert "Current regime: Mixed liquidity regime" in system
+    assert "Growth 30%" in system
+    assert "Profitability 30%" in system
+    assert "buy/sell recommendation" in system
 
 
 def test_operational_turn_breaks_general_chat_memory(tmp_path, monkeypatch) -> None:

@@ -192,6 +192,68 @@ def test_candidate_screen_ranks_quality_and_value() -> None:
     assert output.iloc[0]["Research Score"] > output.iloc[1]["Research Score"]
 
 
+def test_macro_weights_change_candidate_ranking_transparently() -> None:
+    import portfolio.lseg_research as module
+
+    frame = pd.DataFrame(
+        {
+            "Instrument": ["G.N", "M.N", "D.N"],
+            "TR.CommonName": ["Growth", "Middle", "Defensive"],
+            "TR.CompanyMarketCap": [30e9, 25e9, 20e9],
+            "TR.RevenueMean(Period=FY1)": [100, 100, 100],
+            "TR.RevenueMean(Period=FY2)": [150, 120, 105],
+            "TR.EPSMean(Period=FY1)": [1, 2, 2],
+            "TR.EPSMean(Period=FY2)": [2, 2.4, 2.1],
+            "TR.LTGMean": [30, 15, 5],
+            "TR.ReturnonAvgTotEqtyPctNetIncomeBeforeExtraItemsTTM": [5, 15, 30],
+            "TR.ROAPercentTrailing12M": [2, 8, 15],
+            "TR.PretaxMarginPercent(Period=FY0)": [3, 12, 25],
+            "TR.PtoEPSMeanEst(Period=FY1)": [40, 20, 10],
+            "TR.EVToEBITDA": [25, 14, 7],
+            "TR.PriceToSalesPerShare": [10, 5, 2],
+            "TR.PriceToBVPerShare": [10, 5, 2],
+            "TR.F.DebtTot": [100, 50, 20],
+            "TR.FCFMean(Period=FY1)": [2, 10, 30],
+            "TR.F.CashCashEquiv": [5, 15, 30],
+        }
+    )
+    growth = module._rank_candidate_screen(
+        frame,
+        {"growth": 0.85, "profitability": 0.05, "valuation": 0.05, "balance_sheet": 0.05},
+    )
+    defensive = module._rank_candidate_screen(
+        frame,
+        {"growth": 0.05, "profitability": 0.35, "valuation": 0.30, "balance_sheet": 0.30},
+    )
+
+    assert growth.iloc[0]["TR.CommonName"] == "Growth"
+    assert defensive.iloc[0]["TR.CommonName"] == "Defensive"
+    assert {"Growth Score", "Profitability Score", "Valuation Score", "Balance Sheet Score"}.issubset(
+        growth.columns
+    )
+
+
+def test_debt_free_company_keeps_balance_sheet_coverage() -> None:
+    import portfolio.lseg_research as module
+
+    frame = pd.DataFrame(
+        {
+            "Instrument": ["CASH.N", "DEBT.N"],
+            "TR.CompanyMarketCap": [10e9, 10e9],
+            "TR.F.DebtTot": [0, 100],
+            "TR.FCFMean(Period=FY1)": [20, 20],
+            "TR.F.CashCashEquiv": [50, 10],
+        }
+    )
+
+    ranked = module._rank_candidate_screen(frame)
+
+    cash = ranked.loc[ranked["Instrument"] == "CASH.N"].iloc[0]
+    debt = ranked.loc[ranked["Instrument"] == "DEBT.N"].iloc[0]
+    assert cash["Balance Sheet Score"] > debt["Balance Sheet Score"]
+    assert "balance_sheet" in cash["Evidence Families"]
+
+
 def test_closed_lseg_session_raises_clear_error(tmp_path) -> None:
     class Session:
         open_state = "Closed"
