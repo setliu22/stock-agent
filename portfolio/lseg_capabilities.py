@@ -215,10 +215,16 @@ def _catalog_records(path: Path | None = None) -> list[dict[str, Any]]:
 
 def capability_answer(query: str, catalog_path: Path | None = None) -> str:
     lower = query.casefold()
-    broad = any(phrase in lower for phrase in ("what can lseg", "lseg capabilities", "all lseg functions", "what does lseg"))
-    if broad:
-        return concise_capability_summary()
-    terms = {word for word in __import__("re").findall(r"[a-z0-9]+", lower) if len(word) > 2 and word not in {"lseg", "function", "functions", "does", "have", "with", "from", "using", "able", "can"}}
+    generic_terms = {
+        "lseg", "refinitiv", "function", "functions", "feature", "features",
+        "capability", "capabilities", "does", "have", "with", "from", "using",
+        "able", "can", "what", "all",
+    }
+    terms = {
+        word
+        for word in __import__("re").findall(r"[a-z0-9]+", lower)
+        if len(word) > 2 and word not in generic_terms
+    }
     scored: list[tuple[int, dict[str, Any]]] = []
     for record in _catalog_records(catalog_path):
         text = " ".join(str(record.get(key) or "") for key in ("qualified_name", "summary", "category")).casefold()

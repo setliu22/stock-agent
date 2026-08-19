@@ -294,7 +294,14 @@ def _selected_fixture() -> ResearchResult:
     result.metrics["selected_ric"] = "CAT.N"
     result.metrics["CAT.N:evidence_families"] = ["profile", "valuation", "profitability", "news", "filings"]
     result.tables["profile"] = pd.DataFrame(
-        {"Instrument": ["MORN.O", "CAT.N"], "TR.CommonName": ["Morningstar", "Caterpillar"]}
+        {
+            "Instrument": ["MORN.O", "CAT.N"],
+            "TR.CommonName": ["Morningstar", "Caterpillar"],
+            "TR.BusinessSummary": [
+                "Morningstar provides investment research.",
+                "Caterpillar manufactures construction and mining equipment, engines, and turbines.",
+            ],
+        }
     )
     result.tables["valuation"] = pd.DataFrame(
         {"Instrument": ["MORN.O", "CAT.N"], "TR.PtoEPSMeanEst(Period=FY1)": [30.0, 10.0]}
@@ -343,6 +350,59 @@ def test_risk_and_catalyst_followups_are_direct_and_cautious(tmp_path: Path) -> 
     assert "not that the company is risk-free" in risk
     assert "No specific catalyst" in catalyst
     assert not risk.startswith("Candidate:")
+
+
+def test_business_description_and_terse_risk_use_prior_research_without_groq(
+    tmp_path: Path,
+) -> None:
+    result = _selected_fixture()
+
+    description = answer_follow_up(
+        result, "what does the company do", settings(tmp_path)
+    )
+    risk = answer_follow_up(result, "risk", settings(tmp_path))
+
+    assert description == (
+        "Caterpillar (CAT.N) operates as follows: Caterpillar manufactures "
+        "construction and mining equipment, engines, and turbines."
+    )
+    assert "not that the company is risk-free" in risk
+    assert StockAgent._is_research_follow_up("risk", result)
+
+
+def test_novel_follow_up_paraphrase_uses_validated_answer_strategy(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import sys
+    from types import SimpleNamespace
+
+    result = _selected_fixture()
+    calls = []
+
+    class StructuredStrategy:
+        def invoke(self, messages):
+            calls.append(messages)
+            return {"strategy": "risk_summary", "confidence": 0.93}
+
+    class FakeChatGroq:
+        def __init__(self, **_kwargs):
+            pass
+
+        def with_structured_output(self, schema, **_kwargs):
+            assert "risk_summary" in schema["properties"]["strategy"]["enum"]
+            return StructuredStrategy()
+
+    monkeypatch.setitem(sys.modules, "langchain_groq", SimpleNamespace(ChatGroq=FakeChatGroq))
+
+    answer = answer_follow_up(
+        result,
+        "What could materially impair the investment case?",
+        settings(tmp_path, groq_key="fake-key"),
+    )
+
+    assert "not that the company is risk-free" in answer
+    assert "materially impair the investment case" in calls[0][1][1]
 
 
 def test_report_validator_uses_exact_selected_identity_and_multiline_schema() -> None:

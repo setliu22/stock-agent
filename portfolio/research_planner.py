@@ -33,14 +33,20 @@ DEFAULT_TOPICS = [
 ]
 
 _TOPIC_WORDS = {
+    "profile": "profile", "overview": "profile",
+    "product": "profile", "products": "profile", "service": "profile", "services": "profile",
+    "industry": "profile", "sector": "profile",
     "fundamental": "fundamentals", "fundamentals": "fundamentals", "financials": "fundamentals",
     "margin": "profitability", "margins": "profitability", "profitability": "profitability",
     "valuation": "valuation", "multiple": "valuation", "multiples": "valuation",
+    "undervalued": "valuation", "cheap": "valuation", "inexpensive": "valuation",
+    "discount": "valuation", "discounted": "valuation",
     "earnings": "estimates", "estimate": "estimates", "estimates": "estimates",
     "revision": "estimates", "revisions": "estimates", "consensus": "estimates",
     "analyst": "recommendations", "recommendation": "recommendations", "target": "recommendations",
     "guidance": "guidance", "price": "price", "return": "price", "momentum": "price",
-    "volatility": "risk", "risk": "risk", "news": "news", "catalyst": "news",
+    "volatility": "risk", "risk": "risk", "downside": "risk",
+    "concern": "risk", "news": "news", "catalyst": "news",
     "event": "events", "events": "events", "ownership": "ownership", "holder": "ownership",
     "holders": "ownership", "insider": "insiders", "insiders": "insiders",
     "filing": "filings", "filings": "filings", "10-k": "filings", "10-q": "filings",
@@ -63,6 +69,22 @@ def _extract_requested_topics(text: str) -> list[str]:
             continue
         if topic not in topics:
             topics.append(topic)
+    if re.search(r"\bwhat\s+(?:does|do)\b[^?.!]{0,80}\bdo\b", lower) and "profile" not in topics:
+        topics.append("profile")
+    return topics
+
+
+def extract_requested_topics(text: str) -> list[str]:
+    """Expose topic detection with generic plural normalization for chat routing."""
+    topics = _extract_requested_topics(text)
+    for token in re.findall(r"[a-z0-9-]+", text.casefold()):
+        singulars = [token[:-1]] if token.endswith("s") and len(token) > 3 else []
+        if token.endswith("ies") and len(token) > 4:
+            singulars.append(token[:-3] + "y")
+        for singular in singulars:
+            topic = _TOPIC_WORDS.get(singular)
+            if topic is not None and topic not in topics:
+                topics.append(topic)
     return topics
 
 _SECTOR_NAMES = (
@@ -84,6 +106,8 @@ _SECTOR_ALIASES: dict[str, str] = {
     "industrials": "Industrials",
     "industrial": "Industrials",
     "industrial sector": "Industrials",
+    "capital goods": "Industrials",
+    "industrial goods": "Industrials",
     "consumer discretionary": "Consumer Cyclicals",
     "consumer cyclicals": "Consumer Cyclicals",
     "consumer cyclical": "Consumer Cyclicals",
@@ -142,7 +166,7 @@ TRBC_CLASSIFICATIONS: tuple[TRBCClassification, ...] = (
     ),
     TRBCClassification(
         "Pharmaceuticals", "Healthcare", "TR.TRBCIndustryGroupCode", ("562010",),
-        ("pharmaceuticals", "pharmaceutical", "pharma"),
+        ("pharmaceuticals", "pharmaceutical", "pharma", "drug maker", "drug makers", "drugmaker", "drugmakers"),
     ),
     TRBCClassification(
         "Medical Equipment & Supplies", "Healthcare", "TR.TRBCIndustryGroupCode", ("561010",),
@@ -1716,17 +1740,9 @@ def _taxonomy_evidence_supports(
         return False
     phrase = re.sub(r"\s+", " ", str(evidence).strip().casefold())
     if field_name == "sector":
-        mapped = canonicalize_sector(phrase) or detect_sector(phrase) or {
-            "capital goods": "Industrials",
-            "industrial goods": "Industrials",
-        }.get(phrase)
+        mapped = canonicalize_sector(phrase) or detect_sector(phrase)
         return mapped == value
-    mapped_industry = canonicalize_industry(phrase) or detect_industry(phrase) or {
-        "drug maker": "Pharmaceuticals",
-        "drug makers": "Pharmaceuticals",
-        "drugmaker": "Pharmaceuticals",
-        "drugmakers": "Pharmaceuticals",
-    }.get(phrase)
+    mapped_industry = canonicalize_industry(phrase) or detect_industry(phrase)
     return mapped_industry == value
 
 
@@ -1755,11 +1771,7 @@ def _topic_evidence_supports(topic: str, evidence: Any, text: str) -> bool:
     if not _evidence_is_grounded(evidence, text):
         return False
     phrase = str(evidence).casefold()
-    mapped = {
-        mapped_topic
-        for word, mapped_topic in _TOPIC_WORDS.items()
-        if re.search(rf"\b{re.escape(word)}\b", phrase)
-    }
+    mapped = set(extract_requested_topics(phrase))
     if re.search(r"\bcalendar\b", phrase):
         mapped.add("events")
     if re.search(r"\bshareholders?\b", phrase):

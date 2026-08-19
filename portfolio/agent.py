@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections import deque
 from datetime import date, datetime, timedelta, timezone
 from dataclasses import dataclass
+from enum import Enum
+import json
 import os
 import re
 from typing import Any, Callable
@@ -29,6 +31,9 @@ from .research_planner import (
     ResearchPlan,
     UnsupportedResearchConstraint,
     build_research_plan,
+    detect_industry,
+    detect_sector,
+    extract_requested_topics,
 )
 from .market_data import current_price
 from .market_regime import (
@@ -51,16 +56,9 @@ _RESEARCH_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-_AMBIGUOUS_EQUITY_RESEARCH_PATTERN = re.compile(
-    r"^(?=[^\n]{1,180}$)"
-    r"(?=.*\b(?:find|hunt\s+for|scout|seek|identify|spot|look\s+for|surface|"
-    r"zero\s+in\s+on|pick\s+out|which)\b)"
-    r"(?=.*\b(?:stocks?|companies|equities|names?|plays?|picks?|candidates?|"
-    r"industrials?|biotech|chipmakers?|banks?)\b)"
-    r"(?=.*\b(?:good|best|strong|attractive|appealing|promising|compelling|standout|"
-    r"underappreciated|undervalued|overlooked|underpriced|mispriced|cheap|discounted|"
-    r"industrials?|biotech|technology|tech|healthcare|financials?|energy|utilities|"
-    r"chipmakers?|banks?)\b).*$",
+_EQUITY_SEARCH_PATTERN = re.compile(
+    r"\b(?:find|hunt\s+for|scout|seek|identify|spot|look\s+for|surface|pick\s+out|which|"
+    r"show(?:\s+me)?|list)\b[^\n]{0,160}\b(?:stocks?|companies|equities|candidates?)\b",
     re.IGNORECASE,
 )
 
@@ -98,6 +96,29 @@ _POSITION_RISK_INTENT = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+_CANCEL_PATTERN = re.compile(
+    r"\s*(?:cancel|never\s+mind|nevermind|forget\s+it|start\s+over)\s*[.!]?\s*",
+    re.IGNORECASE,
+)
+
+_LSEG_CAPABILITY_INTENT = re.compile(
+    r"\b(?:(?:what\s+(?:can|does)\s+)(?:lseg|refinitiv)|"
+    r"(?:lseg|refinitiv)\b[^\n]{0,40}\b(?:capabilit(?:y|ies)|functions?|features?))\b",
+    re.IGNORECASE,
+)
+
+_SHOW_HOLDINGS_INTENT = re.compile(
+    r"(?:^\s*(?:holdings|portfolio|positions)\s*[?.!]*\s*$|"
+    r"\b(?:show|list|view|display)\b[^\n]{0,30}\b(?:holdings|portfolio|positions)\b)",
+    re.IGNORECASE,
+)
+
+_CALCULATE_RETURN_INTENT = re.compile(
+    r"\b(?:(?:calculate|show|display)\b[^\n]{0,30}\b(?:portfolio\s+)?(?:return|performance)|"
+    r"portfolio\s+(?:return|performance))\b",
+    re.IGNORECASE,
+)
+
 
 ProgressCallback = Callable[[int | None, str, str], None]
 
@@ -118,6 +139,14 @@ class ConversationTurn:
     sequence: int = 0
 
 
+class OperationalCommand(str, Enum):
+    CAPABILITIES = "capabilities"
+    SHOW_HOLDINGS = "show_holdings"
+    CALCULATE_RETURN = "calculate_return"
+    POSITION_RISK = "position_risk"
+    RECORD_PURCHASE = "record_purchase"
+
+
 _EQUITY_CONTEXT_PATTERN = re.compile(
     r"\b(?:stocks?|companies|company|equities|equity|shares?|tickers?|securities|"
     r"investments?|sector|industry|market|valuation|financials?|"
@@ -128,16 +157,39 @@ _EQUITY_CONTEXT_PATTERN = re.compile(
 
 def _is_research_request(text: str, *, semantic_fallback: bool = False) -> bool:
     lower = text.casefold()
+    has_search_action = bool(
+        re.search(
+            r"\b(?:find|hunt\s+for|scout|seek|identify|spot|look\s+for|surface|zero\s+in\s+on|"
+            r"pick\s+out|which|show(?:\s+me)?|list)\b",
+            lower,
+        )
+    )
+    has_catalogued_taxonomy = bool(detect_sector(text) or detect_industry(text))
     return bool(
         _RESEARCH_PATTERN.search(text)
-        or _AMBIGUOUS_EQUITY_RESEARCH_PATTERN.search(text)
-        or "market news" in lower
-        or (
-            re.search(r"\b(find|show|list)\b", lower)
-            and re.search(r"\b(stocks?|companies|equities)\b", lower)
-        )
+        or _EQUITY_SEARCH_PATTERN.search(text)
+        or (has_search_action and has_catalogued_taxonomy)
+        or bool(re.search(r"\bmarket\b[^\n]{0,30}\bnews\b", lower))
         or (semantic_fallback and _EQUITY_CONTEXT_PATTERN.search(text))
     )
+
+
+def _is_cancel_request(text: str) -> bool:
+    return bool(_CANCEL_PATTERN.fullmatch(text))
+
+
+def _operational_command(text: str) -> OperationalCommand | None:
+    if _LSEG_CAPABILITY_INTENT.search(text):
+        return OperationalCommand.CAPABILITIES
+    if _CALCULATE_RETURN_INTENT.search(text):
+        return OperationalCommand.CALCULATE_RETURN
+    if _SHOW_HOLDINGS_INTENT.search(text):
+        return OperationalCommand.SHOW_HOLDINGS
+    if _is_event_risk_request(text):
+        return OperationalCommand.POSITION_RISK
+    if _PURCHASE_PATTERN.search(text):
+        return OperationalCommand.RECORD_PURCHASE
+    return None
 
 
 def _is_event_risk_request(text: str) -> bool:
@@ -148,7 +200,6 @@ def _is_event_risk_request(text: str) -> bool:
         or "position risk" in lower
         or "event risk" in lower
         or "earnings risk" in lower
-        or "should be sold" in lower
     )
 
 
@@ -217,8 +268,9 @@ class StockAgent:
             return "Enter a request."
 
         lower = text.casefold()
+        command = _operational_command(text)
         if self._pending_task is not None and self._pending_task.kind == "portfolio_update":
-            if re.fullmatch(r"\s*(?:cancel|never\s+mind|nevermind|forget\s+it|start\s+over)\s*[.!]?\s*", lower):
+            if _is_cancel_request(text):
                 self._clear_pending_task()
                 return "Okay, I cancelled the portfolio update."
             try:
@@ -240,9 +292,7 @@ class StockAgent:
             )
         if _PORTFOLIO_IMPORT_INTENT.search(text) and self._pending_research_query is not None:
             self._clear_pending_task()
-        if self._pending_portfolio_import and re.fullmatch(
-            r"\s*(?:cancel|never\s+mind|nevermind|forget\s+it)\s*[.!]?\s*", lower
-        ):
+        if self._pending_portfolio_import and _is_cancel_request(text):
             self._clear_pending_task()
             return "Okay, I cancelled the portfolio import."
         try:
@@ -261,11 +311,7 @@ class StockAgent:
             )
         if self._pending_portfolio_import and (
             _is_research_request(text)
-            or lower in {"holdings", "portfolio"}
-            or "show holdings" in lower
-            or "calculate return" in lower
-            or "portfolio return" in lower
-            or _is_event_risk_request(text)
+            or command is not None
         ):
             self._clear_pending_task()
 
@@ -281,25 +327,9 @@ class StockAgent:
                 "Paste the portfolio JSON in your next message. Each position needs a ticker/symbol, "
                 "shares/quantity, and purchase price or average cost. Say cancel to stop."
             )
-        operational_command = bool(
-            "lseg capabilities" in lower
-            or "lseg functions" in lower
-            or "what can lseg" in lower
-            or "what does lseg" in lower
-            or "show holdings" in lower
-            or lower in {"holdings", "portfolio"}
-            or "calculate return" in lower
-            or "portfolio return" in lower
-            or _is_event_risk_request(text)
-            or "review portfolio" in lower
-            or "should be sold" in lower
-            or _PURCHASE_PATTERN.search(text)
-        )
+        operational_command = command is not None
         if self._pending_research_query is not None:
-            if re.fullmatch(
-                r"\s*(?:cancel|never\s+mind|nevermind|forget\s+it|start\s+over)\s*[.!]?\s*",
-                lower,
-            ):
+            if _is_cancel_request(text):
                 self._pending_research_query = None
                 self._pending_research_prior_plan = None
                 self._clear_pending_task()
@@ -324,19 +354,25 @@ class StockAgent:
                     prior_plan=pending_prior_plan,
                 )
 
-        if (
-            "lseg capabilities" in lower
-            or "lseg functions" in lower
-            or "what can lseg" in lower
-            or "what does lseg" in lower
-        ):
+        if command is OperationalCommand.CAPABILITIES:
             self._screen_refinement_available = False
             return capability_answer(text, self.settings.project_root / "data" / "lseg_capabilities.json")
-        if self._last_research_result is not None and self._is_research_follow_up(
-            text,
-            self._last_research_result,
-        ):
-            return answer_follow_up(self._last_research_result, text, self.settings)
+        if self._last_research_result is not None:
+            research_follow_up = self._is_research_follow_up(
+                text,
+                self._last_research_result,
+            )
+            if not research_follow_up and not operational_command:
+                research_follow_up = self._semantic_research_follow_up(
+                    text,
+                    self._last_research_result,
+                )
+            if research_follow_up:
+                return answer_follow_up(
+                    self._last_research_result,
+                    text,
+                    self.settings,
+                )
         if (
             self._last_research_result is not None
             and self._screen_refinement_available
@@ -350,7 +386,7 @@ class StockAgent:
                 cancel_event=cancel_event,
                 prior_plan=prior_plan,
             )
-        if _is_event_risk_request(text):
+        if command is OperationalCommand.POSITION_RISK:
             self._screen_refinement_available = False
             return self.review_position_risk(progress_callback, cancel_event)
         if _is_research_request(
@@ -358,18 +394,13 @@ class StockAgent:
             semantic_fallback=bool(self.settings.groq_api_key) and not operational_command,
         ):
             return self.research(text, progress_callback=progress_callback, cancel_event=cancel_event)
-        if "show holdings" in lower or lower in {"holdings", "portfolio"}:
+        if command is OperationalCommand.SHOW_HOLDINGS:
             self._screen_refinement_available = False
             return self.show_holdings()
-        if "calculate return" in lower or "portfolio return" in lower:
+        if command is OperationalCommand.CALCULATE_RETURN:
             self._screen_refinement_available = False
             return self.calculate_return()
-        if (
-            _is_event_risk_request(text)
-        ):
-            self._screen_refinement_available = False
-            return self.review_position_risk(progress_callback, cancel_event)
-        if match := _PURCHASE_PATTERN.search(text):
+        if command is OperationalCommand.RECORD_PURCHASE and (match := _PURCHASE_PATTERN.search(text)):
             self._screen_refinement_available = False
             purchase = Purchase(
                 ticker=match.group("ticker").upper(),
@@ -491,31 +522,109 @@ class StockAgent:
             re.search(r"\b(this|that|the)\s+(company|stock|candidate|pick|one|name)\b", lower)
             or re.search(r"\b(it|its)\b", lower)
         )
-        research_question = bool(
-            re.search(
-                r"\b(why|how|what|explain|elaborate|undervalued|valuation|cheap|inexpensive|"
-                r"discount|relative\s+value|risk|catalyst|selected|chosen|promising)\b",
+        words = re.findall(r"[a-z0-9]+", lower)
+        requested_topics = extract_requested_topics(text)
+        contextual_question = bool(
+            requested_topics
+            or re.match(
+                r"\s*(?:who|what|when|where|why|how|which|explain|describe|summarize|elaborate)\b",
                 lower,
             )
         )
-        direct_follow_up = bool(
-            re.fullmatch(
-                r"\s*(?:why\s+(?:is\s+)?(?:it|this company|this stock)?\s*undervalued\??|"
-                r"what\s+(?:are|is)\s+(?:the\s+)?(?:major\s+)?(?:risks?|catalysts?)\??|"
-                r"what(?:'s|\s+is)\s+(?:the\s+)?(?:risk|catalyst|downside)\??|"
-                r"what\s+could\s+go\s+wrong\??|"
-                r"why\s+(?:was\s+)?(?:it|this company|this stock)\s+selected\??|"
-                r"why\s+(?:this|that)\s+(?:one|name|pick|candidate)\??|"
-                r"how\s+was\s+(?:it|this|that)(?:\s+(?:one|name|pick|candidate))?\s+chosen\??|"
-                r"why\s+(?:does\s+)?(?:it|this company|this stock)?\s*(?:look|seem)\s+cheap\??|"
-                r"why\s+(?:the\s+)?discount\??|"
-                r"is\s+(?:the\s+)?valuation\s+(?:really\s+)?(?:attractive|cheap|inexpensive)\??|"
-                r"tell\s+me\s+more(?:\s+about\s+(?:it|this company|this stock))?\.?|"
-                r"explain\s+(?:the\s+)?valuation\.?)\s*",
-                lower,
+        topic_follow_up = bool(
+            requested_topics
+            and (
+                refers_to_prior_result
+                or len(words) <= 3
             )
         )
-        return (refers_to_prior_result and research_question) or direct_follow_up
+        return (
+            (refers_to_prior_result and contextual_question)
+            or topic_follow_up
+        )
+
+    def _semantic_research_follow_up(
+        self,
+        text: str,
+        result: ResearchResult,
+    ) -> bool:
+        """Classify ambiguous context references without granting tool control."""
+        if not self.settings.groq_api_key:
+            return False
+        selected_ric = str(result.metrics.get("selected_ric") or "").strip()
+        identities = [
+            {
+                "ticker": item.ticker,
+                "ric": item.ric,
+                "company": item.company_name,
+                "selected": item.ric == selected_ric if selected_ric else index == 0,
+            }
+            for index, item in enumerate(result.resolved[:8])
+        ]
+        if not identities:
+            return False
+        schema = {
+            "title": "PriorResearchContextRoute",
+            "description": "Decide whether the current message refers to the prior research result.",
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "route": {
+                    "type": "string",
+                    "enum": ["prior_research_follow_up", "independent_request"],
+                },
+                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            },
+            "required": ["route", "confidence"],
+        }
+        try:
+            from langchain_groq import ChatGroq
+
+            llm = ChatGroq(
+                model=self.settings.groq_model,
+                temperature=0,
+                max_retries=0,
+                api_key=self.settings.groq_api_key,
+            )
+            structured = llm.with_structured_output(
+                schema,
+                method="json_mode",
+                include_raw=False,
+            )
+            payload = structured.invoke(
+                [
+                    (
+                        "system",
+                        "Classify context only. A prior_research_follow_up asks about, expands on, "
+                        "or refers implicitly to one or more supplied prior companies or their prior "
+                        "research evidence. An independent_request changes subject, names a different "
+                        "company, starts fresh research, or is unrelated. Do not answer the request. "
+                        "Return only the exact schema.",
+                    ),
+                    (
+                        "human",
+                        json.dumps(
+                            {
+                                "current_message": text[:2_000],
+                                "prior_research_identities": identities,
+                            },
+                            sort_keys=True,
+                        ),
+                    ),
+                ]
+            )
+            if not isinstance(payload, dict) or set(payload) != {"route", "confidence"}:
+                return False
+            route = payload.get("route")
+            confidence = payload.get("confidence")
+            return bool(
+                route == "prior_research_follow_up"
+                and isinstance(confidence, (int, float))
+                and not isinstance(confidence, bool)
+                and 0.8 <= float(confidence) <= 1
+            )
+        except Exception:
+            return False
 
     def show_holdings(self) -> str:
         holdings = self.database.holdings()

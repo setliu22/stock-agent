@@ -28,6 +28,17 @@ def test_show_holdings_without_network(tmp_path) -> None:
     assert "2 shares" in text
 
 
+def test_operational_wording_uses_central_command_router(tmp_path, monkeypatch) -> None:
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
+    database = PortfolioDatabase(settings.database_path)
+    database.record_purchase(Purchase("MSFT", 2, 50, date(2026, 1, 1)))
+    agent = StockAgent(settings, database)
+    monkeypatch.setattr("portfolio.agent.current_price", lambda _ticker: 60.0)
+
+    assert "MSFT" in agent.handle("view my positions")
+    assert "Total gain/loss" in agent.handle("display portfolio performance")
+
+
 def test_research_failure_does_not_substitute_yahoo_snapshot(tmp_path, monkeypatch) -> None:
     settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
     database = PortfolioDatabase(settings.database_path)
@@ -353,6 +364,72 @@ def test_unrelated_company_question_does_not_receive_prior_research(tmp_path, mo
     assert calls[0][-1] == ("human", "what does zbra do")
     assert "QCOM" not in str(calls[0])
     assert "QUALCOMM" not in str(calls[0])
+
+
+def test_ambiguous_paraphrase_uses_validated_semantic_context_route(
+    tmp_path, monkeypatch
+) -> None:
+    import sys
+    from types import SimpleNamespace
+    from portfolio.company_resolver import ResolvedInstrument
+    from portfolio.lseg_research import ResearchResult
+    from portfolio.research_planner import ResearchPlan
+
+    settings = Settings(
+        tmp_path,
+        tmp_path / "portfolio.db",
+        "fake-key",
+        "test-model",
+        "desktop.workspace",
+    )
+    agent = StockAgent(settings, PortfolioDatabase(settings.database_path))
+    prior = ResearchResult(
+        plan=ResearchPlan(mode="company", entities=["AZTA"]),
+        resolved=[
+            ResolvedInstrument("AZTA", "AZTA", "AZTA", "AZTA.O", "Azenta Inc")
+        ],
+    )
+    agent._last_research_result = prior
+    structured_calls = []
+    answered = []
+
+    class StructuredRoute:
+        def invoke(self, messages):
+            structured_calls.append(messages)
+            return {"route": "prior_research_follow_up", "confidence": 0.94}
+
+    class FakeChatGroq:
+        def __init__(self, **_kwargs):
+            pass
+
+        def with_structured_output(self, schema, **_kwargs):
+            assert set(schema["properties"]["route"]["enum"]) == {
+                "prior_research_follow_up",
+                "independent_request",
+            }
+            return StructuredRoute()
+
+    monkeypatch.setitem(sys.modules, "langchain_groq", SimpleNamespace(ChatGroq=FakeChatGroq))
+    monkeypatch.setattr(
+        "portfolio.agent.answer_follow_up",
+        lambda result, question, _settings: answered.append((result, question))
+        or "bounded prior-evidence answer",
+    )
+
+    response = agent.handle(
+        "How exposed is the business if external funding becomes more expensive?"
+    )
+
+    assert response == "bounded prior-evidence answer"
+    assert answered == [
+        (
+            prior,
+            "How exposed is the business if external funding becomes more expensive?",
+        )
+    ]
+    classifier_payload = structured_calls[0][1][1]
+    assert "Azenta Inc" in classifier_payload
+    assert "prior_research_identities" in classifier_payload
 
 
 def test_general_chat_keeps_only_one_turn_for_pronoun_follow_up(tmp_path, monkeypatch) -> None:

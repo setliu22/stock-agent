@@ -27,6 +27,7 @@ from .research_planner import (
     ScreenFilters,
     canonicalize_sector,
     classification_definition,
+    extract_requested_topics,
 )
 from .research_execution import compile_execution_request
 from .research_workflows import get_workflow
@@ -2559,7 +2560,7 @@ def _format_number(value: Any, *, percent: bool = False) -> str:
     if number is None:
         return "n/a"
     if percent:
-        return f"{number * 100:+.1f}%"
+        return f"{number * 100:.1f}%"
     if abs(number) >= 1_000_000_000_000:
         return f"{number / 1_000_000_000_000:.2f}T"
     if abs(number) >= 1_000_000_000:
@@ -3206,6 +3207,38 @@ def _deterministic_risk_follow_up(result: ResearchResult) -> str:
     )
 
 
+def _deterministic_business_follow_up(result: ResearchResult) -> str:
+    selected = _selected_resolved(result)
+    if selected is None:
+        return "The prior research did not select a company to describe."
+    name = _company_name(result, selected)
+    summary = _first_value(result, "profile", "TR.BusinessSummary", selected.ric)
+    if not _missing(summary):
+        cleaned = re.sub(r"\s+", " ", str(summary)).strip()
+        if len(cleaned) > 1_200:
+            cleaned = cleaned[:1_200].rsplit(" ", 1)[0].rstrip(".,;:") + "."
+        return f"{name} ({selected.ric}) operates as follows: {cleaned}"
+
+    descriptors = []
+    for field_name, label in (
+        ("TR.TRBCEconomicSector", "sector"),
+        ("TR.TRBCBusinessSector", "business sector"),
+        ("TR.TRBCIndustry", "industry"),
+    ):
+        value = _first_value(result, "profile", field_name, selected.ric)
+        if not _missing(value):
+            descriptors.append(f"{label}: {value}")
+    if descriptors:
+        return (
+            f"The retrieved profile for {name} ({selected.ric}) did not include a usable "
+            "business summary. Available classification: " + "; ".join(descriptors) + "."
+        )
+    return (
+        f"The prior LSEG profile for {name} ({selected.ric}) did not provide a usable "
+        "business summary or industry classification."
+    )
+
+
 def _deterministic_catalyst_follow_up(result: ResearchResult) -> str:
     selected = _selected_resolved(result)
     if selected is None:
@@ -3439,27 +3472,126 @@ def is_request_diagnostics_follow_up(
     )
 
 
+_FOLLOW_UP_STRATEGIES = {
+    "valuation_summary",
+    "risk_summary",
+    "business_description",
+    "catalyst_summary",
+    "selection_rationale",
+    "evidence_answer",
+}
+
+
+def _local_follow_up_strategy(question: str) -> str | None:
+    """Resolve only unambiguous topic requests without interpreting whole sentences."""
+    topics = set(extract_requested_topics(question))
+    strategy_topics = {
+        "valuation": "valuation_summary",
+        "risk": "risk_summary",
+        "profile": "business_description",
+        "news": "catalyst_summary",
+        "events": "catalyst_summary",
+    }
+    strategies = {strategy_topics[topic] for topic in topics if topic in strategy_topics}
+    if len(strategies) == 1:
+        return strategies.pop()
+
+    lower = question.casefold()
+    if re.search(r"\b(?:selected|selection|chosen|picked)\b", lower) or (
+        re.search(r"\b(?:why|how)\b", lower)
+        and re.search(r"\b(?:this|that|it)\b", lower)
+    ):
+        return "selection_rationale"
+    return None
+
+
+def _semantic_follow_up_strategy(question: str, result: ResearchResult, settings: Settings) -> str | None:
+    """Choose a bounded answer strategy; model output never selects tools or fields."""
+    if not settings.groq_api_key:
+        return None
+    selected = _selected_resolved(result)
+    if selected is None:
+        return None
+    schema = {
+        "title": "ResearchFollowUpStrategy",
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "strategy": {"type": "string", "enum": sorted(_FOLLOW_UP_STRATEGIES)},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        },
+        "required": ["strategy", "confidence"],
+    }
+    try:
+        from langchain_groq import ChatGroq
+
+        llm = ChatGroq(
+            model=settings.groq_model,
+            temperature=0,
+            max_retries=0,
+            api_key=settings.groq_api_key,
+        )
+        structured = llm.with_structured_output(schema, method="json_mode", include_raw=False)
+        payload = structured.invoke(
+            [
+                (
+                    "system",
+                    "Choose how to answer a question about the supplied prior company. Use a summary "
+                    "strategy only for a broad request for that category. Use evidence_answer for a "
+                    "specific, nuanced, combined, or otherwise different question. This is routing only: "
+                    "do not answer, choose data fields, or request tools. Return only the exact schema.",
+                ),
+                (
+                    "human",
+                    json.dumps(
+                        {
+                            "question": question[:2_000],
+                            "prior_company": {
+                                "name": _company_name(result, selected),
+                                "ticker": selected.ticker,
+                                "ric": selected.ric,
+                            },
+                        },
+                        sort_keys=True,
+                    ),
+                ),
+            ]
+        )
+        if not isinstance(payload, dict) or set(payload) != {"strategy", "confidence"}:
+            return None
+        strategy = payload.get("strategy")
+        confidence = payload.get("confidence")
+        if (
+            strategy in _FOLLOW_UP_STRATEGIES
+            and isinstance(confidence, (int, float))
+            and not isinstance(confidence, bool)
+            and 0.8 <= float(confidence) <= 1
+        ):
+            return str(strategy)
+    except Exception:
+        pass
+    return None
+
+
 def answer_follow_up(result: ResearchResult, question: str, settings: Settings) -> str:
     """Answer a contextual question using only the immediately prior research result."""
-    lower = question.casefold()
     if is_request_diagnostics_follow_up(question, result):
         return _deterministic_request_diagnostics_follow_up(result)
     metric_answer = _deterministic_metric_follow_up(result, question)
     if metric_answer is not None:
         return metric_answer
-    if re.search(
-        r"\b(?:undervalu\w*|valuation|cheap|inexpensive|discount(?:ed)?|relative\s+value)\b",
-        lower,
-    ):
+    strategy = _local_follow_up_strategy(question)
+    if strategy is None:
+        strategy = _semantic_follow_up_strategy(question, result, settings)
+    if strategy == "valuation_summary":
         return _deterministic_valuation_follow_up(result)
-    if re.search(r"\b(risks?|downside|concerns?|go wrong)\b", lower):
+    if strategy == "risk_summary":
         return _deterministic_risk_follow_up(result)
-    if re.search(r"\b(catalysts?|developments?|drivers?)\b", lower):
+    if strategy == "business_description":
+        return _deterministic_business_follow_up(result)
+    if strategy == "catalyst_summary":
         return _deterministic_catalyst_follow_up(result)
-    if re.search(
-        r"\b(?:selected|selection|chosen|picked|why\s+(?:this|that|it)|how\s+was\s+(?:this|that|it))\b",
-        lower,
-    ):
+    if strategy == "selection_rationale":
         return _deterministic_selection_follow_up(result)
     fallback = (
         "I could not answer that specific follow-up from the validated prior evidence. "
