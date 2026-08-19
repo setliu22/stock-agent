@@ -69,8 +69,6 @@ def _extract_requested_topics(text: str) -> list[str]:
             continue
         if topic not in topics:
             topics.append(topic)
-    if re.search(r"\bwhat\s+(?:does|do)\b[^?.!]{0,80}\bdo\b", lower) and "profile" not in topics:
-        topics.append("profile")
     return topics
 
 

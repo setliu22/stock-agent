@@ -21,6 +21,7 @@ from .lseg_research import (
     ResearchCancelled,
     ResearchResult,
     answer_follow_up,
+    can_answer_follow_up_deterministically,
     concise_report,
     is_request_diagnostics_follow_up,
     run_research,
@@ -358,15 +359,17 @@ class StockAgent:
             self._screen_refinement_available = False
             return capability_answer(text, self.settings.project_root / "data" / "lseg_capabilities.json")
         if self._last_research_result is not None:
-            research_follow_up = self._is_research_follow_up(
-                text,
-                self._last_research_result,
-            )
-            if not research_follow_up and not operational_command:
-                research_follow_up = self._semantic_research_follow_up(
+            semantic_route = None
+            if self.settings.groq_api_key and not operational_command:
+                semantic_route = self._semantic_research_follow_up(
                     text,
                     self._last_research_result,
                 )
+            research_follow_up = (
+                semantic_route
+                if semantic_route is not None
+                else self._is_research_follow_up(text, self._last_research_result)
+            )
             if research_follow_up:
                 return answer_follow_up(
                     self._last_research_result,
@@ -518,39 +521,24 @@ class StockAgent:
         lower = text.casefold()
         if is_request_diagnostics_follow_up(text, result):
             return True
-        refers_to_prior_result = bool(
-            re.search(r"\b(this|that|the)\s+(company|stock|candidate|pick|one|name)\b", lower)
-            or re.search(r"\b(it|its)\b", lower)
-        )
-        words = re.findall(r"[a-z0-9]+", lower)
+        if result is not None and can_answer_follow_up_deterministically(result, text):
+            return True
         requested_topics = extract_requested_topics(text)
-        contextual_question = bool(
-            requested_topics
-            or re.match(
-                r"\s*(?:who|what|when|where|why|how|which|explain|describe|summarize|elaborate)\b",
-                lower,
-            )
-        )
         topic_follow_up = bool(
             requested_topics
-            and (
-                refers_to_prior_result
-                or len(words) <= 3
-            )
+            and not _RESEARCH_PATTERN.search(text)
+            and not _EQUITY_SEARCH_PATTERN.search(text)
         )
-        return (
-            (refers_to_prior_result and contextual_question)
-            or topic_follow_up
-        )
+        return topic_follow_up
 
     def _semantic_research_follow_up(
         self,
         text: str,
         result: ResearchResult,
-    ) -> bool:
+    ) -> bool | None:
         """Classify ambiguous context references without granting tool control."""
         if not self.settings.groq_api_key:
-            return False
+            return None
         selected_ric = str(result.metrics.get("selected_ric") or "").strip()
         identities = [
             {
@@ -562,7 +550,7 @@ class StockAgent:
             for index, item in enumerate(result.resolved[:8])
         ]
         if not identities:
-            return False
+            return None
         schema = {
             "title": "PriorResearchContextRoute",
             "description": "Decide whether the current message refers to the prior research result.",
@@ -614,17 +602,19 @@ class StockAgent:
                 ]
             )
             if not isinstance(payload, dict) or set(payload) != {"route", "confidence"}:
-                return False
+                return None
             route = payload.get("route")
             confidence = payload.get("confidence")
-            return bool(
-                route == "prior_research_follow_up"
+            if (
+                route in {"prior_research_follow_up", "independent_request"}
                 and isinstance(confidence, (int, float))
                 and not isinstance(confidence, bool)
                 and 0.8 <= float(confidence) <= 1
-            )
+            ):
+                return route == "prior_research_follow_up"
         except Exception:
-            return False
+            pass
+        return None
 
     def show_holdings(self) -> str:
         holdings = self.database.holdings()

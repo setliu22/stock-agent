@@ -432,6 +432,66 @@ def test_ambiguous_paraphrase_uses_validated_semantic_context_route(
     assert "prior_research_identities" in classifier_payload
 
 
+def test_pronoun_business_follow_up_uses_semantic_context_and_answer_routes(
+    tmp_path, monkeypatch
+) -> None:
+    import sys
+    from types import SimpleNamespace
+
+    import pandas as pd
+
+    from portfolio.company_resolver import ResolvedInstrument
+    from portfolio.lseg_research import ResearchResult
+    from portfolio.research_planner import ResearchPlan
+
+    settings = Settings(
+        tmp_path,
+        tmp_path / "portfolio.db",
+        "fake-key",
+        "test-model",
+        "desktop.workspace",
+    )
+    agent = StockAgent(settings, PortfolioDatabase(settings.database_path))
+    result = ResearchResult(
+        plan=ResearchPlan(mode="company", entities=["AZTA"]),
+        resolved=[ResolvedInstrument("AZTA", "AZTA", "AZTA", "AZTA.O", "Azenta, Inc.")],
+    )
+    result.metrics["selected_ric"] = "AZTA.O"
+    result.tables["profile"] = pd.DataFrame(
+        {
+            "Instrument": ["AZTA.O"],
+            "TR.CommonName": ["Azenta, Inc."],
+            "TR.BusinessSummary": ["Azenta provides life-sciences sample management products and services."],
+        }
+    )
+    agent._last_research_result = result
+    schemas = []
+
+    class StructuredRoute:
+        def __init__(self, title):
+            self.title = title
+
+        def invoke(self, _messages):
+            if self.title == "PriorResearchContextRoute":
+                return {"route": "prior_research_follow_up", "confidence": 0.97}
+            return {"strategy": "business_description", "confidence": 0.96}
+
+    class FakeChatGroq:
+        def __init__(self, **_kwargs):
+            pass
+
+        def with_structured_output(self, schema, **_kwargs):
+            schemas.append(schema["title"])
+            return StructuredRoute(schema["title"])
+
+    monkeypatch.setitem(sys.modules, "langchain_groq", SimpleNamespace(ChatGroq=FakeChatGroq))
+
+    response = agent.handle("what does it do?")
+
+    assert "Azenta provides life-sciences sample management products" in response
+    assert schemas == ["PriorResearchContextRoute", "ResearchFollowUpStrategy"]
+
+
 def test_general_chat_keeps_only_one_turn_for_pronoun_follow_up(tmp_path, monkeypatch) -> None:
     import sys
     from types import SimpleNamespace

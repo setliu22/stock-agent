@@ -527,6 +527,9 @@ class StockAgentApp(tk.Tk):
         self.market_regime_summary = tk.StringVar(
             value="The Fed policy-rate and balance-sheet directions determine the framework quadrant."
         )
+        self.market_company_fit = tk.StringVar(
+            value="Stock profile to prioritize: waiting for a complete market regime."
+        )
         ttk.Label(
             overview, textvariable=self.market_regime_title, style="SurfaceSection.TLabel"
         ).pack(anchor="w")
@@ -540,6 +543,16 @@ class StockAgentApp(tk.Tk):
             anchor="w",
             wraplength=1030,
         ).pack(fill="x", pady=(6, 0))
+        tk.Label(
+            overview,
+            textvariable=self.market_company_fit,
+            background=self.SURFACE,
+            foreground=self.TEXT,
+            font=(self.ui_font, 10, "bold"),
+            justify="left",
+            anchor="w",
+            wraplength=1030,
+        ).pack(fill="x", pady=(9, 0))
 
         policy = ttk.Frame(self.market_tab, style="Panel.TFrame", padding=(18, 12))
         policy.pack(fill="x", pady=(0, 14))
@@ -625,7 +638,7 @@ class StockAgentApp(tk.Tk):
             command=self.copy_research_instructions,
         ).pack(side="right", padx=(12, 0))
 
-        columns = ("indicator", "latest", "trend", "as_of", "source")
+        columns = ("indicator", "latest", "trend", "level_context", "as_of", "source")
         self.market_tree = ttk.Treeview(
             self.market_tab,
             columns=columns,
@@ -637,25 +650,41 @@ class StockAgentApp(tk.Tk):
             "indicator": "Indicator",
             "latest": "Latest",
             "trend": "Trend",
+            "level_context": "Level context",
             "as_of": "As of",
             "source": "Source",
         }
         widths = {
-            "indicator": 270,
-            "latest": 130,
-            "trend": 350,
-            "as_of": 120,
-            "source": 190,
+            "indicator": 205,
+            "latest": 115,
+            "trend": 230,
+            "level_context": 285,
+            "as_of": 100,
+            "source": 145,
         }
         for column in columns:
             self.market_tree.heading(column, text=headings[column])
             self.market_tree.column(
                 column,
                 width=widths[column],
-                anchor="w" if column in {"indicator", "trend", "source"} else "center",
+                anchor="w"
+                if column in {"indicator", "trend", "level_context", "source"}
+                else "center",
             )
         self.market_tree.tag_configure("unavailable", foreground=self.MUTED)
-        self.market_tree.pack(fill="x", pady=(0, 14))
+        self.market_tree.pack(fill="x", pady=(0, 7))
+
+        ttk.Label(
+            self.market_tab,
+            text=(
+                "How to read: Latest = current value. Trend = change over 90 days (Fed assets 91 days; "
+                "VIX 30 days; CPI vs. prior month). Stable = change within tolerance. Cooling = inflation "
+                "slowed, not prices fell. Level context = percentile within up to five years."
+            ),
+            style="Muted.TLabel",
+            wraplength=1060,
+            justify="left",
+        ).pack(fill="x", anchor="w", pady=(0, 12))
 
         ttk.Label(self.market_tab, text="What to emphasize", style="Section.TLabel").pack(
             anchor="w", pady=(2, 8)
@@ -1303,6 +1332,7 @@ class StockAgentApp(tk.Tk):
     def _render_market_regime(self, snapshot: MarketRegimeSnapshot) -> None:
         self.market_regime_title.set(snapshot.regime)
         self.market_regime_summary.set(snapshot.summary)
+        self.market_company_fit.set(f"Stock profile to prioritize: {snapshot.company_fit}")
         self._render_research_policy(self.controller.research_policy())
         for item in self.market_tree.get_children():
             self.market_tree.delete(item)
@@ -1316,6 +1346,7 @@ class StockAgentApp(tk.Tk):
                     indicator.label,
                     indicator.latest,
                     indicator.trend,
+                    indicator.level_context,
                     indicator.as_of,
                     indicator.source,
                 ),

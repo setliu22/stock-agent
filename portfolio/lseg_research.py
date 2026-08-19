@@ -3496,12 +3496,6 @@ def _local_follow_up_strategy(question: str) -> str | None:
     if len(strategies) == 1:
         return strategies.pop()
 
-    lower = question.casefold()
-    if re.search(r"\b(?:selected|selection|chosen|picked)\b", lower) or (
-        re.search(r"\b(?:why|how)\b", lower)
-        and re.search(r"\b(?:this|that|it)\b", lower)
-    ):
-        return "selection_rationale"
     return None
 
 
@@ -3571,6 +3565,15 @@ def _semantic_follow_up_strategy(question: str, result: ResearchResult, settings
     except Exception:
         pass
     return None
+
+
+def can_answer_follow_up_deterministically(result: ResearchResult, question: str) -> bool:
+    """Report whether existing evidence has a bounded local answer path."""
+    return bool(
+        is_request_diagnostics_follow_up(question, result)
+        or _deterministic_metric_follow_up(result, question) is not None
+        or _local_follow_up_strategy(question) is not None
+    )
 
 
 def answer_follow_up(result: ResearchResult, question: str, settings: Settings) -> str:

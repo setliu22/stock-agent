@@ -328,10 +328,7 @@ def test_selected_ric_binds_report_and_valuation_follow_up(tmp_path: Path) -> No
     cheap = answer_follow_up(result, "why does it look cheap?", settings(tmp_path))
     assert "Caterpillar (CAT.N)" in cheap
     assert "forward P/E is 10" in cheap
-    selection = answer_follow_up(result, "why this one?", settings(tmp_path))
-    assert "was selected only after passing" in selection
     assert StockAgent._is_research_follow_up("why does it look cheap?")
-    assert StockAgent._is_research_follow_up("why this one?")
 
 
 def test_target_upside_alone_is_not_called_undervaluation(tmp_path: Path) -> None:
@@ -352,13 +349,33 @@ def test_risk_and_catalyst_followups_are_direct_and_cautious(tmp_path: Path) -> 
     assert not risk.startswith("Candidate:")
 
 
-def test_business_description_and_terse_risk_use_prior_research_without_groq(
+def test_business_description_uses_validated_strategy_and_terse_risk_stays_local(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
+    import sys
+    from types import SimpleNamespace
+
     result = _selected_fixture()
+    calls = []
+
+    class StructuredStrategy:
+        def invoke(self, messages):
+            calls.append(messages)
+            return {"strategy": "business_description", "confidence": 0.96}
+
+    class FakeChatGroq:
+        def __init__(self, **_kwargs):
+            pass
+
+        def with_structured_output(self, schema, **_kwargs):
+            assert "business_description" in schema["properties"]["strategy"]["enum"]
+            return StructuredStrategy()
+
+    monkeypatch.setitem(sys.modules, "langchain_groq", SimpleNamespace(ChatGroq=FakeChatGroq))
 
     description = answer_follow_up(
-        result, "what does the company do", settings(tmp_path)
+        result, "what does the company do", settings(tmp_path, groq_key="fake-key")
     )
     risk = answer_follow_up(result, "risk", settings(tmp_path))
 
@@ -366,6 +383,7 @@ def test_business_description_and_terse_risk_use_prior_research_without_groq(
         "Caterpillar (CAT.N) operates as follows: Caterpillar manufactures "
         "construction and mining equipment, engines, and turbines."
     )
+    assert "what does the company do" in calls[0][1][1]
     assert "not that the company is risk-free" in risk
     assert StockAgent._is_research_follow_up("risk", result)
 

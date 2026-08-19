@@ -123,6 +123,8 @@ class RegimeIndicator:
     trend: str
     as_of: str
     source: str
+    level_context: str = "Not assessed"
+    level_percentile: int | None = None
     status: str = "available"
 
 
@@ -134,17 +136,24 @@ class MarketRegimeSnapshot:
     indicators: tuple[RegimeIndicator, ...]
     missing_evidence: tuple[str, ...]
     generated_at: datetime
+    company_fit: str = "Wait for a complete regime before applying a stock-profile tilt."
 
     @property
     def research_policy(self) -> MacroResearchPolicy:
         return macro_default_policy(self.regime)
 
     def to_text(self) -> str:
-        lines = [self.regime, self.summary, "", "What to emphasize:"]
+        lines = [
+            self.regime,
+            self.summary,
+            f"Stock profile to prioritize: {self.company_fit}",
+            "",
+            "What to emphasize:",
+        ]
         lines.extend(f"- {item}" for item in self.emphasis)
         lines.extend(("", "Indicators:"))
         lines.extend(
-            f"- {item.label}: {item.latest}; {item.trend} "
+            f"- {item.label}: {item.latest}; {item.trend}; {item.level_context} "
             f"(as of {item.as_of}, {item.source})"
             for item in self.indicators
         )
@@ -197,7 +206,7 @@ def fetch_vix_series() -> list[Observation]:
         import yfinance as yf
     except Exception as exc:
         raise RuntimeError("yfinance is not installed.") from exc
-    history = yf.Ticker("^VIX").history(period="6mo", interval="1d", auto_adjust=False)
+    history = yf.Ticker("^VIX").history(period="5y", interval="1d", auto_adjust=False)
     if history is None or history.empty or "Close" not in history.columns:
         raise RuntimeError("Yahoo Finance returned no VIX history.")
     return [
@@ -274,7 +283,7 @@ def build_market_regime(
         )
     )
 
-    regime, summary, emphasis = _interpret(states)
+    regime, summary, emphasis, company_fit = _interpret(states, indicators)
     return MarketRegimeSnapshot(
         regime=regime,
         summary=summary,
@@ -285,6 +294,7 @@ def build_market_regime(
             "Sector leadership and earnings breadth need a validated equity-data workflow.",
         ),
         generated_at=datetime.now(timezone.utc),
+        company_fit=company_fit,
     )
 
 
@@ -324,6 +334,7 @@ def _unavailable(key: str, label: str, source: str, states: dict[str, int | None
         trend="Could not refresh",
         as_of="—",
         source=source,
+        level_context="Unavailable",
         status="unavailable",
     )
 
@@ -348,6 +359,7 @@ def _change_indicator(
     direction = _direction(change, tolerance)
     states[key] = direction
     word = {1: "Rising", 0: "Stable", -1: "Falling"}[direction]
+    level_context, level_percentile = _historical_level_context(key, observations, latest)
     return RegimeIndicator(
         key=key,
         label=label,
@@ -355,6 +367,8 @@ def _change_indicator(
         trend=f"{word} ({change:+.2f} {change_unit} vs. {previous.as_of.isoformat()})",
         as_of=latest.as_of.isoformat(),
         source=source,
+        level_context=level_context,
+        level_percentile=level_percentile,
     )
 
 
@@ -383,6 +397,7 @@ def _percent_change_indicator(
         trend=f"{word} ({change:+.2f}% vs. {previous.as_of.isoformat()})",
         as_of=latest.as_of.isoformat(),
         source=source,
+        level_context="Absolute size contextual; use 91-day trend.",
     )
 
 
@@ -401,6 +416,17 @@ def _cpi_indicator(
     states[key] = direction
     word = {1: "Accelerating", 0: "Stable", -1: "Cooling"}[direction]
     latest = observations[-1]
+    yoy_history = [
+        Observation(
+            as_of=observations[index].as_of,
+            value=(observations[index].value / observations[index - 12].value - 1) * 100,
+        )
+        for index in range(12, len(observations))
+        if observations[index - 12].value != 0
+    ]
+    level_context, level_percentile = _historical_level_context(
+        key, yoy_history, yoy_history[-1]
+    )
     return RegimeIndicator(
         key=key,
         label=label,
@@ -408,22 +434,65 @@ def _cpi_indicator(
         trend=f"{word} ({change:+.2f} pp vs. prior month)",
         as_of=latest.as_of.isoformat(),
         source=source,
+        level_context=level_context,
+        level_percentile=level_percentile,
     )
 
 
-def _interpret(states: dict[str, int | None]) -> tuple[str, str, tuple[str, ...]]:
+def _historical_level_context(
+    key: str,
+    observations: list[Observation],
+    latest: Observation,
+) -> tuple[str, int | None]:
+    """Describe the current level relative to up to five years of its own history."""
+    cutoff = latest.as_of - timedelta(days=365 * 5)
+    history = [item.value for item in observations if item.as_of >= cutoff]
+    if len(history) < 12:
+        return "Insufficient history for level context.", None
+    below = sum(value < latest.value for value in history)
+    equal = sum(value == latest.value for value in history)
+    percentile = round(100 * (below + equal / 2) / len(history))
+    if percentile <= 25:
+        band = "Low"
+    elif percentile <= 75:
+        band = "Typical"
+    elif percentile <= 90:
+        band = "Elevated"
+    else:
+        band = "Extreme"
+    subject = {
+        "fed_funds": "rate",
+        "cpi": "inflation",
+        "high_yield_spread": "credit stress",
+        "vix": "volatility",
+    }.get(key, "level")
+    return (
+        f"{band} {subject} ({percentile}th pct, 5Y).",
+        percentile,
+    )
+
+
+def _interpret(
+    states: dict[str, int | None],
+    indicators: list[RegimeIndicator],
+) -> tuple[str, str, tuple[str, ...], str]:
     rate = states.get("fed_funds")
     balance = states.get("fed_balance_sheet")
     if rate is None or balance is None:
         regime = "Regime incomplete"
         summary = "The two Federal Reserve inputs are not both available, so no quadrant was assigned."
         emphasis = ("Refresh the missing observations before using the framework.",)
+        company_fit = "Wait for complete Federal Reserve inputs before changing stock-selection priorities."
     elif rate < 0 and balance > 0:
         regime = "Easing and expanding liquidity"
         summary = "Policy rates are falling while the Federal Reserve balance sheet is expanding."
         emphasis = (
             "Growth can receive more valuation support, but verify earnings quality and valuation.",
             "Check credit conditions before assuming refinancing will remain easy.",
+        )
+        company_fit = (
+            "Profitable growth companies with durable demand; higher-growth businesses can receive more "
+            "weight when valuation and financing risk remain supportable."
         )
     elif rate > 0 and balance < 0:
         regime = "Tightening and contracting liquidity"
@@ -432,6 +501,10 @@ def _interpret(states: dict[str, int | None]) -> tuple[str, str, tuple[str, ...]
             "Prioritize profitability, durable cash flow, and balance-sheet resilience.",
             "Apply more valuation discipline to highly leveraged or long-duration growth companies.",
         )
+        company_fit = (
+            "Profitable, cash-generative companies with low refinancing risk, resilient balance sheets, "
+            "and reasonable forward valuations."
+        )
     else:
         regime = "Mixed liquidity regime"
         summary = "The Federal Reserve inputs are moving in different directions or are broadly stable."
@@ -439,10 +512,35 @@ def _interpret(states: dict[str, int | None]) -> tuple[str, str, tuple[str, ...]
             "Favor businesses that combine growth with profitability instead of relying on liquidity alone.",
             "Treat leverage and refinancing needs as company-specific risks.",
         )
+        company_fit = (
+            "Profitable growth companies with manageable leverage and valuations supported by forward "
+            "revenue and earnings expectations."
+        )
 
     stress = [states.get("high_yield_spread"), states.get("vix")]
     if any(value == 1 for value in stress):
         emphasis += ("At least one market-stress measure is rising; inspect credit and volatility separately.",)
     if states.get("cpi") == 1:
         emphasis += ("Inflation is accelerating, which may constrain policy easing.",)
-    return regime, summary, emphasis
+    percentiles = {
+        indicator.key: indicator.level_percentile
+        for indicator in indicators
+        if indicator.level_percentile is not None
+    }
+    elevated_stress = any(
+        percentiles.get(key, 0) >= 75 for key in ("high_yield_spread", "vix")
+    )
+    if elevated_stress and not any(value == 1 for value in stress):
+        emphasis += (
+            "At least one market-stress level remains elevated despite not rising; do not treat the trend alone as an all-clear.",
+        )
+    if percentiles.get("cpi", 0) >= 75 and states.get("cpi") != 1:
+        emphasis += (
+            "Inflation remains elevated relative to its five-year history even though it is not accelerating.",
+        )
+    if percentiles.get("fed_funds", 0) >= 75 and states.get("fed_funds") <= 0:
+        emphasis += (
+            "The policy-rate level remains elevated relative to its five-year history even though it is stable or falling.",
+        )
+        company_fit += " Keep refinancing needs and balance-sheet resilience prominent."
+    return regime, summary, emphasis, company_fit
