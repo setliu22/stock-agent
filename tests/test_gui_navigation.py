@@ -42,3 +42,40 @@ def test_selecting_market_refreshes_macro_data() -> None:
     StockAgentApp._on_tab_changed(app, None)
 
     assert calls == ["market"]
+
+
+def test_position_risk_button_opens_chat_with_unsent_draft() -> None:
+    selected: list[str] = []
+    drafts: list[str] = []
+    app = SimpleNamespace(
+        is_busy=False,
+        chat_tab="chat",
+        notebook=SimpleNamespace(select=selected.append),
+        pending_chat_draft=None,
+        _apply_chat_draft=drafts.append,
+    )
+
+    StockAgentApp.prepare_position_risk_prompt(app)
+
+    assert selected == ["chat"]
+    assert drafts == [
+        "Review my portfolio positions for reasons to hold, review, trim, or consider exiting."
+    ]
+    assert app.pending_chat_draft is None
+
+
+def test_position_risk_button_queues_draft_while_chat_is_busy() -> None:
+    selected: list[str] = []
+    app = SimpleNamespace(
+        is_busy=True,
+        chat_tab="chat",
+        notebook=SimpleNamespace(select=selected.append),
+        pending_chat_draft=None,
+    )
+
+    StockAgentApp.prepare_position_risk_prompt(app)
+
+    assert selected == ["chat"]
+    assert app.pending_chat_draft == (
+        "Review my portfolio positions for reasons to hold, review, trim, or consider exiting."
+    )

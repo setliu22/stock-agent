@@ -582,6 +582,12 @@ class StockAgent:
             snapshot is None
             or datetime.now(timezone.utc) - snapshot.generated_at > timedelta(minutes=15)
         ):
+            if progress_callback is not None:
+                progress_callback(
+                    2,
+                    "Refreshing market regime",
+                    "Checking rates, Fed liquidity, inflation, credit, and volatility.",
+                )
             snapshot = build_market_regime()
             self._market_snapshot = snapshot
         review = run_portfolio_position_risk_review(

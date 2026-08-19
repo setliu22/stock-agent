@@ -130,6 +130,7 @@ class StockAgentApp(tk.Tk):
         self.market_refresh_busy = False
         self.portfolio_refresh_busy = False
         self.portfolio_refresh_generation = 0
+        self.pending_chat_draft: str | None = None
         self._tab_drag_anchor_x: int | None = None
         self._rendering_research_weights = False
         families = set(tkfont.families(self))
@@ -293,23 +294,9 @@ class StockAgentApp(tk.Tk):
     def _build_chat_tab(self) -> None:
         header = ttk.Frame(self.chat_tab)
         header.pack(fill="x", pady=(0, 12))
-        ttk.Label(header, text="Research", style="Title.TLabel").pack(side="left")
-        actions = ttk.Frame(header)
-        actions.pack(side="right")
-        for text, command in (
-            ("Record", self.record_purchase),
-            ("Holdings", lambda: self._run_direct("holdings", self.controller.holdings_text)),
-            ("Returns", lambda: self._run_direct("return", self.controller.return_text)),
-            ("Position risk", self.prepare_position_risk_prompt),
-            ("Deep research", self.research_stock),
-            ("LSEG info", lambda: self._submit_prompt("What can LSEG do?")),
-        ):
-            ttk.Button(actions, text=text, style="Toolbar.TButton", command=command).pack(
-                side="left", padx=(6, 0)
-            )
+        ttk.Label(header, text="Chat", style="Title.TLabel").pack(side="left")
 
         transcript_frame = ttk.Frame(self.chat_tab)
-        transcript_frame.pack(fill="both", expand=True)
         self.transcript = ScrolledText(
             transcript_frame,
             wrap="word",
@@ -335,7 +322,6 @@ class StockAgentApp(tk.Tk):
         self.progress_frame = ttk.Frame(
             self.chat_tab, style="Panel.TFrame", padding=(12, 9)
         )
-        self.progress_frame.pack(fill="x", pady=(10, 0))
         progress_header = ttk.Frame(self.progress_frame, style="Surface.TFrame")
         progress_header.pack(fill="x")
         self.progress_status = ttk.Label(
@@ -369,7 +355,7 @@ class StockAgentApp(tk.Tk):
         self.progress_elapsed.pack(side="right", anchor="e", padx=(12, 0))
 
         input_frame = ttk.Frame(self.chat_tab)
-        input_frame.pack(fill="x", pady=(12, 0))
+        input_frame.pack(side="bottom", fill="x", pady=(12, 0))
         self.input_box = tk.Text(
             input_frame,
             height=4,
@@ -400,6 +386,8 @@ class StockAgentApp(tk.Tk):
         self.send_button.bind("<Leave>", self._on_send_button_leave)
         self.input_box.bind("<Command-Return>", self._send_event)
         self.input_box.bind("<Control-Return>", self._send_event)
+        self.progress_frame.pack(side="bottom", fill="x", pady=(10, 0))
+        transcript_frame.pack(side="top", fill="both", expand=True)
         self.input_box.focus_set()
 
     def _build_holdings_tab(self) -> None:
@@ -1059,6 +1047,10 @@ class StockAgentApp(tk.Tk):
             self.cancel_event = None
             self._send_button_hovered = False
             self.send_button.configure(state="normal", text="Send")
+            if self.pending_chat_draft is not None:
+                draft = self.pending_chat_draft
+                self.pending_chat_draft = None
+                self._apply_chat_draft(draft)
             self.input_box.focus_set()
 
     def _refresh_send_button_text(self) -> None:
@@ -1205,14 +1197,19 @@ class StockAgentApp(tk.Tk):
         self.send_message()
 
     def prepare_position_risk_prompt(self) -> None:
-        if self.is_busy:
-            return
-        self.notebook.select(self.chat_tab)
-        self.input_box.delete("1.0", "end")
-        self.input_box.insert(
-            "1.0",
-            "Review my portfolio positions for reasons to hold, review, trim, or consider exiting.",
+        prompt = (
+            "Review my portfolio positions for reasons to hold, review, trim, "
+            "or consider exiting."
         )
+        self.notebook.select(self.chat_tab)
+        if self.is_busy:
+            self.pending_chat_draft = prompt
+            return
+        self._apply_chat_draft(prompt)
+
+    def _apply_chat_draft(self, prompt: str) -> None:
+        self.input_box.delete("1.0", "end")
+        self.input_box.insert("1.0", prompt)
         self.input_box.focus_set()
 
     def prepare_event_risk_prompt(self) -> None:

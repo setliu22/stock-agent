@@ -13,7 +13,7 @@ from portfolio.event_risk import (
     score_portfolio_position_risk,
 )
 from portfolio.market_regime import MarketRegimeSnapshot, RegimeIndicator
-from portfolio.models import Holding
+from portfolio.models import Holding, Purchase
 
 
 def _macro(regime: str = "Mixed liquidity regime", *, credit_rising: bool = False):
@@ -203,3 +203,25 @@ def test_prefilled_position_risk_prompt_routes_to_position_review(tmp_path, monk
     )
 
     assert response == "position review invoked"
+
+
+def test_position_review_reports_macro_refresh_before_research(tmp_path, monkeypatch):
+    settings = Settings(
+        tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace"
+    )
+    database = PortfolioDatabase(settings.database_path)
+    database.record_purchase(Purchase("AAPL", 1, 100, date(2026, 1, 1)))
+    agent = StockAgent(settings, database)
+    progress = []
+    monkeypatch.setattr("portfolio.agent.build_market_regime", lambda: _macro())
+    monkeypatch.setattr(
+        "portfolio.agent.run_portfolio_position_risk_review",
+        lambda *_args, **_kwargs: SimpleNamespace(to_text=lambda: "position review"),
+    )
+
+    response = agent.review_position_risk(
+        lambda percent, stage, detail: progress.append((percent, stage, detail))
+    )
+
+    assert response == "position review"
+    assert progress[0][0:2] == (2, "Refreshing market regime")
