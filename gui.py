@@ -8,7 +8,7 @@ import threading
 import time
 import tkinter as tk
 from tkinter import font as tkfont
-from tkinter import messagebox, simpledialog, ttk
+from tkinter import messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 from typing import Any
 
@@ -18,7 +18,6 @@ from portfolio.cloud_portfolios import AuthResult, friendly_auth_error
 from portfolio.market_regime import (
     DEFENSIVE_MACRO_TILT,
     MACRO_REFERENCE_ROWS,
-    MacroResearchPolicy,
     MarketRegimeSnapshot,
     NEUTRAL_MACRO_TILT,
     TOLERANT_MACRO_TILT,
@@ -97,6 +96,199 @@ class PurchaseDialog(tk.Toplevel):
         self.destroy()
 
 
+class PurchaseMethodDialog(tk.Toplevel):
+    def __init__(self, parent: tk.Misc) -> None:
+        super().__init__(parent)
+        self.title("Record purchase")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+        self.result: str | None = None
+
+        frame = ttk.Frame(self, padding=20)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="How would you like to add purchases?", style="Section.TLabel").pack(
+            anchor="w", pady=(0, 16)
+        )
+        ttk.Button(
+            frame,
+            text="Enter one purchase",
+            style="Accent.TButton",
+            command=lambda: self._choose("manual"),
+        ).pack(fill="x", pady=(0, 8))
+        ttk.Button(
+            frame,
+            text="Import bulk JSON (AI-assisted)",
+            command=lambda: self._choose("json"),
+        ).pack(fill="x")
+        ttk.Button(frame, text="Cancel", command=self.destroy).pack(anchor="e", pady=(16, 0))
+        self.bind("<Escape>", lambda _event: self.destroy())
+
+    def _choose(self, value: str) -> None:
+        self.result = value
+        self.destroy()
+
+
+class PortfolioJsonDialog(tk.Toplevel):
+    def __init__(self, parent: tk.Misc) -> None:
+        super().__init__(parent)
+        self.title("Import portfolio JSON")
+        self.geometry("700x470")
+        self.minsize(560, 360)
+        self.transient(parent)
+        self.grab_set()
+        self.result: str | None = None
+
+        frame = ttk.Frame(self, padding=20)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="Portfolio JSON", style="Section.TLabel").pack(anchor="w")
+        self.editor = ScrolledText(
+            frame,
+            wrap="none",
+            font=("TkFixedFont", 10),
+            background=StockAgentApp.SURFACE,
+            foreground=StockAgentApp.TEXT,
+            insertbackground=StockAgentApp.TEXT,
+            selectbackground="#285665",
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground=StockAgentApp.BORDER,
+            padx=12,
+            pady=10,
+        )
+        self.editor.pack(fill="both", expand=True, pady=(8, 14))
+        buttons = ttk.Frame(frame)
+        buttons.pack(fill="x")
+        ttk.Button(buttons, text="Cancel", command=self.destroy).pack(side="right", padx=(8, 0))
+        ttk.Button(buttons, text="Import", style="Accent.TButton", command=self._submit).pack(
+            side="right"
+        )
+        self.editor.focus_set()
+        self.bind("<Escape>", lambda _event: self.destroy())
+
+    def _submit(self) -> None:
+        value = self.editor.get("1.0", "end").strip()
+        if not value:
+            messagebox.showerror("JSON required", "Paste portfolio JSON to import.", parent=self)
+            return
+        self.result = value
+        self.destroy()
+
+
+class IndustryResearchDialog(tk.Toplevel):
+    def __init__(self, parent: tk.Misc) -> None:
+        super().__init__(parent)
+        self.title("Start industry research")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+        self.result: tuple[str, int] | None = None
+        self.industry = tk.StringVar()
+        self.stock_count = tk.IntVar(value=5)
+
+        frame = ttk.Frame(self, padding=20)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="Industry of interest", style="Section.TLabel").pack(anchor="w")
+        entry = ttk.Entry(frame, textvariable=self.industry, width=48)
+        entry.pack(fill="x", pady=(7, 15))
+        ttk.Label(frame, text="Stocks to return", style="Section.TLabel").pack(anchor="w")
+        ttk.Spinbox(frame, from_=1, to=20, textvariable=self.stock_count, width=8).pack(
+            anchor="w", pady=(7, 18)
+        )
+        buttons = ttk.Frame(frame)
+        buttons.pack(fill="x")
+        ttk.Button(buttons, text="Cancel", command=self.destroy).pack(side="right", padx=(8, 0))
+        ttk.Button(buttons, text="Research", style="Accent.TButton", command=self._submit).pack(
+            side="right"
+        )
+        entry.focus_set()
+        self.bind("<Return>", lambda _event: self._submit())
+        self.bind("<Escape>", lambda _event: self.destroy())
+
+    def _submit(self) -> None:
+        industry = self.industry.get().strip()
+        try:
+            count = int(self.stock_count.get())
+        except (TypeError, ValueError):
+            count = 0
+        if not industry:
+            messagebox.showerror("Industry required", "Enter an industry or sector.", parent=self)
+            return
+        if not 1 <= count <= 20:
+            messagebox.showerror("Invalid range", "Choose between 1 and 20 stocks.", parent=self)
+            return
+        self.result = (industry, count)
+        self.destroy()
+
+
+class PositionRiskDialog(tk.Toplevel):
+    def __init__(self, parent: tk.Misc, tickers: list[str]) -> None:
+        super().__init__(parent)
+        self.title("Review portfolio risk")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+        self.result: list[str] | None = None
+        self.scope = tk.StringVar(value="all")
+        self.selections = {ticker: tk.BooleanVar(value=False) for ticker in tickers}
+
+        frame = ttk.Frame(self, padding=20)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="Positions to review", style="Section.TLabel").pack(anchor="w")
+        ttk.Radiobutton(
+            frame, text=f"Entire portfolio ({len(tickers)} stocks)", variable=self.scope,
+            value="all", command=self._update_scope,
+        ).pack(anchor="w", pady=(10, 5))
+        ttk.Radiobutton(
+            frame, text="Specific stocks", variable=self.scope, value="specific",
+            command=self._update_scope,
+        ).pack(anchor="w", pady=(0, 8))
+        self.stock_frame = ttk.Frame(frame, style="Panel.TFrame", padding=(12, 8))
+        self.stock_frame.pack(fill="x")
+        self.stock_checks: list[ttk.Checkbutton] = []
+        for index, ticker in enumerate(tickers):
+            check = ttk.Checkbutton(
+                self.stock_frame, text=ticker, variable=self.selections[ticker]
+            )
+            check.grid(row=index // 4, column=index % 4, sticky="w", padx=(0, 18), pady=3)
+            self.stock_checks.append(check)
+        buttons = ttk.Frame(frame)
+        buttons.pack(fill="x", pady=(18, 0))
+        ttk.Button(buttons, text="Cancel", command=self.destroy).pack(side="right", padx=(8, 0))
+        ttk.Button(buttons, text="Review", style="Accent.TButton", command=self._submit).pack(
+            side="right"
+        )
+        self._update_scope()
+        self.bind("<Escape>", lambda _event: self.destroy())
+
+    def _update_scope(self) -> None:
+        state = "normal" if self.scope.get() == "specific" else "disabled"
+        for check in self.stock_checks:
+            check.configure(state=state)
+
+    def _submit(self) -> None:
+        if self.scope.get() == "all":
+            self.result = list(self.selections)
+        else:
+            self.result = [ticker for ticker, selected in self.selections.items() if selected.get()]
+            if not self.result:
+                messagebox.showerror(
+                    "Select stocks", "Select at least one portfolio stock.", parent=self
+                )
+                return
+        self.destroy()
+
+
+def period_performance(history: list[Any], sessions: int) -> tuple[float, float] | None:
+    """Return value and percentage change over the selected history window."""
+    points = history[-(sessions + 1):]
+    if len(points) < 2 or points[0].market_value == 0:
+        return None
+    change = points[-1].market_value - points[0].market_value
+    return change, change / points[0].market_value * 100
+
+
 class StockAgentApp(tk.Tk):
     BG = "#0D0F12"
     SURFACE = "#15181D"
@@ -128,11 +320,10 @@ class StockAgentApp(tk.Tk):
         self.current_task_cancellable = False
         self.stop_requested = False
         self.cancel_event: threading.Event | None = None
-        self._send_button_hovered = False
         self.market_refresh_busy = False
         self.portfolio_refresh_busy = False
         self.portfolio_refresh_generation = 0
-        self.pending_chat_draft: str | None = None
+        self.current_holdings: list[Any] = []
         self._tab_drag_anchor_x: int | None = None
         families = set(tkfont.families(self))
         self.ui_font = next(
@@ -296,6 +487,14 @@ class StockAgentApp(tk.Tk):
         header = ttk.Frame(self.chat_tab)
         header.pack(fill="x", pady=(0, 12))
         ttk.Label(header, text="Chat", style="Title.TLabel").pack(side="left")
+        self.stop_button = ttk.Button(
+            header,
+            text="Stop",
+            style="Toolbar.TButton",
+            command=self._request_stop,
+            state="disabled",
+        )
+        self.stop_button.pack(side="right")
 
         transcript_frame = ttk.Frame(self.chat_tab)
         self.transcript = ScrolledText(
@@ -317,7 +516,7 @@ class StockAgentApp(tk.Tk):
             spacing3=3,
         )
         self.transcript.pack(fill="both", expand=True)
-        self.transcript.insert("end", "Agent:\nReady. Enter a request below.\n\n")
+        self.transcript.insert("end", "Agent:\nResearch results will appear here.\n\n")
         self.transcript.configure(state="disabled")
 
         self.progress_frame = ttk.Frame(
@@ -355,44 +554,8 @@ class StockAgentApp(tk.Tk):
         self.progress_elapsed.configure(style="ProgressDetail.TLabel")
         self.progress_elapsed.pack(side="right", anchor="e", padx=(12, 0))
 
-        input_frame = ttk.Frame(self.chat_tab)
-        input_frame.pack(side="bottom", fill="x", pady=(12, 0))
-        self.input_box = tk.Text(
-            input_frame,
-            height=4,
-            wrap="word",
-            font=(self.mono_font, 11),
-            background=self.SURFACE,
-            foreground=self.TEXT,
-            insertbackground="#ffffff",
-            selectbackground="#285665",
-            relief="flat",
-            borderwidth=0,
-            highlightthickness=1,
-            highlightbackground=self.BORDER,
-            highlightcolor=self.ACCENT,
-            padx=12,
-            pady=10,
-        )
-        self.input_box.pack(side="left", fill="both", expand=True)
-        self.send_button = ttk.Button(
-            input_frame,
-            text="Send",
-            style="Accent.TButton",
-            command=self._send_or_stop,
-            width=14,
-        )
-        self.send_button.pack(side="left", padx=(12, 0), fill="y")
-        self.send_button.bind("<Enter>", self._on_send_button_enter)
-        self.send_button.bind("<Leave>", self._on_send_button_leave)
-        self.input_box.bind("<Command-Return>", self._send_event)
-        self.input_box.bind("<Control-Return>", self._send_event)
-        self.input_box.bind("<Command-a>", self._select_all_input)
-        self.input_box.bind("<Left>", lambda event: self._collapse_input_selection(event, "start"))
-        self.input_box.bind("<Right>", lambda event: self._collapse_input_selection(event, "end"))
         self.progress_frame.pack(side="bottom", fill="x", pady=(10, 0))
         transcript_frame.pack(side="top", fill="both", expand=True)
-        self.input_box.focus_set()
 
     def _build_holdings_tab(self) -> None:
         header = ttk.Frame(self.holdings_tab)
@@ -412,8 +575,14 @@ class StockAgentApp(tk.Tk):
             toolbar,
             text="Review position risk",
             style="Toolbar.TButton",
-            command=self.prepare_position_risk_prompt,
+            command=self.start_position_risk_review,
         ).pack(side="left", padx=8)
+        ttk.Button(
+            toolbar,
+            text="Reset portfolio",
+            style="Toolbar.TButton",
+            command=self.reset_portfolio,
+        ).pack(side="left", padx=(0, 8))
         self.portfolio_refresh_button = ttk.Button(
             toolbar,
             text="Refresh prices",
@@ -480,6 +649,7 @@ class StockAgentApp(tk.Tk):
             "market_value",
             "gain_loss",
             "return_percent",
+            "delete",
         )
         self.holdings_tree = ttk.Treeview(self.holdings_tab, columns=columns, show="headings")
         headings = {
@@ -491,6 +661,7 @@ class StockAgentApp(tk.Tk):
             "market_value": "Total value",
             "gain_loss": "Gain/loss",
             "return_percent": "Return",
+            "delete": "",
         }
         widths = {
             "ticker": 110,
@@ -501,6 +672,7 @@ class StockAgentApp(tk.Tk):
             "market_value": 140,
             "gain_loss": 140,
             "return_percent": 110,
+            "delete": 44,
         }
         for column in columns:
             self.holdings_tree.heading(column, text=headings[column])
@@ -544,29 +716,22 @@ class StockAgentApp(tk.Tk):
             text="How signals work",
             command=self.show_macro_reference,
         ).pack(side="right", padx=(0, 8))
+        ttk.Button(
+            header,
+            text="Start research",
+            style="Accent.TButton",
+            command=self.start_industry_research,
+        ).pack(side="right", padx=(0, 8))
 
         overview = ttk.Frame(self.market_tab, style="Panel.TFrame", padding=(20, 15))
         overview.pack(fill="x", pady=(0, 14))
         self.market_regime_title = tk.StringVar(value="Regime not calculated")
-        self.market_regime_summary = tk.StringVar(
-            value="The Fed policy-rate and balance-sheet directions determine the framework quadrant."
-        )
         self.market_company_fit = tk.StringVar(
             value="Stock profile to prioritize: waiting for a complete market regime."
         )
         ttk.Label(
             overview, textvariable=self.market_regime_title, style="SurfaceSection.TLabel"
         ).pack(anchor="w")
-        tk.Label(
-            overview,
-            textvariable=self.market_regime_summary,
-            background=self.SURFACE,
-            foreground=self.MUTED,
-            font=(self.ui_font, 10),
-            justify="left",
-            anchor="w",
-            wraplength=1030,
-        ).pack(fill="x", pady=(6, 0))
         tk.Label(
             overview,
             textvariable=self.market_company_fit,
@@ -577,37 +742,6 @@ class StockAgentApp(tk.Tk):
             anchor="w",
             wraplength=1030,
         ).pack(fill="x", pady=(9, 0))
-
-        policy = ttk.Frame(self.market_tab, style="Panel.TFrame", padding=(18, 12))
-        policy.pack(fill="x", pady=(0, 14))
-        policy_header = ttk.Frame(policy, style="Surface.TFrame")
-        policy_header.pack(fill="x", pady=(0, 6))
-        ttk.Label(
-            policy_header,
-            text="How research uses this market",
-            style="SurfaceSection.TLabel",
-        ).pack(side="left")
-        instruction_row = ttk.Frame(policy, style="Surface.TFrame")
-        instruction_row.pack(fill="x")
-        self.research_instruction = tk.StringVar(
-            value="Waiting for market data."
-        )
-        tk.Label(
-            instruction_row,
-            textvariable=self.research_instruction,
-            background=self.SURFACE,
-            foreground=self.MUTED,
-            font=(self.ui_font, 9),
-            justify="left",
-            anchor="w",
-            wraplength=930,
-        ).pack(side="left", fill="x", expand=True)
-        ttk.Button(
-            instruction_row,
-            text="Start research",
-            style="Accent.TButton",
-            command=self.prepare_market_research_prompt,
-        ).pack(side="right", padx=(12, 0))
 
         columns = ("indicator", "latest", "trend", "favored", "as_of")
         self.market_tree = ttk.Treeview(
@@ -642,51 +776,7 @@ class StockAgentApp(tk.Tk):
         self.market_tree.tag_configure("safe", foreground=self.POSITIVE)
         self.market_tree.tag_configure("neutral", foreground=self.WARNING)
         self.market_tree.tag_configure("risk_tolerant", foreground=self.NEGATIVE)
-        self.market_tree.pack(fill="x", pady=(0, 7))
-
-        ttk.Label(
-            self.market_tab,
-            text=(
-                "Each row translates the current signal into a defensive, neutral, or risk-tolerant tilt. The app combines "
-                "all five rows before setting research priorities; no single indicator is a buy or sell signal."
-            ),
-            style="Muted.TLabel",
-            wraplength=1060,
-            justify="left",
-        ).pack(fill="x", anchor="w", pady=(0, 12))
-
-        ttk.Label(self.market_tab, text="What this market favors", style="Section.TLabel").pack(
-            anchor="w", pady=(2, 8)
-        )
-        self.market_emphasis = tk.Text(
-            self.market_tab,
-            height=3,
-            wrap="word",
-            background=self.BG,
-            foreground=self.TEXT,
-            insertbackground=self.TEXT,
-            relief="flat",
-            borderwidth=0,
-            highlightthickness=0,
-            font=(self.ui_font, 10),
-            padx=0,
-            pady=0,
-        )
-        self.market_emphasis.pack(fill="both", expand=True)
-        self.market_emphasis.insert(
-            "1.0", "Refresh the data to generate evidence-based portfolio considerations."
-        )
-        self.market_emphasis.configure(state="disabled")
-        self.market_missing = tk.StringVar(
-            value="This view is a market-condition checklist, not a buy or sell signal."
-        )
-        ttk.Label(
-            self.market_tab,
-            textvariable=self.market_missing,
-            style="Muted.TLabel",
-            wraplength=1050,
-            justify="left",
-        ).pack(fill="x", anchor="w", pady=(10, 0))
+        self.market_tree.pack(fill="x")
 
     def _build_account_tab(self) -> None:
         settings = self.controller.settings
@@ -848,40 +938,6 @@ class StockAgentApp(tk.Tk):
                     pass
             self.results.put(("auth_error", friendly_auth_error(exc)))
 
-    def _send_event(self, _event: tk.Event) -> str:
-        self._send_or_stop()
-        return "break"
-
-    def _select_all_input(self, _event: tk.Event) -> str:
-        self.input_box.tag_add("sel", "1.0", "end-1c")
-        self.input_box.mark_set("insert", "end-1c")
-        self.input_box.see("insert")
-        return "break"
-
-    def _collapse_input_selection(self, _event: tk.Event, edge: str) -> str | None:
-        selection = self.input_box.tag_ranges("sel")
-        if len(selection) != 2:
-            return None
-        target = selection[0] if edge == "start" else selection[1]
-        self.input_box.tag_remove("sel", "1.0", "end")
-        self.input_box.mark_set("insert", target)
-        self.input_box.see("insert")
-        return "break"
-
-    def _send_or_stop(self) -> None:
-        if self.is_busy:
-            self._request_stop()
-            return
-        self.send_message()
-
-    def _on_send_button_enter(self, _event: tk.Event) -> None:
-        self._send_button_hovered = True
-        self._refresh_send_button_text()
-
-    def _on_send_button_leave(self, _event: tk.Event) -> None:
-        self._send_button_hovered = False
-        self._refresh_send_button_text()
-
     def _request_stop(self) -> None:
         if not self.is_busy or not self.current_task_cancellable or self.stop_requested:
             return
@@ -896,16 +952,14 @@ class StockAgentApp(tk.Tk):
         )
         self.progress_status.configure(text="Research status: stopping")
         self.progress_detail.configure(text=self.current_detail)
-        self._refresh_send_button_text()
+        self._refresh_stop_button()
         self._replace_live_progress_message()
 
-    def send_message(self) -> None:
+    def _start_message(self, message: str) -> None:
         if self.is_busy:
+            messagebox.showinfo("Research in progress", "Wait for the current research to finish or stop it.", parent=self)
             return
-        message = self.input_box.get("1.0", "end").strip()
-        if not message:
-            return
-        self.input_box.delete("1.0", "end")
+        self.notebook.select(self.chat_tab)
         self._append("You", message)
         cancel_event = threading.Event()
         self.cancel_event = cancel_event
@@ -913,6 +967,34 @@ class StockAgentApp(tk.Tk):
         threading.Thread(
             target=self._message_worker, args=(message, cancel_event), daemon=True
         ).start()
+
+    def _start_position_risk_worker(self, tickers: list[str]) -> None:
+        if self.is_busy:
+            messagebox.showinfo("Research in progress", "Wait for the current research to finish or stop it.", parent=self)
+            return
+        self.notebook.select(self.chat_tab)
+        portfolio_tickers = {holding.ticker for holding in self.controller.holdings()}
+        label = "entire portfolio" if set(tickers) == portfolio_tickers else ", ".join(tickers)
+        self._append("You", f"Review position risk for {label}.")
+        cancel_event = threading.Event()
+        self.cancel_event = cancel_event
+        self._set_busy(True, cancellable=True)
+
+        def worker() -> None:
+            def progress_callback(percent: int | None, stage: str, detail: str = "") -> None:
+                self.results.put(("progress", {"percent": percent, "stage": stage, "detail": detail}))
+
+            try:
+                response = self.controller.review_position_risk(
+                    tickers=tickers,
+                    progress_callback=progress_callback,
+                    cancel_event=cancel_event,
+                )
+            except Exception as exc:
+                response = f"Unexpected error: {type(exc).__name__}: {exc}"
+            self.results.put(("message", response))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _message_worker(self, message: str, cancel_event: threading.Event) -> None:
         def progress_callback(percent: int | None, stage: str, detail: str = "") -> None:
@@ -1020,11 +1102,9 @@ class StockAgentApp(tk.Tk):
     def _set_busy(self, busy: bool, *, cancellable: bool = True) -> None:
         self.is_busy = busy
         self.current_task_cancellable = busy and cancellable
-        self.input_box.configure(state="disabled" if busy else "normal")
         if busy:
             self.stop_requested = False
-            self._send_button_hovered = False
-            self.send_button.configure(state="normal" if cancellable else "disabled")
+            self.stop_button.configure(state="normal" if cancellable else "disabled")
             self.research_started_at = time.monotonic()
             self.current_step_started_at = self.research_started_at
             self._last_elapsed_second = -1
@@ -1039,31 +1119,18 @@ class StockAgentApp(tk.Tk):
             self.current_task_cancellable = False
             self.stop_requested = False
             self.cancel_event = None
-            self._send_button_hovered = False
-            self.send_button.configure(state="normal", text="Send")
-            if self.pending_chat_draft is not None:
-                draft = self.pending_chat_draft
-                self.pending_chat_draft = None
-                self._apply_chat_draft(draft)
-            self.input_box.focus_set()
+            self.stop_button.configure(state="disabled", text="Stop")
 
-    def _refresh_send_button_text(self) -> None:
+    def _refresh_stop_button(self) -> None:
         if not self.is_busy:
-            self.send_button.configure(text="Send")
+            self.stop_button.configure(text="Stop", state="disabled")
             return
         if self.stop_requested:
-            self.send_button.configure(text="Stopping...", state="disabled")
-        elif self.current_task_cancellable and self._send_button_hovered:
-            self.send_button.configure(
-                text="Stop research" if self.research_progress_seen else "Stop",
-                state="normal",
-            )
-        elif self.current_task_cancellable and self.research_progress_seen:
-            self.send_button.configure(text=f"Researching... {self.current_progress}%", state="normal")
+            self.stop_button.configure(text="Stopping...", state="disabled")
         elif self.current_task_cancellable:
-            self.send_button.configure(text="Working...", state="normal")
+            self.stop_button.configure(text="Stop research", state="normal")
         else:
-            self.send_button.configure(text="Working...", state="disabled")
+            self.stop_button.configure(text="Stop", state="disabled")
 
     def _update_progress(self, percent: int | None, stage: str, detail: str = "") -> None:
         if percent is not None:
@@ -1079,7 +1146,7 @@ class StockAgentApp(tk.Tk):
         status_kind = "Research" if self.research_progress_seen else "Response"
         self.progress_status.configure(text=f"{status_kind} status: {self.current_stage}")
         self.progress_detail.configure(text=self.current_detail or "Working...")
-        self._refresh_send_button_text()
+        self._refresh_stop_button()
         self._replace_live_progress_message()
 
     def _current_request_text(self) -> str:
@@ -1163,6 +1230,14 @@ class StockAgentApp(tk.Tk):
         self._replace_live_progress_message()
 
     def record_purchase(self) -> None:
+        method = PurchaseMethodDialog(self)
+        self.wait_window(method)
+        if method.result == "manual":
+            self._record_manual_purchase()
+        elif method.result == "json":
+            self._import_portfolio_json()
+
+    def _record_manual_purchase(self) -> None:
         dialog = PurchaseDialog(self)
         self.wait_window(dialog)
         if dialog.result is None:
@@ -1183,39 +1258,82 @@ class StockAgentApp(tk.Tk):
             "Agent",
             f"Recorded {purchase.quantity:g} shares of {purchase.ticker} at ${purchase.price:,.2f}.",
         )
+        self._invalidate_portfolio_refresh()
         self.refresh_holdings(refresh_prices=False)
 
-    def _submit_prompt(self, prompt: str) -> None:
-        self.input_box.delete("1.0", "end")
-        self.input_box.insert("1.0", prompt)
-        self.send_message()
-
-    def prepare_position_risk_prompt(self) -> None:
-        prompt = (
-            "Review my portfolio positions for reasons to hold, review, trim, "
-            "or consider exiting."
-        )
-        self.notebook.select(self.chat_tab)
-        if self.is_busy:
-            self.pending_chat_draft = prompt
+    def _import_portfolio_json(self) -> None:
+        dialog = PortfolioJsonDialog(self)
+        self.wait_window(dialog)
+        if dialog.result is None:
             return
-        self._apply_chat_draft(prompt)
+        try:
+            count = self.controller.import_portfolio_json(dialog.result)
+        except Exception as exc:
+            messagebox.showerror("Could not import portfolio", str(exc), parent=self)
+            return
+        messagebox.showinfo("Portfolio imported", f"Imported {count} purchase records.", parent=self)
+        self._invalidate_portfolio_refresh()
+        self.refresh_holdings(refresh_prices=False)
 
-    def _apply_chat_draft(self, prompt: str) -> None:
-        self.input_box.delete("1.0", "end")
-        self.input_box.insert("1.0", prompt)
-        self.input_box.focus_set()
-
-    def research_stock(self) -> None:
-        query = simpledialog.askstring(
-            "Deep LSEG research",
-            "Enter a complete request, company name, comparison, or stock screen:",
+    def reset_portfolio(self) -> None:
+        if not self.controller.holdings():
+            messagebox.showinfo("Portfolio empty", "There are no positions to delete.", parent=self)
+            return
+        if not messagebox.askyesno(
+            "Reset portfolio",
+            "Are you sure you want to delete every position in this portfolio?",
+            icon="warning",
             parent=self,
-        )
-        if not query:
+        ):
             return
-        prompt = query if len(query.split()) > 2 else f"Analyze {query} using LSEG"
-        self._submit_prompt(prompt)
+        try:
+            self.controller.clear_portfolio()
+        except Exception as exc:
+            messagebox.showerror("Could not reset portfolio", str(exc), parent=self)
+            return
+        self._invalidate_portfolio_refresh()
+        self.refresh_holdings(refresh_prices=False)
+
+    def delete_position(self, ticker: str) -> None:
+        if not messagebox.askyesno(
+            "Delete position",
+            f"Delete {ticker} and all of its recorded purchase lots?",
+            icon="warning",
+            parent=self,
+        ):
+            return
+        try:
+            self.controller.delete_position(ticker)
+        except Exception as exc:
+            messagebox.showerror("Could not delete position", str(exc), parent=self)
+            return
+        self._invalidate_portfolio_refresh()
+        self.refresh_holdings(refresh_prices=False)
+
+    def start_position_risk_review(self) -> None:
+        tickers = [holding.ticker for holding in self.controller.holdings()]
+        if not tickers:
+            messagebox.showinfo("Portfolio empty", "Add a position before reviewing risk.", parent=self)
+            return
+        dialog = PositionRiskDialog(self, tickers)
+        self.wait_window(dialog)
+        if dialog.result is not None:
+            self._start_position_risk_worker(dialog.result)
+
+    def start_industry_research(self) -> None:
+        while True:
+            dialog = IndustryResearchDialog(self)
+            self.wait_window(dialog)
+            if dialog.result is None:
+                return
+            industry, count = dialog.result
+            try:
+                request = self.controller.build_industry_research_request(industry, count)
+            except ValueError as exc:
+                messagebox.showerror("Industry not recognized", str(exc), parent=self)
+                continue
+            self._start_message(request)
+            return
 
     def refresh_market_regime(self) -> None:
         if self.market_refresh_busy:
@@ -1234,19 +1352,6 @@ class StockAgentApp(tk.Tk):
                 )
 
         threading.Thread(target=worker, daemon=True).start()
-
-    def _render_research_policy(self, policy: MacroResearchPolicy) -> None:
-        self.research_instruction.set(
-            policy.focus_summary() + " " + " ".join(policy.rules)
-        )
-
-    def prepare_market_research_prompt(self) -> None:
-        prompt = "Research promising technology stocks."
-        self.notebook.select(self.chat_tab)
-        if self.is_busy:
-            self.pending_chat_draft = prompt
-            return
-        self._apply_chat_draft(prompt)
 
     def show_macro_reference(self) -> None:
         window = tk.Toplevel(self)
@@ -1334,9 +1439,7 @@ class StockAgentApp(tk.Tk):
 
     def _render_market_regime(self, snapshot: MarketRegimeSnapshot) -> None:
         self.market_regime_title.set(snapshot.regime)
-        self.market_regime_summary.set(snapshot.summary)
         self.market_company_fit.set(f"Stock profile to prioritize: {snapshot.company_fit}")
-        self._render_research_policy(self.controller.research_policy())
         for item in self.market_tree.get_children():
             self.market_tree.delete(item)
         for indicator in snapshot.indicators:
@@ -1360,16 +1463,6 @@ class StockAgentApp(tk.Tk):
                     self._display_date(indicator.as_of),
                 ),
             )
-        self.market_emphasis.configure(state="normal")
-        self.market_emphasis.delete("1.0", "end")
-        self.market_emphasis.insert(
-            "1.0", "\n".join(f"- {item}" for item in snapshot.emphasis)
-        )
-        self.market_emphasis.configure(state="disabled")
-        missing = " ".join(snapshot.missing_evidence)
-        self.market_missing.set(
-            f"Not yet measured: {missing} This is a market-condition checklist, not a buy or sell signal."
-        )
         timestamp = snapshot.generated_at.astimezone().strftime("%-I:%M %p")
         unavailable = sum(
             indicator.status != "available" for indicator in snapshot.indicators
@@ -1441,6 +1534,9 @@ class StockAgentApp(tk.Tk):
     def _invalidate_portfolio_refresh(self) -> None:
         self.portfolio_refresh_generation += 1
         self.portfolio_refresh_busy = False
+        self.performance_portfolio_history = []
+        self.performance_position_histories = {}
+        self.selected_performance_ticker = None
         if hasattr(self, "portfolio_refresh_button"):
             self.portfolio_refresh_button.configure(state="normal")
 
@@ -1452,6 +1548,10 @@ class StockAgentApp(tk.Tk):
         history: list[Any] | None = None,
         position_histories: dict[str, list[Any]] | None = None,
     ) -> None:
+        self.current_holdings = list(holdings)
+        if refresh_prices:
+            self.performance_portfolio_history = list(history or [])
+            self.performance_position_histories = dict(position_histories or {})
         for item in self.holdings_tree.get_children():
             self.holdings_tree.delete(item)
         total_cost = sum(holding.total_cost for holding in holdings)
@@ -1475,44 +1575,9 @@ class StockAgentApp(tk.Tk):
         self.portfolio_gain_label.configure(style=tone)
         self.portfolio_return_label.configure(style=tone)
 
-        for holding in holdings:
-            gain_loss = getattr(holding, "gain_loss", None)
-            return_percent = getattr(holding, "return_percent", None)
-            row_tag = "positive" if gain_loss is not None and gain_loss >= 0 else "negative"
-            if gain_loss is None:
-                row_tag = ""
-            self.holdings_tree.insert(
-                "",
-                "end",
-                iid=holding.ticker,
-                tags=(row_tag,) if row_tag else (),
-                values=(
-                    holding.ticker,
-                    f"{holding.quantity:g}",
-                    f"${holding.average_cost:,.2f}",
-                    f"${holding.total_cost:,.2f}",
-                    (
-                        f"${holding.current_price:,.2f}"
-                        if getattr(holding, "current_price", None) is not None
-                        else "N/A"
-                    ),
-                    (
-                        f"${holding.market_value:,.2f}"
-                        if getattr(holding, "market_value", None) is not None
-                        else "N/A"
-                    ),
-                    (
-                        f"${holding.gain_loss:+,.2f}"
-                        if gain_loss is not None
-                        else "N/A"
-                    ),
-                    f"{return_percent:+,.2f}%" if return_percent is not None else "N/A",
-                ),
-            )
+        self._render_holding_rows()
 
         if refresh_prices:
-            self.performance_portfolio_history = list(history or [])
-            self.performance_position_histories = dict(position_histories or {})
             self.portfolio_status.set(
                 f"Prices refreshed {datetime.now().strftime('%-I:%M %p')}"
                 if holdings
@@ -1532,10 +1597,57 @@ class StockAgentApp(tk.Tk):
             self.holdings_tree.selection_set(self.selected_performance_ticker)
         self._select_performance_history()
 
+    def _period_label(self) -> str:
+        return {
+            3: "3 days",
+            5: "1 week",
+            10: "2 weeks",
+            15: "3 weeks",
+            20: "4 weeks",
+        }.get(self.performance_sessions, f"{self.performance_sessions} sessions")
+
+    def _render_holding_rows(self) -> None:
+        if not hasattr(self, "holdings_tree"):
+            return
+        for item in self.holdings_tree.get_children():
+            self.holdings_tree.delete(item)
+        period = self._period_label()
+        self.holdings_tree.heading("gain_loss", text=f"Gain/loss ({period})")
+        self.holdings_tree.heading("return_percent", text=f"Return ({period})")
+        for holding in self.current_holdings:
+            performance = period_performance(
+                self.performance_position_histories.get(holding.ticker, []),
+                self.performance_sessions,
+            )
+            gain_loss, return_percent = performance if performance is not None else (None, None)
+            row_tag = ""
+            if gain_loss is not None:
+                row_tag = "positive" if gain_loss >= 0 else "negative"
+            self.holdings_tree.insert(
+                "",
+                "end",
+                iid=holding.ticker,
+                tags=(row_tag,) if row_tag else (),
+                values=(
+                    holding.ticker,
+                    f"{holding.quantity:g}",
+                    f"${holding.average_cost:,.2f}",
+                    f"${holding.total_cost:,.2f}",
+                    f"${holding.current_price:,.2f}" if getattr(holding, "current_price", None) is not None else "N/A",
+                    f"${holding.market_value:,.2f}" if getattr(holding, "market_value", None) is not None else "N/A",
+                    f"${gain_loss:+,.2f}" if gain_loss is not None else "N/A",
+                    f"{return_percent:+,.2f}%" if return_percent is not None else "N/A",
+                    "X",
+                ),
+            )
+
     def _toggle_holding_chart(self, event: tk.Event) -> str | None:
         row = self.holdings_tree.identify_row(event.y)
         if not row:
             return None
+        if self.holdings_tree.identify_column(event.x) == "#9":
+            self.delete_position(row)
+            return "break"
         ticker = str(self.holdings_tree.item(row, "values")[0])
         if self.selected_performance_ticker == ticker:
             self.selected_performance_ticker = None
@@ -1563,6 +1675,7 @@ class StockAgentApp(tk.Tk):
         self.performance_sessions = sessions
         for value, button in self.period_buttons.items():
             button.configure(style="Selected.Segment.TButton" if value == sessions else "Segment.TButton")
+        self._render_holding_rows()
         self._draw_performance()
 
     def _draw_performance(self) -> None:

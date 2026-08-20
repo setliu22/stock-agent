@@ -164,6 +164,23 @@ class PortfolioDatabase:
                 ],
             )
 
+    def delete_ticker(self, ticker: str) -> int:
+        """Delete every purchase lot for one ticker."""
+        normalized = ticker.strip().upper()
+        if not normalized:
+            raise ValueError("Ticker cannot be empty.")
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM purchases WHERE ticker = ?", (normalized,)
+            )
+            return int(cursor.rowcount)
+
+    def clear(self) -> int:
+        """Delete every locally stored purchase lot."""
+        with self._connect() as connection:
+            cursor = connection.execute("DELETE FROM purchases")
+            return int(cursor.rowcount)
+
     def apply_portfolio_updates(self, updates: Iterable[PortfolioUpdate]) -> tuple[int, int]:
         """Apply ticker patches atomically; return (updated lots, added positions)."""
         updates = list(updates)

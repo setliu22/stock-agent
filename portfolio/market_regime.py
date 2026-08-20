@@ -402,10 +402,6 @@ def _unavailable(key: str, label: str, source: str, states: dict[str, int | None
     )
 
 
-def _trend_context(direction: int) -> str:
-    return "; typical vs. 5Y changes" if direction == 0 else ""
-
-
 def _change_indicator(
     key: str,
     label: str,
@@ -430,7 +426,7 @@ def _change_indicator(
         key=key,
         label=label,
         latest=f"{latest.value:,.2f}{unit}",
-        trend=f"{word} ({change:+.2f} {change_unit} over {period}){_trend_context(direction)}",
+        trend=f"{word} ({change:+.2f} {change_unit} over {period})",
         as_of=_observation_time(latest),
         source=source,
         meaning=_indicator_meaning(key, direction, level_percentile),
@@ -461,7 +457,7 @@ def _percent_change_indicator(
         key=key,
         label=label,
         latest=f"${latest.value / 1_000_000:,.2f}T",
-        trend=f"{word} ({change:+.2f}% over {period}){_trend_context(direction)}",
+        trend=f"{word} ({change:+.2f}% over {period})",
         as_of=latest.as_of.isoformat(),
         source=source,
         meaning=_indicator_meaning(key, direction),
@@ -505,10 +501,7 @@ def _cpi_indicator(observations: list[Observation], states: dict[str, int | None
         key=key,
         label=label,
         latest=f"{latest_yoy:.1f}% YoY",
-        trend=(
-            f"{word} ({display_change:+.1f} pp over {_elapsed_period(latest.as_of, previous.as_of)})"
-            f"{_trend_context(direction)}"
-        ),
+        trend=f"{word} ({display_change:+.1f} pp over {_elapsed_period(latest.as_of, previous.as_of)})",
         as_of=latest.as_of.isoformat(),
         source=source,
         meaning=_indicator_meaning(key, direction, level_percentile),

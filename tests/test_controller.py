@@ -115,6 +115,7 @@ class _FakeCloudClient:
         self.signed_out = False
         self.signed_in = False
         self.updated = []
+        self.deleted = []
 
     def sign_up(self, email, _password):
         self.signed_in = True
@@ -143,6 +144,10 @@ class _FakeCloudClient:
 
     def update_purchase(self, purchase_id, **kwargs):
         self.updated.append((purchase_id, kwargs))
+
+    def delete_purchase(self, purchase_id):
+        self.deleted.append(purchase_id)
+        self.remote_purchases = [item for item in self.remote_purchases if item.id != purchase_id]
 
     def sign_out(self):
         self.signed_out = True
@@ -237,3 +242,93 @@ def test_post_login_update_syncs_existing_cloud_purchase(tmp_path, monkeypatch):
 
     assert fake.updated[0][0] == "purchase-1"
     assert fake.updated[0][1]["purchased_at"] == "2026-08-01"
+
+
+def test_bulk_json_import_records_all_positions(tmp_path) -> None:
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
+    controller = StockAgentController(settings=settings)
+
+    count = controller.import_portfolio_json(
+        '{"stocks":[{"ticker":"AAPL","quantity":2,"average_cost":100},'
+        '{"ticker":"MSFT","quantity":1,"average_cost":200}]}'
+    )
+
+    assert count == 2
+    assert [holding.ticker for holding in controller.holdings()] == ["AAPL", "MSFT"]
+
+
+def test_delete_and_reset_remove_signed_in_cloud_rows(tmp_path) -> None:
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
+    rows = [
+        CloudPurchase("purchase-1", "portfolio-1", "AAPL", "AAPL", 2, 100, "2026-01-01", "", "complete"),
+        CloudPurchase("purchase-2", "portfolio-1", "MSFT", "MSFT", 1, 200, "2026-01-01", "", "complete"),
+    ]
+    fake = _FakeCloudClient(rows)
+    fake.signed_in = True
+    controller = StockAgentController(settings=settings)
+    controller.cloud_client = fake
+    controller.database.replace_with_snapshot([
+        Purchase("AAPL", 2, 100, date(2026, 1, 1)),
+        Purchase("MSFT", 1, 200, date(2026, 1, 1)),
+    ])
+
+    controller.delete_position("AAPL")
+    assert fake.deleted == ["purchase-1"]
+    assert [holding.ticker for holding in controller.holdings()] == ["MSFT"]
+
+    controller.clear_portfolio()
+    assert fake.deleted == ["purchase-1", "purchase-2"]
+    assert controller.holdings() == []
+
+
+def test_industry_research_request_uses_validated_taxonomy_and_count(tmp_path) -> None:
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
+    controller = StockAgentController(settings=settings)
+
+    request = controller.build_industry_research_request("technology", 7)
+
+    assert "Technology" in request
+    assert "7 stocks" in request
+
+
+def test_industry_research_rejects_unmatched_wording_without_llm(tmp_path) -> None:
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
+    controller = StockAgentController(settings=settings)
+
+    try:
+        controller.build_industry_research_request("flibbertigibbet", 5)
+    except ValueError as exc:
+        assert "Could not match" in str(exc)
+    else:
+        raise AssertionError("Unmatched industry wording should be rejected.")
+
+
+def test_position_risk_review_can_be_scoped_to_selected_tickers(tmp_path, monkeypatch) -> None:
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
+    controller = StockAgentController(settings=settings)
+    controller.database.record_purchases([
+        Purchase("AAPL", 2, 100, date(2026, 1, 1)),
+        Purchase("MSFT", 1, 200, date(2026, 1, 1)),
+    ])
+    controller._market_snapshot = MarketRegimeSnapshot(
+        regime="Neutral liquidity regime",
+        summary="Test",
+        emphasis=(),
+        indicators=(),
+        missing_evidence=(),
+        generated_at=datetime.now(timezone.utc),
+    )
+    captured = []
+
+    class _Review:
+        def to_text(self):
+            return "reviewed"
+
+    def fake_review(_settings, holdings, **_kwargs):
+        captured.extend(holding.ticker for holding in holdings)
+        return _Review()
+
+    monkeypatch.setattr("portfolio.controller.run_portfolio_position_risk_review", fake_review)
+
+    assert controller.review_position_risk(["MSFT"]) == "reviewed"
+    assert captured == ["MSFT"]
