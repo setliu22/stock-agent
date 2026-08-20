@@ -1110,6 +1110,8 @@ def _rank_candidate_screen(
         )
         weak_count = (growth < 50).astype(int) + (profitability < 50).astype(int) + (resilience < 50).astype(int)
         fit = fit.mask(assessed & (weak_count >= 2), "Caution")
+    elif macro_regime == "Neutral liquidity regime":
+        assessed = pd.Series(True, index=output.index)
     else:
         assessed = pd.Series(False, index=output.index)
     output["Macro Fit"] = fit.mask(~assessed, "Not assessed")

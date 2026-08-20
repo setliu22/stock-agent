@@ -2,54 +2,51 @@
 
 from __future__ import annotations
 
-import csv
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from io import StringIO
 from typing import Callable, Iterable
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
 
 
 FRED_SERIES = {
     "fed_funds": "DFF",
     "fed_balance_sheet": "WALCL",
-    "cpi": "CPIAUCSL",
+    "cpi": "CPIAUCNS",
     "high_yield_spread": "BAMLH0A0HYM2",
 }
 
-DEFENSIVE_COMPANY_TYPE = "Safer, profitable, low-leverage"
-AGGRESSIVE_COMPANY_TYPE = "Riskier, unprofitable, high-leverage"
+DEFENSIVE_MACRO_TILT = "Safer / profitable / low-leverage"
+NEUTRAL_MACRO_TILT = "Neutral"
+TOLERANT_MACRO_TILT = "More tolerant of high-growth / high-leverage"
 
 MACRO_REFERENCE_ROWS = (
     (
         "Fed funds rate",
         "High vs. 5Y history",
-        DEFENSIVE_COMPANY_TYPE,
+        DEFENSIVE_MACRO_TILT,
         "High Fed rates push borrowing rates and broader yields higher. That raises discount rates, hurts high-growth valuations, and makes new debt and refinancing more expensive.",
     ),
     (
         "Fed assets / balance sheet",
         "Falling",
-        DEFENSIVE_COMPANY_TYPE,
+        DEFENSIVE_MACRO_TILT,
         "A shrinking balance sheet reduces downward pressure on Treasury yields. Higher yields raise discount rates and the interest companies must pay to borrow or refinance.",
     ),
     (
         "High-yield credit spread",
         "High vs. 5Y history",
-        DEFENSIVE_COMPANY_TYPE,
+        DEFENSIVE_MACRO_TILT,
         "Investors demand more interest above Treasuries to lend to risky companies. This directly raises borrowing and refinancing costs, especially for highly leveraged companies.",
     ),
     (
         "VIX",
         "High vs. 5Y history",
-        DEFENSIVE_COMPANY_TYPE,
+        DEFENSIVE_MACRO_TILT,
         "High expected volatility usually increases the return investors require from risky stocks. Higher required returns reduce valuations, especially for speculative and high-growth companies.",
     ),
     (
         "CPI inflation",
-        "High (3%+) / rising",
-        DEFENSIVE_COMPANY_TYPE,
+        "High vs. 5Y / unusually fast rise",
+        DEFENSIVE_MACRO_TILT,
         "High inflation gives the Fed less room to cut rates. Rates may stay higher, pressuring growth valuations and keeping loans and refinancing more expensive.",
     ),
 )
@@ -93,6 +90,11 @@ def macro_default_policy(regime: str) -> MacroResearchPolicy:
             "Prefer companies with above-median growth and profitability.",
             "Flag weak financial resilience as a macro caution.",
         )
+    elif regime == "Neutral liquidity regime":
+        rules = (
+            "Require peer-relative valuation evidence.",
+            "Do not apply a growth or defensive macro preference while both core liquidity signals are stable.",
+        )
     else:
         rules = (
             "Rank by peer-relative valuation evidence.",
@@ -105,6 +107,7 @@ def macro_default_policy(regime: str) -> MacroResearchPolicy:
 class Observation:
     as_of: date
     value: float
+    observed_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -119,7 +122,7 @@ class RegimeIndicator:
     level_context: str = "Not assessed"
     level_percentile: int | None = None
     status: str = "available"
-    favored_company_type: str = "Cannot assess"
+    macro_tilt: str = "Cannot assess"
 
 
 @dataclass(frozen=True)
@@ -147,7 +150,7 @@ class MarketRegimeSnapshot:
         lines.extend(f"- {item}" for item in self.emphasis)
         lines.extend(("", "Indicators:"))
         lines.extend(
-            f"- {item.label}: {item.latest}; {item.trend}; favors {item.favored_company_type}; {item.meaning} "
+            f"- {item.label}: {item.latest}; {item.trend}; macro tilt {item.macro_tilt}; {item.meaning} "
             f"(as of {item.as_of}, {item.source})"
             for item in self.indicators
         )
@@ -163,41 +166,53 @@ class MarketRegimeSnapshot:
 SeriesLoader = Callable[[str], list[Observation]]
 
 
-def fetch_fred_series(series_id: str, timeout: int = 12) -> list[Observation]:
-    """Fetch a public FRED series without requiring credentials."""
-    url = "https://fred.stlouisfed.org/graph/fredgraph.csv?" + urlencode({"id": series_id})
-    request = Request(url, headers={"User-Agent": "stock-agent/1.0"})
-    with urlopen(request, timeout=timeout) as response:
-        content = response.read().decode("utf-8")
-    observations: list[Observation] = []
-    for row in csv.DictReader(StringIO(content)):
-        raw_value = row.get(series_id)
-        if not raw_value or raw_value == ".":
-            continue
-        raw_date = row.get("DATE") or row.get("observation_date")
-        if not raw_date:
-            continue
-        observations.append(
-            Observation(as_of=date.fromisoformat(raw_date), value=float(raw_value))
-        )
+def fetch_fred_series(series_id: str) -> list[Observation]:
+    """Fetch recent public FRED observations through pandas-datareader."""
+    try:
+        from pandas_datareader import data as web
+    except Exception as exc:
+        raise RuntimeError("pandas-datareader is not installed.") from exc
+    start = date.today() - timedelta(days=365 * 6)
+    frame = web.DataReader(series_id, "fred", start=start)
+    observations = [
+        Observation(as_of=timestamp.date(), value=float(value))
+        for timestamp, value in frame[series_id].dropna().items()
+    ]
     if not observations:
         raise RuntimeError(f"FRED returned no observations for {series_id}.")
     return observations
 
 
 def fetch_vix_series() -> list[Observation]:
-    """Fetch recent VIX closes through the application's market-data package."""
+    """Fetch VIX history and the latest timestamped intraday value with yfinance."""
     try:
         import yfinance as yf
     except Exception as exc:
         raise RuntimeError("yfinance is not installed.") from exc
-    history = yf.Ticker("^VIX").history(period="5y", interval="1d", auto_adjust=False)
+    ticker = yf.Ticker("^VIX")
+    history = ticker.history(period="5y", interval="1d", auto_adjust=False)
     if history is None or history.empty or "Close" not in history.columns:
         raise RuntimeError("Yahoo Finance returned no VIX history.")
-    return [
+    observations = [
         Observation(as_of=timestamp.date(), value=float(value))
         for timestamp, value in history["Close"].dropna().items()
     ]
+    try:
+        intraday = ticker.history(period="1d", interval="1m", auto_adjust=False)
+        latest = intraday["Close"].dropna()
+        if not latest.empty:
+            timestamp = latest.index[-1].to_pydatetime()
+            observations = [item for item in observations if item.as_of != timestamp.date()]
+            observations.append(
+                Observation(
+                    as_of=timestamp.date(),
+                    value=float(latest.iloc[-1]),
+                    observed_at=timestamp,
+                )
+            )
+    except Exception:
+        pass
+    return observations
 
 
 def build_market_regime(
@@ -218,7 +233,6 @@ def build_market_regime(
             unit="%",
             change_unit="pp",
             source="FRED DFF",
-            tolerance=0.05,
             states=states,
         )
     )
@@ -231,7 +245,6 @@ def build_market_regime(
             lookback_days=91,
             source="FRED WALCL",
             states=states,
-            tolerance=0.5,
         )
     )
     cpi = _load(fred_loader, FRED_SERIES["cpi"])
@@ -246,7 +259,6 @@ def build_market_regime(
             unit="%",
             change_unit="pp",
             source="FRED BAMLH0A0HYM2",
-            tolerance=0.05,
             states=states,
         )
     )
@@ -263,7 +275,6 @@ def build_market_regime(
             unit="",
             change_unit="points",
             source="Yahoo Finance ^VIX",
-            tolerance=0.5,
             states=states,
         )
     )
@@ -294,20 +305,85 @@ def _clean(observations: Iterable[Observation]) -> list[Observation]:
     return sorted(observations, key=lambda item: item.as_of)
 
 
-def _prior(observations: list[Observation], days: int) -> Observation | None:
-    if not observations:
+def _percentile(values: list[float], fraction: float) -> float:
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * fraction
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    weight = position - lower
+    return ordered[lower] * (1 - weight) + ordered[upper] * weight
+
+
+def _historical_change(
+    observations: list[Observation],
+    lookback_days: int,
+    *,
+    percent: bool = False,
+) -> tuple[Observation, Observation, float, int] | None:
+    """Classify the latest change against rolling changes from the prior five years."""
+    changes: list[tuple[Observation, Observation, float]] = []
+    cutoff = observations[-1].as_of - timedelta(days=365 * 5) if observations else date.min
+    prior_index = -1
+    for index, current in enumerate(observations):
+        if current.as_of < cutoff:
+            continue
+        target = current.as_of - timedelta(days=lookback_days)
+        while (
+            prior_index + 1 < index
+            and observations[prior_index + 1].as_of <= target
+        ):
+            prior_index += 1
+        if prior_index < 0:
+            continue
+        prior = observations[prior_index]
+        if percent and prior.value == 0:
+            continue
+        change = (
+            (current.value / prior.value - 1) * 100
+            if percent
+            else current.value - prior.value
+        )
+        changes.append((current, prior, change))
+    if len(changes) < 4:
         return None
-    target = observations[-1].as_of - timedelta(days=days)
-    candidates = [item for item in observations[:-1] if item.as_of <= target]
-    return candidates[-1] if candidates else None
+    current, prior, latest_change = changes[-1]
+    distribution = [change for _current, _prior_item, change in changes]
+    lower_quartile = _percentile(distribution, 0.25)
+    upper_quartile = _percentile(distribution, 0.75)
+    if latest_change < 0 and latest_change <= lower_quartile:
+        direction = -1
+    elif latest_change > 0 and latest_change >= upper_quartile:
+        direction = 1
+    else:
+        direction = 0
+    return current, prior, latest_change, direction
 
 
-def _direction(change: float, tolerance: float) -> int:
-    if change > tolerance:
-        return 1
-    if change < -tolerance:
-        return -1
-    return 0
+def _historical_monthly_change(
+    observations: list[Observation],
+) -> tuple[Observation, Observation, float, int] | None:
+    """Classify the latest month-to-month change against five years of such changes."""
+    if len(observations) < 5:
+        return None
+    cutoff = observations[-1].as_of - timedelta(days=365 * 5)
+    changes = [
+        (current, previous, current.value - previous.value)
+        for previous, current in zip(observations, observations[1:])
+        if current.as_of >= cutoff and 20 <= (current.as_of - previous.as_of).days <= 45
+    ]
+    if len(changes) < 4:
+        return None
+    current, previous, latest_change = changes[-1]
+    distribution = [change for _current, _previous, change in changes]
+    lower_quartile = _percentile(distribution, 0.25)
+    upper_quartile = _percentile(distribution, 0.75)
+    if latest_change < 0 and latest_change <= lower_quartile:
+        direction = -1
+    elif latest_change > 0 and latest_change >= upper_quartile:
+        direction = 1
+    else:
+        direction = 0
+    return current, previous, latest_change, direction
 
 
 def _unavailable(key: str, label: str, source: str, states: dict[str, int | None]) -> RegimeIndicator:
@@ -322,8 +398,12 @@ def _unavailable(key: str, label: str, source: str, states: dict[str, int | None
         meaning="No conclusion because current data is unavailable.",
         level_context="Unavailable",
         status="unavailable",
-        favored_company_type="Cannot assess",
+        macro_tilt="Cannot assess",
     )
+
+
+def _trend_context(direction: int) -> str:
+    return "; typical vs. 5Y changes" if direction == 0 else ""
 
 
 def _change_indicator(
@@ -335,32 +415,28 @@ def _change_indicator(
     unit: str,
     change_unit: str,
     source: str,
-    tolerance: float,
     states: dict[str, int | None],
 ) -> RegimeIndicator:
-    previous = _prior(observations, lookback_days)
-    if not observations or previous is None:
+    trend = _historical_change(observations, lookback_days)
+    if trend is None:
         return _unavailable(key, label, source, states)
-    latest = observations[-1]
-    change = latest.value - previous.value
-    direction = _direction(change, tolerance)
+    latest, previous, change, direction = trend
     states[key] = direction
-    word = {1: "Rising", 0: "Stable", -1: "Falling"}[direction]
+    display_direction = (change > 0) - (change < 0)
+    word = {1: "Rising", 0: "Unchanged", -1: "Falling"}[display_direction]
     level_context, level_percentile = _historical_level_context(key, observations, latest)
     period = _elapsed_period(latest.as_of, previous.as_of)
     return RegimeIndicator(
         key=key,
         label=label,
         latest=f"{latest.value:,.2f}{unit}",
-        trend=f"{word} ({change:+.2f} {change_unit} over {period})",
-        as_of=latest.as_of.isoformat(),
+        trend=f"{word} ({change:+.2f} {change_unit} over {period}){_trend_context(direction)}",
+        as_of=_observation_time(latest),
         source=source,
         meaning=_indicator_meaning(key, direction, level_percentile),
         level_context=level_context,
         level_percentile=level_percentile,
-        favored_company_type=_favored_company_type(
-            key, latest.value, direction, level_percentile
-        ),
+        macro_tilt=_macro_tilt(key, direction, level_percentile),
     )
 
 
@@ -372,69 +448,81 @@ def _percent_change_indicator(
     lookback_days: int,
     source: str,
     states: dict[str, int | None],
-    tolerance: float,
 ) -> RegimeIndicator:
-    previous = _prior(observations, lookback_days)
-    if not observations or previous is None or previous.value == 0:
+    trend = _historical_change(observations, lookback_days, percent=True)
+    if trend is None:
         return _unavailable(key, label, source, states)
-    latest = observations[-1]
-    change = (latest.value / previous.value - 1) * 100
-    direction = _direction(change, tolerance)
+    latest, previous, change, direction = trend
     states[key] = direction
-    word = {1: "Expanding", 0: "Stable", -1: "Contracting"}[direction]
+    display_direction = (change > 0) - (change < 0)
+    word = {1: "Expanding", 0: "Unchanged", -1: "Contracting"}[display_direction]
     period = _elapsed_period(latest.as_of, previous.as_of)
     return RegimeIndicator(
         key=key,
         label=label,
         latest=f"${latest.value / 1_000_000:,.2f}T",
-        trend=f"{word} ({change:+.2f}% over {period})",
+        trend=f"{word} ({change:+.2f}% over {period}){_trend_context(direction)}",
         as_of=latest.as_of.isoformat(),
         source=source,
         meaning=_indicator_meaning(key, direction),
         level_context="Absolute size contextual; use 91-day trend.",
-        favored_company_type=_favored_company_type(key, latest.value, direction),
+        macro_tilt=_macro_tilt(key, direction),
     )
 
 
-def _cpi_indicator(
-    observations: list[Observation], states: dict[str, int | None]
-) -> RegimeIndicator:
+def _cpi_indicator(observations: list[Observation], states: dict[str, int | None]) -> RegimeIndicator:
     key = "cpi"
     label = "Consumer Price Index inflation"
-    source = "FRED CPIAUCSL"
-    if len(observations) < 14 or observations[-13].value == 0 or observations[-14].value == 0:
-        return _unavailable(key, label, source, states)
-    latest_yoy = (observations[-1].value / observations[-13].value - 1) * 100
-    previous_yoy = (observations[-2].value / observations[-14].value - 1) * 100
-    change = latest_yoy - previous_yoy
-    direction = _direction(change, 0.05)
-    states[key] = direction
-    word = {1: "Accelerating", 0: "Stable", -1: "Cooling"}[direction]
-    latest = observations[-1]
-    yoy_history = [
-        Observation(
-            as_of=observations[index].as_of,
-            value=(observations[index].value / observations[index - 12].value - 1) * 100,
+    source = "FRED CPIAUCNS (headline CPI-U)"
+    by_month = {(item.as_of.year, item.as_of.month): item for item in observations}
+    yoy_history: list[Observation] = []
+    for current in observations:
+        prior = by_month.get((current.as_of.year - 1, current.as_of.month))
+        if prior is None or prior.value == 0:
+            continue
+        yoy_history.append(
+            Observation(
+                as_of=current.as_of,
+                value=(current.value / prior.value - 1) * 100,
+            )
         )
-        for index in range(12, len(observations))
-        if observations[index - 12].value != 0
-    ]
+    if len(yoy_history) < 2:
+        return _unavailable(key, label, source, states)
+    trend = _historical_monthly_change(yoy_history)
+    if trend is None:
+        return _unavailable(key, label, source, states)
+    latest, previous, change, direction = trend
+    latest_yoy = latest.value
+    previous_yoy = previous.value
+    display_change = round(latest_yoy, 1) - round(previous_yoy, 1)
+    states[key] = direction
+    display_direction = (change > 0) - (change < 0)
+    word = {1: "Rising", 0: "Unchanged", -1: "Falling"}[display_direction]
     level_context, level_percentile = _historical_level_context(
         key, yoy_history, yoy_history[-1]
     )
     return RegimeIndicator(
         key=key,
         label=label,
-        latest=f"{latest_yoy:.2f}% YoY",
-        trend=f"{word} ({change:+.2f} pp over 1 month)",
+        latest=f"{latest_yoy:.1f}% YoY",
+        trend=(
+            f"{word} ({display_change:+.1f} pp over {_elapsed_period(latest.as_of, previous.as_of)})"
+            f"{_trend_context(direction)}"
+        ),
         as_of=latest.as_of.isoformat(),
         source=source,
         meaning=_indicator_meaning(key, direction, level_percentile),
         level_context=level_context,
         level_percentile=level_percentile,
-        favored_company_type=_favored_company_type(
-            key, latest_yoy, direction, level_percentile
-        ),
+        macro_tilt=_macro_tilt(key, direction, level_percentile),
+    )
+
+
+def _observation_time(observation: Observation) -> str:
+    return (
+        observation.observed_at.isoformat()
+        if observation.observed_at is not None
+        else observation.as_of.isoformat()
     )
 
 
@@ -486,22 +574,35 @@ def _indicator_meaning(
     return message
 
 
-def _favored_company_type(
+def _macro_tilt(
     key: str,
-    value: float,
     direction: int,
     level_percentile: int | None = None,
 ) -> str:
-    """Translate each macro observation into one of two visible company profiles."""
+    """Translate a macro observation into a defensive, neutral, or tolerant tilt."""
     elevated = level_percentile is not None and level_percentile >= 75
-    unfavorable = {
-        "fed_funds": elevated,
-        "fed_balance_sheet": direction < 0,
-        "high_yield_spread": elevated,
-        "vix": elevated,
-        "cpi": value >= 3.0 or direction > 0,
-    }.get(key, False)
-    return DEFENSIVE_COMPANY_TYPE if unfavorable else AGGRESSIVE_COMPANY_TYPE
+    low = level_percentile is not None and level_percentile <= 25
+    if key == "fed_funds":
+        if elevated:
+            return DEFENSIVE_MACRO_TILT
+        if low:
+            return TOLERANT_MACRO_TILT
+    elif key == "fed_balance_sheet":
+        if direction < 0:
+            return DEFENSIVE_MACRO_TILT
+        if direction > 0:
+            return TOLERANT_MACRO_TILT
+    elif key in {"high_yield_spread", "vix"}:
+        if elevated:
+            return DEFENSIVE_MACRO_TILT
+        if low:
+            return TOLERANT_MACRO_TILT
+    elif key == "cpi":
+        if elevated or direction > 0:
+            return DEFENSIVE_MACRO_TILT
+        if low and direction < 0:
+            return TOLERANT_MACRO_TILT
+    return NEUTRAL_MACRO_TILT
 
 
 def _historical_level_context(
@@ -531,24 +632,24 @@ def _historical_level_context(
         "high_yield_spread": "credit stress",
         "vix": "volatility",
     }.get(key, "level")
-    return (
-        f"{band} {subject} ({percentile}th pct, 5Y).",
-        percentile,
-    )
+    suffix = "th" if 10 <= percentile % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(percentile % 10, "th")
+    return (f"{band} {subject} ({percentile}{suffix} pct, 5Y).", percentile)
 
 
 def _interpret(
     states: dict[str, int | None],
     indicators: list[RegimeIndicator],
 ) -> tuple[str, str, tuple[str, ...], str]:
-    rate = states.get("fed_funds")
-    balance = states.get("fed_balance_sheet")
-    if rate is None or balance is None:
+    indicator_tilts = {indicator.key: indicator.macro_tilt for indicator in indicators}
+    rate_tilt = indicator_tilts.get("fed_funds")
+    balance_tilt = indicator_tilts.get("fed_balance_sheet")
+    valid_tilts = {DEFENSIVE_MACRO_TILT, NEUTRAL_MACRO_TILT, TOLERANT_MACRO_TILT}
+    if rate_tilt not in valid_tilts or balance_tilt not in valid_tilts:
         regime = "Regime incomplete"
         summary = "Rate or Federal Reserve balance-sheet data is missing, so the app cannot choose a market environment yet."
         emphasis = ("Refresh the missing data before changing what you look for in a stock.",)
         company_fit = "No company type yet; wait for both Federal Reserve signals."
-    elif rate < 0 and balance > 0:
+    elif rate_tilt == TOLERANT_MACRO_TILT and balance_tilt == TOLERANT_MACRO_TILT:
         regime = "Easing and expanding liquidity"
         summary = "Interest rates are falling and the Federal Reserve is adding liquidity. This is the most supportive environment for growth stocks."
         emphasis = (
@@ -558,7 +659,7 @@ def _interpret(
         company_fit = (
             "Faster-growing companies, preferably with improving profits and manageable debt."
         )
-    elif rate > 0 and balance < 0:
+    elif rate_tilt == DEFENSIVE_MACRO_TILT and balance_tilt == DEFENSIVE_MACRO_TILT:
         regime = "Tightening and contracting liquidity"
         summary = "Interest rates are rising and the Federal Reserve is removing liquidity. Expensive or debt-dependent growth stocks face more pressure."
         emphasis = (
@@ -568,6 +669,14 @@ def _interpret(
         company_fit = (
             "Profitable, cash-generating, lower-debt companies trading at reasonable valuations."
         )
+    elif rate_tilt == NEUTRAL_MACRO_TILT and balance_tilt == NEUTRAL_MACRO_TILT:
+        regime = "Neutral liquidity regime"
+        summary = "The policy rate and Federal Reserve balance sheet are both broadly stable. Neither a growth nor defensive tilt has clear support from the two core liquidity signals."
+        emphasis = (
+            "Use company fundamentals and peer-relative valuation as the primary filters.",
+            "Treat inflation, credit spreads, and volatility as cautions rather than automatic stock-selection rules.",
+        )
+        company_fit = "No broad macro preference; prioritize company quality and valuation."
     else:
         regime = "Mixed liquidity regime"
         summary = "Rates and Federal Reserve liquidity do not point the same way. Neither aggressive growth nor pure defense has a clear macro advantage."

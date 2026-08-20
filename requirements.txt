@@ -1,6 +1,7 @@
 python-dotenv>=1.0
 certifi>=2025.1.31
 pandas>=2.2
+pandas-datareader>=0.10.0
 yfinance>=0.2.54
 langchain-groq>=1.0
 lseg-data>=2.1.1,<3

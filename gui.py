@@ -16,9 +16,12 @@ from portfolio.config import save_supabase_settings
 from portfolio.controller import StockAgentController
 from portfolio.cloud_portfolios import AuthResult, friendly_auth_error
 from portfolio.market_regime import (
+    DEFENSIVE_MACRO_TILT,
     MACRO_REFERENCE_ROWS,
     MacroResearchPolicy,
     MarketRegimeSnapshot,
+    NEUTRAL_MACRO_TILT,
+    TOLERANT_MACRO_TILT,
 )
 
 
@@ -104,6 +107,7 @@ class StockAgentApp(tk.Tk):
     ACCENT = "#5AC8E8"
     POSITIVE = "#34C759"
     NEGATIVE = "#FF453A"
+    WARNING = "#FFD60A"
 
     def __init__(self) -> None:
         super().__init__()
@@ -617,13 +621,13 @@ class StockAgentApp(tk.Tk):
             "indicator": "Indicator",
             "latest": "Now",
             "trend": "Change",
-            "favored": "Favored company type",
-            "as_of": "Data date",
+            "favored": "Macro tilt",
+            "as_of": "Data time",
         }
         widths = {
             "indicator": 185,
             "latest": 105,
-            "trend": 200,
+            "trend": 260,
             "favored": 310,
             "as_of": 105,
         }
@@ -635,12 +639,15 @@ class StockAgentApp(tk.Tk):
                 anchor="w" if column in {"indicator", "trend", "favored"} else "center",
             )
         self.market_tree.tag_configure("unavailable", foreground=self.MUTED)
+        self.market_tree.tag_configure("safe", foreground=self.POSITIVE)
+        self.market_tree.tag_configure("neutral", foreground=self.WARNING)
+        self.market_tree.tag_configure("risk_tolerant", foreground=self.NEGATIVE)
         self.market_tree.pack(fill="x", pady=(0, 7))
 
         ttk.Label(
             self.market_tab,
             text=(
-                "Each row translates the current signal into the same two company profiles. The app combines "
+                "Each row translates the current signal into a defensive, neutral, or risk-tolerant tilt. The app combines "
                 "all five rows before setting research priorities; no single indicator is a buy or sell signal."
             ),
             style="Muted.TLabel",
@@ -1317,7 +1324,8 @@ class StockAgentApp(tk.Tk):
             content,
             text=(
                 "Favorable signals are the opposite: low rates, expanding Fed assets, low high-yield "
-                "spreads, low VIX, and low or falling inflation."
+                "spreads, low VIX, and low or falling inflation. These conditions are more tolerant of "
+                "high-growth or leveraged companies; they do not make leverage or unprofitability desirable."
             ),
             style="Muted.TLabel",
             wraplength=1080,
@@ -1332,7 +1340,14 @@ class StockAgentApp(tk.Tk):
         for item in self.market_tree.get_children():
             self.market_tree.delete(item)
         for indicator in snapshot.indicators:
-            tags = ("unavailable",) if indicator.status != "available" else ()
+            if indicator.status != "available":
+                tags = ("unavailable",)
+            else:
+                tags = {
+                    DEFENSIVE_MACRO_TILT: ("safe",),
+                    NEUTRAL_MACRO_TILT: ("neutral",),
+                    TOLERANT_MACRO_TILT: ("risk_tolerant",),
+                }.get(indicator.macro_tilt, ())
             self.market_tree.insert(
                 "",
                 "end",
@@ -1341,7 +1356,7 @@ class StockAgentApp(tk.Tk):
                     indicator.label,
                     indicator.latest,
                     indicator.trend,
-                    indicator.favored_company_type,
+                    indicator.macro_tilt,
                     self._display_date(indicator.as_of),
                 ),
             )
@@ -1365,6 +1380,9 @@ class StockAgentApp(tk.Tk):
     @staticmethod
     def _display_date(value: str) -> str:
         try:
+            if "T" in value:
+                parsed_time = datetime.fromisoformat(value)
+                return parsed_time.strftime("%b %-d, %Y %-I:%M %p %Z").strip()
             parsed = date.fromisoformat(value)
             return f"{parsed.strftime('%b')} {parsed.day}, {parsed.year}"
         except ValueError:
