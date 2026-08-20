@@ -384,6 +384,9 @@ class StockAgentApp(tk.Tk):
         self.send_button.bind("<Leave>", self._on_send_button_leave)
         self.input_box.bind("<Command-Return>", self._send_event)
         self.input_box.bind("<Control-Return>", self._send_event)
+        self.input_box.bind("<Command-a>", self._select_all_input)
+        self.input_box.bind("<Left>", lambda event: self._collapse_input_selection(event, "start"))
+        self.input_box.bind("<Right>", lambda event: self._collapse_input_selection(event, "end"))
         self.progress_frame.pack(side="bottom", fill="x", pady=(10, 0))
         transcript_frame.pack(side="top", fill="both", expand=True)
         self.input_box.focus_set()
@@ -433,14 +436,25 @@ class StockAgentApp(tk.Tk):
         performance.pack(fill="x", pady=(0, 14))
         performance_header = ttk.Frame(performance, style="Surface.TFrame")
         performance_header.pack(fill="x", pady=(0, 8))
-        ttk.Label(performance_header, text="Performance", style="SurfaceSection.TLabel").pack(side="left")
+        self.performance_title = tk.StringVar(value="Portfolio performance")
+        ttk.Label(
+            performance_header,
+            textvariable=self.performance_title,
+            style="SurfaceSection.TLabel",
+        ).pack(side="left")
         self.period_change = tk.StringVar(value="History unavailable")
         self.period_change_label = ttk.Label(performance_header, textvariable=self.period_change, style="MetricValue.TLabel")
         self.period_change_label.pack(side="left", padx=(16, 0))
         segment = ttk.Frame(performance_header, style="Surface.TFrame")
         segment.pack(side="right")
         self.period_buttons: dict[int, ttk.Button] = {}
-        for sessions, label in ((3, "3 days"), (5, "1 week")):
+        for sessions, label in (
+            (3, "3 days"),
+            (5, "1 week"),
+            (10, "2 weeks"),
+            (15, "3 weeks"),
+            (20, "4 weeks"),
+        ):
             button = ttk.Button(segment, text=label, style="Segment.TButton", command=lambda value=sessions: self._set_performance_period(value))
             button.pack(side="left", padx=(6, 0))
             self.period_buttons[sessions] = button
@@ -448,6 +462,9 @@ class StockAgentApp(tk.Tk):
         self.performance_canvas.pack(fill="x")
         self.performance_canvas.bind("<Configure>", lambda _event: self._draw_performance())
         self.performance_history = []
+        self.performance_portfolio_history = []
+        self.performance_position_histories: dict[str, list[Any]] = {}
+        self.selected_performance_ticker: str | None = None
         self.performance_sessions = 3
         self._set_performance_period(3)
 
@@ -489,6 +506,7 @@ class StockAgentApp(tk.Tk):
         self.holdings_tree.configure(yscrollcommand=scrollbar.set)
         self.holdings_tree.tag_configure("positive", foreground=self.POSITIVE)
         self.holdings_tree.tag_configure("negative", foreground=self.NEGATIVE)
+        self.holdings_tree.bind("<Button-1>", self._toggle_holding_chart, add="+")
         self.holdings_tree.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
         self.refresh_holdings(refresh_prices=False)
@@ -506,7 +524,7 @@ class StockAgentApp(tk.Tk):
         header.pack(fill="x", pady=(0, 14))
         title_block = ttk.Frame(header)
         title_block.pack(side="left", fill="x", expand=True)
-        ttk.Label(title_block, text="Market framework", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(title_block, text="Market guide", style="Title.TLabel").pack(anchor="w")
         self.market_status = tk.StringVar(value="Waiting for current macro observations")
         ttk.Label(title_block, textvariable=self.market_status, style="Muted.TLabel").pack(
             anchor="w", pady=(2, 0)
@@ -557,7 +575,9 @@ class StockAgentApp(tk.Tk):
         policy_header = ttk.Frame(policy, style="Surface.TFrame")
         policy_header.pack(fill="x", pady=(0, 8))
         ttk.Label(
-            policy_header, text="Research weights", style="SurfaceSection.TLabel"
+            policy_header,
+            text="Automatic stock research priorities",
+            style="SurfaceSection.TLabel",
         ).pack(side="left")
         self.research_weight_status = tk.StringVar(value="Waiting for macro defaults")
         tk.Label(
@@ -619,7 +639,9 @@ class StockAgentApp(tk.Tk):
 
         instruction_row = ttk.Frame(policy, style="Surface.TFrame")
         instruction_row.pack(fill="x", pady=(8, 0))
-        self.research_instruction = tk.StringVar(value="Macro research context is not ready.")
+        self.research_instruction = tk.StringVar(
+            value="These priorities are applied automatically. You never need to paste them into Chat."
+        )
         tk.Label(
             instruction_row,
             textvariable=self.research_instruction,
@@ -632,11 +654,12 @@ class StockAgentApp(tk.Tk):
         ).pack(side="left", fill="x", expand=True)
         ttk.Button(
             instruction_row,
-            text="Copy instructions",
-            command=self.copy_research_instructions,
+            text="Start research",
+            style="Accent.TButton",
+            command=self.prepare_market_research_prompt,
         ).pack(side="right", padx=(12, 0))
 
-        columns = ("indicator", "latest", "trend", "level_context", "as_of", "source")
+        columns = ("indicator", "latest", "trend", "meaning", "as_of")
         self.market_tree = ttk.Treeview(
             self.market_tab,
             columns=columns,
@@ -646,28 +669,24 @@ class StockAgentApp(tk.Tk):
         )
         headings = {
             "indicator": "Indicator",
-            "latest": "Latest",
-            "trend": "Trend",
-            "level_context": "Level context",
-            "as_of": "As of",
-            "source": "Source",
+            "latest": "Now",
+            "trend": "Change",
+            "meaning": "Why it matters",
+            "as_of": "Data date",
         }
         widths = {
-            "indicator": 205,
-            "latest": 115,
-            "trend": 230,
-            "level_context": 285,
-            "as_of": 100,
-            "source": 145,
+            "indicator": 185,
+            "latest": 105,
+            "trend": 205,
+            "meaning": 430,
+            "as_of": 105,
         }
         for column in columns:
             self.market_tree.heading(column, text=headings[column])
             self.market_tree.column(
                 column,
                 width=widths[column],
-                anchor="w"
-                if column in {"indicator", "trend", "level_context", "source"}
-                else "center",
+                anchor="w" if column in {"indicator", "trend", "meaning"} else "center",
             )
         self.market_tree.tag_configure("unavailable", foreground=self.MUTED)
         self.market_tree.pack(fill="x", pady=(0, 7))
@@ -675,16 +694,16 @@ class StockAgentApp(tk.Tk):
         ttk.Label(
             self.market_tab,
             text=(
-                "How to read: Latest = current value. Trend = change over 90 days (Fed assets 91 days; "
-                "VIX 30 days; CPI vs. prior month). Stable = change within tolerance. Cooling = inflation "
-                "slowed, not prices fell. Level context = percentile within up to five years."
+                "Use Change to see what is moving, then Why it matters to see which company traits that "
+                "movement favors. The app combines all rows before setting research priorities; no single "
+                "indicator is a buy or sell signal."
             ),
             style="Muted.TLabel",
             wraplength=1060,
             justify="left",
         ).pack(fill="x", anchor="w", pady=(0, 12))
 
-        ttk.Label(self.market_tab, text="What to emphasize", style="Section.TLabel").pack(
+        ttk.Label(self.market_tab, text="What this market favors", style="Section.TLabel").pack(
             anchor="w", pady=(2, 8)
         )
         self.market_emphasis = tk.Text(
@@ -881,6 +900,22 @@ class StockAgentApp(tk.Tk):
         self._send_or_stop()
         return "break"
 
+    def _select_all_input(self, _event: tk.Event) -> str:
+        self.input_box.tag_add("sel", "1.0", "end-1c")
+        self.input_box.mark_set("insert", "end-1c")
+        self.input_box.see("insert")
+        return "break"
+
+    def _collapse_input_selection(self, _event: tk.Event, edge: str) -> str | None:
+        selection = self.input_box.tag_ranges("sel")
+        if len(selection) != 2:
+            return None
+        target = selection[0] if edge == "start" else selection[1]
+        self.input_box.tag_remove("sel", "1.0", "end")
+        self.input_box.mark_set("insert", target)
+        self.input_box.see("insert")
+        return "break"
+
     def _send_or_stop(self) -> None:
         if self.is_busy:
             self._request_stop()
@@ -1011,6 +1046,7 @@ class StockAgentApp(tk.Tk):
                             payload["holdings"],
                             refresh_prices=True,
                             history=payload["history"],
+                            position_histories=payload["position_histories"],
                         )
                     continue
                 response = str(payload)
@@ -1278,7 +1314,10 @@ class StockAgentApp(tk.Tk):
             else "Custom override (session)"
         )
         self.research_weight_status.set(f"Total 100% | {source}")
-        self.research_instruction.set(policy.instruction_text())
+        self.research_instruction.set(
+            policy.focus_summary()
+            + ' Ask “Research META” for one company or “Research promising technology stocks” for a shortlist.'
+        )
         self.apply_weights_button.configure(state="disabled")
 
     def apply_research_weights(self) -> None:
@@ -1296,12 +1335,13 @@ class StockAgentApp(tk.Tk):
         self._render_research_policy(policy)
         self.market_status.set("Macro default research weights restored")
 
-    def copy_research_instructions(self) -> None:
-        instructions = self.controller.research_policy().instruction_text()
-        self.clipboard_clear()
-        self.clipboard_append(instructions)
-        self.update_idletasks()
-        self.market_status.set("Research instructions copied")
+    def prepare_market_research_prompt(self) -> None:
+        prompt = "Research promising technology stocks."
+        self.notebook.select(self.chat_tab)
+        if self.is_busy:
+            self.pending_chat_draft = prompt
+            return
+        self._apply_chat_draft(prompt)
 
     def _render_market_regime(self, snapshot: MarketRegimeSnapshot) -> None:
         self.market_regime_title.set(snapshot.regime)
@@ -1320,9 +1360,8 @@ class StockAgentApp(tk.Tk):
                     indicator.label,
                     indicator.latest,
                     indicator.trend,
-                    indicator.level_context,
-                    indicator.as_of,
-                    indicator.source,
+                    indicator.meaning,
+                    self._display_date(indicator.as_of),
                 ),
             )
         self.market_emphasis.configure(state="normal")
@@ -1342,6 +1381,14 @@ class StockAgentApp(tk.Tk):
         suffix = f" | {unavailable} unavailable" if unavailable else ""
         self.market_status.set(f"Updated {timestamp}{suffix}")
 
+    @staticmethod
+    def _display_date(value: str) -> str:
+        try:
+            parsed = date.fromisoformat(value)
+            return f"{parsed.strftime('%b')} {parsed.day}, {parsed.year}"
+        except ValueError:
+            return value
+
     def refresh_holdings(self, *, refresh_prices: bool = True) -> None:
         if refresh_prices:
             if self.portfolio_refresh_busy:
@@ -1354,7 +1401,7 @@ class StockAgentApp(tk.Tk):
             def worker() -> None:
                 try:
                     holdings = self.controller.holding_snapshots()
-                    history = self.controller.portfolio_history()
+                    history, position_histories = self.controller.performance_histories()
                     self.results.put(
                         (
                             "portfolio_refresh",
@@ -1362,6 +1409,7 @@ class StockAgentApp(tk.Tk):
                                 "generation": generation,
                                 "holdings": holdings,
                                 "history": history,
+                                "position_histories": position_histories,
                             },
                         )
                     )
@@ -1403,6 +1451,7 @@ class StockAgentApp(tk.Tk):
         *,
         refresh_prices: bool,
         history: list[Any] | None = None,
+        position_histories: dict[str, list[Any]] | None = None,
     ) -> None:
         for item in self.holdings_tree.get_children():
             self.holdings_tree.delete(item)
@@ -1436,6 +1485,7 @@ class StockAgentApp(tk.Tk):
             self.holdings_tree.insert(
                 "",
                 "end",
+                iid=holding.ticker,
                 tags=(row_tag,) if row_tag else (),
                 values=(
                     holding.ticker,
@@ -1462,17 +1512,52 @@ class StockAgentApp(tk.Tk):
             )
 
         if refresh_prices:
-            self.performance_history = list(history or [])
+            self.performance_portfolio_history = list(history or [])
+            self.performance_position_histories = dict(position_histories or {})
             self.portfolio_status.set(
                 f"Prices refreshed {datetime.now().strftime('%-I:%M %p')}"
                 if holdings
                 else "No holdings yet"
             )
         elif not holdings:
-            self.performance_history = []
+            self.performance_portfolio_history = []
+            self.performance_position_histories = {}
+            self.selected_performance_ticker = None
             self.portfolio_status.set("No holdings yet")
         else:
             self.portfolio_status.set("Refresh prices to update market values")
+        available_tickers = {holding.ticker for holding in holdings}
+        if self.selected_performance_ticker not in available_tickers:
+            self.selected_performance_ticker = None
+        elif self.selected_performance_ticker:
+            self.holdings_tree.selection_set(self.selected_performance_ticker)
+        self._select_performance_history()
+
+    def _toggle_holding_chart(self, event: tk.Event) -> str | None:
+        row = self.holdings_tree.identify_row(event.y)
+        if not row:
+            return None
+        ticker = str(self.holdings_tree.item(row, "values")[0])
+        if self.selected_performance_ticker == ticker:
+            self.selected_performance_ticker = None
+            self.holdings_tree.selection_remove(row)
+        else:
+            self.selected_performance_ticker = ticker
+            self.holdings_tree.selection_set(row)
+            self.holdings_tree.focus(row)
+        self._select_performance_history()
+        return "break"
+
+    def _select_performance_history(self) -> None:
+        ticker = self.selected_performance_ticker
+        if ticker:
+            self.performance_title.set(f"{ticker} performance")
+            self.performance_history = list(
+                self.performance_position_histories.get(ticker, [])
+            )
+        else:
+            self.performance_title.set("Portfolio performance")
+            self.performance_history = list(self.performance_portfolio_history)
         self._draw_performance()
 
     def _set_performance_period(self, sessions: int) -> None:
@@ -1496,7 +1581,11 @@ class StockAgentApp(tk.Tk):
                 18,
                 height / 2,
                 anchor="w",
-                text="Not enough market history for this portfolio",
+                text=(
+                    f"Not enough market history for {self.selected_performance_ticker}"
+                    if self.selected_performance_ticker
+                    else "Not enough market history for this portfolio"
+                ),
                 fill=self.MUTED,
                 font=(self.ui_font, 10),
             )
@@ -1507,7 +1596,7 @@ class StockAgentApp(tk.Tk):
         change = end_value - start_value
         percent = change / start_value * 100 if start_value else 0.0
         color = self.POSITIVE if change >= 0 else self.NEGATIVE
-        self.period_change.set(f"{change:+,.2f}  {percent:+.2f}%")
+        self.period_change.set(f"${change:+,.2f}  {percent:+.2f}%")
         self.period_change_label.configure(
             style="Positive.MetricValue.TLabel" if change >= 0 else "Negative.MetricValue.TLabel"
         )

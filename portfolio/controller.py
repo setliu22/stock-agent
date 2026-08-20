@@ -107,23 +107,38 @@ class StockAgentController:
 
     def portfolio_history(self) -> list[PortfolioHistoryPoint]:
         """Value current holdings across recent common market sessions."""
+        portfolio, _positions = self.performance_histories()
+        return portfolio
+
+    def performance_histories(
+        self,
+    ) -> tuple[list[PortfolioHistoryPoint], dict[str, list[PortfolioHistoryPoint]]]:
+        """Return aggregate and per-position market values from one history pass."""
         holdings = self.holdings()
         if not holdings:
-            return []
+            return [], {}
         closes_by_ticker: dict[str, dict[date, float]] = {}
+        positions: dict[str, list[PortfolioHistoryPoint]] = {}
         for holding in holdings:
             try:
                 closes = recent_closes(holding.ticker)
             except Exception:
-                return []
+                continue
             if not closes:
-                return []
+                continue
             closes_by_ticker[holding.ticker] = dict(closes)
+            positions[holding.ticker] = [
+                PortfolioHistoryPoint(as_of=as_of, market_value=price * holding.quantity)
+                for as_of, price in closes
+            ]
+
+        if len(closes_by_ticker) != len(holdings):
+            return [], positions
 
         common_dates = set.intersection(
             *(set(closes) for closes in closes_by_ticker.values())
         )
-        return [
+        portfolio = [
             PortfolioHistoryPoint(
                 as_of=as_of,
                 market_value=sum(
@@ -133,6 +148,7 @@ class StockAgentController:
             )
             for as_of in sorted(common_dates)
         ]
+        return portfolio, positions
 
     def market_regime(self) -> MarketRegimeSnapshot:
         snapshot = build_market_regime()

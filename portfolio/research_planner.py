@@ -825,7 +825,14 @@ def _validate_request_constraints(text: str) -> tuple[str | None, str | None, st
             raise UnsupportedResearchConstraint(
                 "Negative country screens are not compiled yet; the request was stopped instead of reversing the headquarters filter."
             )
-    if re.search(r"(?:,|\bbut)\s+not\b|\bexcept\s+[A-Z]", text):
+    named_exclusion = re.search(
+        r"(?:,\s*(?:but\s+)?not|\bbut\s+not|\bexcept)\s+([^.;,]{1,80})",
+        text,
+        re.I,
+    )
+    if named_exclusion and _entity_reference_is_structurally_explicit(
+        named_exclusion.group(1).strip()
+    ):
         raise UnsupportedResearchConstraint(
             "Named-company exclusions are not compiled yet; the request was stopped instead of dropping the exclusion."
         )

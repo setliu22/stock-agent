@@ -60,7 +60,7 @@ def current_price(ticker: str) -> float | None:
     return _number(history["Close"].dropna().iloc[-1])
 
 
-def recent_closes(ticker: str, period: str = "1mo") -> list[tuple[date, float]]:
+def recent_closes(ticker: str, period: str = "2mo") -> list[tuple[date, float]]:
     """Return recent unadjusted daily closes in chronological order."""
     try:
         import yfinance as yf

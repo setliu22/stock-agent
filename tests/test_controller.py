@@ -59,11 +59,15 @@ def test_controller_builds_common_session_portfolio_history(tmp_path, monkeypatc
     }
     monkeypatch.setattr("portfolio.controller.recent_closes", lambda ticker: histories[ticker])
 
-    points = controller.portfolio_history()
+    points, positions = controller.performance_histories()
 
     assert [(point.as_of, point.market_value) for point in points] == [
         (date(2026, 8, 10), 430),
         (date(2026, 8, 11), 450),
+    ]
+    assert [(point.as_of, point.market_value) for point in positions["AAPL"]] == [
+        (date(2026, 8, 10), 220),
+        (date(2026, 8, 11), 230),
     ]
 
 

@@ -124,6 +124,19 @@ def test_material_unsupported_constraints_fail_before_lseg(tmp_path: Path, user_
         build_research_plan(user_request, settings(tmp_path))
 
 
+def test_policy_prose_is_not_misread_as_a_named_company_exclusion(tmp_path: Path) -> None:
+    request = (
+        "Research promising tech stocks. Current regime: Mixed liquidity regime. "
+        "Treat the score as shortlist priority, not a return forecast or buy/sell recommendation. "
+        "Use validated data and do not invent unavailable metrics."
+    )
+
+    plan = build_research_plan(request, settings(tmp_path))
+
+    assert plan.workflow == "sector_opportunity"
+    assert plan.screen.sector == "Technology"
+
+
 def test_numeric_range_and_reverse_order_are_not_dropped(tmp_path: Path) -> None:
     ranged = build_research_plan(
         "find utilities stocks with market cap between $1 and $10 billion",

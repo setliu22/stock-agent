@@ -96,6 +96,20 @@ class MacroResearchPolicy:
             "show missing factor coverage, and do not invent unavailable metrics."
         )
 
+    def focus_summary(self) -> str:
+        percentages = self.weights.percentages()
+        highest = max(percentages.values())
+        priorities = [
+            key.replace("_", " ").title()
+            for key, value in percentages.items()
+            if value == highest
+        ]
+        if len(priorities) == 1:
+            focus = priorities[0]
+        else:
+            focus = ", ".join(priorities[:-1]) + f" and {priorities[-1]}"
+        return f"Applied automatically to stock research. Highest priority: {focus}."
+
 
 def macro_default_policy(regime: str) -> MacroResearchPolicy:
     if regime == "Easing and expanding liquidity":
@@ -123,6 +137,7 @@ class RegimeIndicator:
     trend: str
     as_of: str
     source: str
+    meaning: str = "No interpretation available."
     level_context: str = "Not assessed"
     level_percentile: int | None = None
     status: str = "available"
@@ -153,7 +168,7 @@ class MarketRegimeSnapshot:
         lines.extend(f"- {item}" for item in self.emphasis)
         lines.extend(("", "Indicators:"))
         lines.extend(
-            f"- {item.label}: {item.latest}; {item.trend}; {item.level_context} "
+            f"- {item.label}: {item.latest}; {item.trend}; {item.meaning} "
             f"(as of {item.as_of}, {item.source})"
             for item in self.indicators
         )
@@ -334,6 +349,7 @@ def _unavailable(key: str, label: str, source: str, states: dict[str, int | None
         trend="Could not refresh",
         as_of="—",
         source=source,
+        meaning="No conclusion because current data is unavailable.",
         level_context="Unavailable",
         status="unavailable",
     )
@@ -360,13 +376,15 @@ def _change_indicator(
     states[key] = direction
     word = {1: "Rising", 0: "Stable", -1: "Falling"}[direction]
     level_context, level_percentile = _historical_level_context(key, observations, latest)
+    period = _elapsed_period(latest.as_of, previous.as_of)
     return RegimeIndicator(
         key=key,
         label=label,
         latest=f"{latest.value:,.2f}{unit}",
-        trend=f"{word} ({change:+.2f} {change_unit} vs. {previous.as_of.isoformat()})",
+        trend=f"{word} ({change:+.2f} {change_unit} over {period})",
         as_of=latest.as_of.isoformat(),
         source=source,
+        meaning=_indicator_meaning(key, direction, level_percentile),
         level_context=level_context,
         level_percentile=level_percentile,
     )
@@ -390,13 +408,15 @@ def _percent_change_indicator(
     direction = _direction(change, tolerance)
     states[key] = direction
     word = {1: "Expanding", 0: "Stable", -1: "Contracting"}[direction]
+    period = _elapsed_period(latest.as_of, previous.as_of)
     return RegimeIndicator(
         key=key,
         label=label,
         latest=f"${latest.value / 1_000_000:,.2f}T",
-        trend=f"{word} ({change:+.2f}% vs. {previous.as_of.isoformat()})",
+        trend=f"{word} ({change:+.2f}% over {period})",
         as_of=latest.as_of.isoformat(),
         source=source,
+        meaning=_indicator_meaning(key, direction),
         level_context="Absolute size contextual; use 91-day trend.",
     )
 
@@ -431,12 +451,61 @@ def _cpi_indicator(
         key=key,
         label=label,
         latest=f"{latest_yoy:.2f}% YoY",
-        trend=f"{word} ({change:+.2f} pp vs. prior month)",
+        trend=f"{word} ({change:+.2f} pp over 1 month)",
         as_of=latest.as_of.isoformat(),
         source=source,
+        meaning=_indicator_meaning(key, direction, level_percentile),
         level_context=level_context,
         level_percentile=level_percentile,
     )
+
+
+def _elapsed_period(latest: date, previous: date) -> str:
+    days = max(1, (latest - previous).days)
+    if days >= 27:
+        months = max(1, round(days / 30))
+        return f"{months} month{'s' if months != 1 else ''}"
+    return f"{days} day{'s' if days != 1 else ''}"
+
+
+def _indicator_meaning(
+    key: str,
+    direction: int,
+    level_percentile: int | None = None,
+) -> str:
+    messages = {
+        "fed_funds": {
+            1: "Higher rates favor profitable, lower-debt companies.",
+            0: "Rate pressure is unchanged; the current level still matters.",
+            -1: "Lower rates can support growth-stock valuations.",
+        },
+        "fed_balance_sheet": {
+            1: "More market liquidity can support faster-growing companies.",
+            0: "Fed liquidity is unchanged; company quality matters more.",
+            -1: "Less liquidity favors profits, cash flow, and resilience.",
+        },
+        "cpi": {
+            1: "Faster inflation can keep interest rates higher.",
+            0: "Inflation momentum is unchanged; its level still matters.",
+            -1: "Slower inflation gives the Fed more room to lower rates.",
+        },
+        "high_yield_spread": {
+            1: "Rising borrowing risk makes high debt less attractive.",
+            0: "Corporate borrowing stress is little changed.",
+            -1: "Corporate borrowing stress is easing.",
+        },
+        "vix": {
+            1: "Rising market fear implies larger near-term price swings.",
+            0: "Near-term market fear is little changed.",
+            -1: "Market fear is easing, but that alone is not a buy signal.",
+        },
+    }
+    message = messages.get(key, {}).get(direction, "Use this as supporting evidence, not a signal by itself.")
+    if key == "fed_funds" and level_percentile is not None and level_percentile >= 75:
+        message += " Rates remain high versus five-year history."
+    if key == "cpi" and level_percentile is not None and level_percentile >= 75:
+        message += " Inflation remains high versus five-year history."
+    return message
 
 
 def _historical_level_context(
@@ -480,48 +549,45 @@ def _interpret(
     balance = states.get("fed_balance_sheet")
     if rate is None or balance is None:
         regime = "Regime incomplete"
-        summary = "The two Federal Reserve inputs are not both available, so no quadrant was assigned."
-        emphasis = ("Refresh the missing observations before using the framework.",)
-        company_fit = "Wait for complete Federal Reserve inputs before changing stock-selection priorities."
+        summary = "Rate or Federal Reserve balance-sheet data is missing, so the app cannot choose a market environment yet."
+        emphasis = ("Refresh the missing data before changing what you look for in a stock.",)
+        company_fit = "No company type yet; wait for both Federal Reserve signals."
     elif rate < 0 and balance > 0:
         regime = "Easing and expanding liquidity"
-        summary = "Policy rates are falling while the Federal Reserve balance sheet is expanding."
+        summary = "Interest rates are falling and the Federal Reserve is adding liquidity. This is the most supportive environment for growth stocks."
         emphasis = (
-            "Growth can receive more valuation support, but verify earnings quality and valuation.",
-            "Check credit conditions before assuming refinancing will remain easy.",
+            "Give more weight to companies growing revenue and earnings quickly.",
+            "Still check cash flow and debt; easier money does not fix a weak business.",
         )
         company_fit = (
-            "Profitable growth companies with durable demand; higher-growth businesses can receive more "
-            "weight when valuation and financing risk remain supportable."
+            "Faster-growing companies, preferably with improving profits and manageable debt."
         )
     elif rate > 0 and balance < 0:
         regime = "Tightening and contracting liquidity"
-        summary = "Policy rates are rising while the Federal Reserve balance sheet is contracting."
+        summary = "Interest rates are rising and the Federal Reserve is removing liquidity. Expensive or debt-dependent growth stocks face more pressure."
         emphasis = (
-            "Prioritize profitability, durable cash flow, and balance-sheet resilience.",
-            "Apply more valuation discipline to highly leveraged or long-duration growth companies.",
+            "Give more weight to current profits, cash flow, low debt, and a reasonable stock price.",
+            "Give less weight to companies that need cheap financing to survive or justify their valuation.",
         )
         company_fit = (
-            "Profitable, cash-generative companies with low refinancing risk, resilient balance sheets, "
-            "and reasonable forward valuations."
+            "Profitable, cash-generating, lower-debt companies trading at reasonable valuations."
         )
     else:
         regime = "Mixed liquidity regime"
-        summary = "The Federal Reserve inputs are moving in different directions or are broadly stable."
+        summary = "Rates and Federal Reserve liquidity do not point the same way. Neither aggressive growth nor pure defense has a clear macro advantage."
         emphasis = (
-            "Favor businesses that combine growth with profitability instead of relying on liquidity alone.",
-            "Treat leverage and refinancing needs as company-specific risks.",
+            "Look for companies that have both forward growth and current profitability.",
+            "Avoid high debt and do not pay a high valuation unless expected growth supports it.",
         )
         company_fit = (
-            "Profitable growth companies with manageable leverage and valuations supported by forward "
-            "revenue and earnings expectations."
+            "Profitable growth companies with manageable debt and valuations supported by expected earnings."
         )
 
     stress = [states.get("high_yield_spread"), states.get("vix")]
     if any(value == 1 for value in stress):
-        emphasis += ("At least one market-stress measure is rising; inspect credit and volatility separately.",)
+        emphasis += ("Market stress is rising. Be stricter about debt and expect larger price swings.",)
     if states.get("cpi") == 1:
-        emphasis += ("Inflation is accelerating, which may constrain policy easing.",)
+        emphasis += ("Inflation is speeding up, which can keep interest rates higher for longer.",)
     percentiles = {
         indicator.key: indicator.level_percentile
         for indicator in indicators
@@ -532,15 +598,15 @@ def _interpret(
     )
     if elevated_stress and not any(value == 1 for value in stress):
         emphasis += (
-            "At least one market-stress level remains elevated despite not rising; do not treat the trend alone as an all-clear.",
+            "Market stress is still high versus recent history even though it is not getting worse.",
         )
     if percentiles.get("cpi", 0) >= 75 and states.get("cpi") != 1:
         emphasis += (
-            "Inflation remains elevated relative to its five-year history even though it is not accelerating.",
+            "Inflation is still high versus the last five years even though it is not speeding up.",
         )
     if percentiles.get("fed_funds", 0) >= 75 and states.get("fed_funds") <= 0:
         emphasis += (
-            "The policy-rate level remains elevated relative to its five-year history even though it is stable or falling.",
+            "Interest rates are still high versus the last five years, even if they are stable or falling.",
         )
-        company_fit += " Keep refinancing needs and balance-sheet resilience prominent."
+        company_fit += " Continue checking debt and refinancing needs."
     return regime, summary, emphasis, company_fit

@@ -48,7 +48,9 @@ def test_market_regime_classifies_easing_and_expanding_liquidity() -> None:
     assert all(indicator.status == "available" for indicator in snapshot.indicators)
     assert snapshot.indicators[1].latest == "$7.14T"
     assert snapshot.indicators[0].level_context != "Not assessed"
-    assert snapshot.company_fit.startswith("Profitable growth companies")
+    assert snapshot.company_fit.startswith("Faster-growing companies")
+    assert "over 3 months" in snapshot.indicators[0].trend
+    assert "growth-stock valuations" in snapshot.indicators[0].meaning
     assert "Stock profile to prioritize" in snapshot.to_text()
     assert "not a buy or sell signal" in snapshot.to_text()
 
@@ -69,8 +71,8 @@ def test_market_regime_adds_inflation_and_stress_cautions() -> None:
     )
 
     assert snapshot.regime == "Tightening and contracting liquidity"
-    assert any("market-stress" in item for item in snapshot.emphasis)
-    assert any("Inflation is accelerating" in item for item in snapshot.emphasis)
+    assert any("Market stress is rising" in item for item in snapshot.emphasis)
+    assert any("Inflation is speeding up" in item for item in snapshot.emphasis)
 
 
 def test_market_regime_keeps_partial_data_failure_visible() -> None:
@@ -119,8 +121,9 @@ def test_stable_trend_does_not_hide_an_elevated_rate_level() -> None:
     rate = next(item for item in snapshot.indicators if item.key == "fed_funds")
     assert rate.trend.startswith("Stable")
     assert rate.level_context.startswith("Extreme rate")
-    assert any("rate level remains elevated" in item for item in snapshot.emphasis)
+    assert any("rates are still high" in item.casefold() for item in snapshot.emphasis)
     assert "refinancing needs" in snapshot.company_fit
+    assert "Rates remain high" in rate.meaning
 
 
 def test_macro_regimes_produce_explicit_research_weights() -> None:
@@ -157,3 +160,10 @@ def test_research_weights_reject_incomplete_or_unbalanced_values() -> None:
             ResearchWeights(0.25, 0.25, 0.25, 0.25),
             source="generated",
         )
+
+
+def test_policy_focus_summary_explains_automatic_use() -> None:
+    summary = macro_default_policy("Mixed liquidity regime").focus_summary()
+
+    assert summary.startswith("Applied automatically")
+    assert "Growth and Profitability" in summary
