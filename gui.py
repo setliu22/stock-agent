@@ -16,6 +16,7 @@ from portfolio.config import save_supabase_settings
 from portfolio.controller import StockAgentController
 from portfolio.cloud_portfolios import AuthResult, friendly_auth_error
 from portfolio.market_regime import (
+    MACRO_REFERENCE_ROWS,
     MacroResearchPolicy,
     MarketRegimeSnapshot,
 )
@@ -534,6 +535,11 @@ class StockAgentApp(tk.Tk):
             command=self.refresh_market_regime,
         )
         self.market_refresh_button.pack(side="right")
+        ttk.Button(
+            header,
+            text="How signals work",
+            command=self.show_macro_reference,
+        ).pack(side="right", padx=(0, 8))
 
         overview = ttk.Frame(self.market_tab, style="Panel.TFrame", padding=(20, 15))
         overview.pack(fill="x", pady=(0, 14))
@@ -599,7 +605,7 @@ class StockAgentApp(tk.Tk):
             command=self.prepare_market_research_prompt,
         ).pack(side="right", padx=(12, 0))
 
-        columns = ("indicator", "latest", "trend", "meaning", "as_of")
+        columns = ("indicator", "latest", "trend", "favored", "as_of")
         self.market_tree = ttk.Treeview(
             self.market_tab,
             columns=columns,
@@ -611,14 +617,14 @@ class StockAgentApp(tk.Tk):
             "indicator": "Indicator",
             "latest": "Now",
             "trend": "Change",
-            "meaning": "Why it matters",
+            "favored": "Favored company type",
             "as_of": "Data date",
         }
         widths = {
             "indicator": 185,
             "latest": 105,
-            "trend": 205,
-            "meaning": 430,
+            "trend": 200,
+            "favored": 310,
             "as_of": 105,
         }
         for column in columns:
@@ -626,7 +632,7 @@ class StockAgentApp(tk.Tk):
             self.market_tree.column(
                 column,
                 width=widths[column],
-                anchor="w" if column in {"indicator", "trend", "meaning"} else "center",
+                anchor="w" if column in {"indicator", "trend", "favored"} else "center",
             )
         self.market_tree.tag_configure("unavailable", foreground=self.MUTED)
         self.market_tree.pack(fill="x", pady=(0, 7))
@@ -634,9 +640,8 @@ class StockAgentApp(tk.Tk):
         ttk.Label(
             self.market_tab,
             text=(
-                "Use Change to see what is moving, then Why it matters to see which company traits that "
-                "movement favors. The app combines all rows before setting research priorities; no single "
-                "indicator is a buy or sell signal."
+                "Each row translates the current signal into the same two company profiles. The app combines "
+                "all five rows before setting research priorities; no single indicator is a buy or sell signal."
             ),
             style="Muted.TLabel",
             wraplength=1060,
@@ -1236,6 +1241,89 @@ class StockAgentApp(tk.Tk):
             return
         self._apply_chat_draft(prompt)
 
+    def show_macro_reference(self) -> None:
+        window = tk.Toplevel(self)
+        window.title("How macro signals affect stocks")
+        window.geometry("1160x690")
+        window.minsize(960, 620)
+        window.transient(self)
+
+        content = ttk.Frame(window, padding=20)
+        content.pack(fill="both", expand=True)
+        ttk.Label(content, text="Core ideas to remember", style="Title.TLabel").pack(anchor="w")
+        tk.Label(
+            content,
+            text=(
+                "Valuation effect: A higher discount rate lowers the present value of future cash flows. "
+                "When Treasury bonds already offer a high safe return, investors require more return from "
+                "risky stocks. This disproportionately hurts high-growth companies whose expected cash flows "
+                "are further in the future."
+            ),
+            background=self.BG,
+            foreground=self.TEXT,
+            font=(self.ui_font, 10),
+            justify="left",
+            anchor="w",
+            wraplength=1100,
+        ).pack(fill="x", pady=(10, 0))
+        tk.Label(
+            content,
+            text=(
+                "Borrowing effect: Higher market rates make bank loans and bond financing more expensive. "
+                "This disproportionately hurts high-leverage companies that depend on borrowing or refinancing."
+            ),
+            background=self.BG,
+            foreground=self.TEXT,
+            font=(self.ui_font, 10),
+            justify="left",
+            anchor="w",
+            wraplength=1100,
+        ).pack(fill="x", pady=(8, 16))
+
+        table = ttk.Frame(content, style="Panel.TFrame", padding=1)
+        table.pack(fill="both", expand=True)
+        column_widths = (170, 130, 235, 520)
+        for column, width in enumerate(column_widths):
+            table.columnconfigure(column, weight=1 if column == 3 else 0, minsize=width)
+        for column, heading in enumerate(
+            ("Metric", "Unfavorable signal", "What to favor", "Mechanical reason")
+        ):
+            tk.Label(
+                table,
+                text=heading,
+                background=self.SURFACE_ALT,
+                foreground=self.MUTED,
+                font=(self.ui_font, 9, "bold"),
+                anchor="w",
+                padx=10,
+                pady=9,
+            ).grid(row=0, column=column, sticky="nsew", padx=(0, 1), pady=(0, 1))
+        for row_index, row in enumerate(MACRO_REFERENCE_ROWS, start=1):
+            for column, value in enumerate(row):
+                tk.Label(
+                    table,
+                    text=value,
+                    background=self.SURFACE,
+                    foreground=self.TEXT if column != 1 else self.NEGATIVE,
+                    font=(self.ui_font, 9, "bold" if column < 3 else "normal"),
+                    justify="left",
+                    anchor="nw",
+                    wraplength=column_widths[column] - 20,
+                    padx=10,
+                    pady=9,
+                ).grid(row=row_index, column=column, sticky="nsew", padx=(0, 1), pady=(0, 1))
+
+        ttk.Label(
+            content,
+            text=(
+                "Favorable signals are the opposite: low rates, expanding Fed assets, low high-yield "
+                "spreads, low VIX, and low or falling inflation."
+            ),
+            style="Muted.TLabel",
+            wraplength=1080,
+        ).pack(fill="x", anchor="w", pady=(12, 0))
+        window.bind("<Escape>", lambda _event: window.destroy())
+
     def _render_market_regime(self, snapshot: MarketRegimeSnapshot) -> None:
         self.market_regime_title.set(snapshot.regime)
         self.market_regime_summary.set(snapshot.summary)
@@ -1253,7 +1341,7 @@ class StockAgentApp(tk.Tk):
                     indicator.label,
                     indicator.latest,
                     indicator.trend,
-                    indicator.meaning,
+                    indicator.favored_company_type,
                     self._display_date(indicator.as_of),
                 ),
             )

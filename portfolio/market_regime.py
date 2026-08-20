@@ -18,6 +18,42 @@ FRED_SERIES = {
     "high_yield_spread": "BAMLH0A0HYM2",
 }
 
+DEFENSIVE_COMPANY_TYPE = "Safer, profitable, low-leverage"
+AGGRESSIVE_COMPANY_TYPE = "Riskier, unprofitable, high-leverage"
+
+MACRO_REFERENCE_ROWS = (
+    (
+        "Fed funds rate",
+        "High vs. 5Y history",
+        DEFENSIVE_COMPANY_TYPE,
+        "High Fed rates push borrowing rates and broader yields higher. That raises discount rates, hurts high-growth valuations, and makes new debt and refinancing more expensive.",
+    ),
+    (
+        "Fed assets / balance sheet",
+        "Falling",
+        DEFENSIVE_COMPANY_TYPE,
+        "A shrinking balance sheet reduces downward pressure on Treasury yields. Higher yields raise discount rates and the interest companies must pay to borrow or refinance.",
+    ),
+    (
+        "High-yield credit spread",
+        "High vs. 5Y history",
+        DEFENSIVE_COMPANY_TYPE,
+        "Investors demand more interest above Treasuries to lend to risky companies. This directly raises borrowing and refinancing costs, especially for highly leveraged companies.",
+    ),
+    (
+        "VIX",
+        "High vs. 5Y history",
+        DEFENSIVE_COMPANY_TYPE,
+        "High expected volatility usually increases the return investors require from risky stocks. Higher required returns reduce valuations, especially for speculative and high-growth companies.",
+    ),
+    (
+        "CPI inflation",
+        "High (3%+) / rising",
+        DEFENSIVE_COMPANY_TYPE,
+        "High inflation gives the Fed less room to cut rates. Rates may stay higher, pressuring growth valuations and keeping loans and refinancing more expensive.",
+    ),
+)
+
 @dataclass(frozen=True)
 class MacroResearchPolicy:
     regime: str
@@ -83,6 +119,7 @@ class RegimeIndicator:
     level_context: str = "Not assessed"
     level_percentile: int | None = None
     status: str = "available"
+    favored_company_type: str = "Cannot assess"
 
 
 @dataclass(frozen=True)
@@ -110,7 +147,7 @@ class MarketRegimeSnapshot:
         lines.extend(f"- {item}" for item in self.emphasis)
         lines.extend(("", "Indicators:"))
         lines.extend(
-            f"- {item.label}: {item.latest}; {item.trend}; {item.meaning} "
+            f"- {item.label}: {item.latest}; {item.trend}; favors {item.favored_company_type}; {item.meaning} "
             f"(as of {item.as_of}, {item.source})"
             for item in self.indicators
         )
@@ -285,6 +322,7 @@ def _unavailable(key: str, label: str, source: str, states: dict[str, int | None
         meaning="No conclusion because current data is unavailable.",
         level_context="Unavailable",
         status="unavailable",
+        favored_company_type="Cannot assess",
     )
 
 
@@ -320,6 +358,9 @@ def _change_indicator(
         meaning=_indicator_meaning(key, direction, level_percentile),
         level_context=level_context,
         level_percentile=level_percentile,
+        favored_company_type=_favored_company_type(
+            key, latest.value, direction, level_percentile
+        ),
     )
 
 
@@ -351,6 +392,7 @@ def _percent_change_indicator(
         source=source,
         meaning=_indicator_meaning(key, direction),
         level_context="Absolute size contextual; use 91-day trend.",
+        favored_company_type=_favored_company_type(key, latest.value, direction),
     )
 
 
@@ -390,6 +432,9 @@ def _cpi_indicator(
         meaning=_indicator_meaning(key, direction, level_percentile),
         level_context=level_context,
         level_percentile=level_percentile,
+        favored_company_type=_favored_company_type(
+            key, latest_yoy, direction, level_percentile
+        ),
     )
 
 
@@ -439,6 +484,24 @@ def _indicator_meaning(
     if key == "cpi" and level_percentile is not None and level_percentile >= 75:
         message += " Inflation remains high versus five-year history."
     return message
+
+
+def _favored_company_type(
+    key: str,
+    value: float,
+    direction: int,
+    level_percentile: int | None = None,
+) -> str:
+    """Translate each macro observation into one of two visible company profiles."""
+    elevated = level_percentile is not None and level_percentile >= 75
+    unfavorable = {
+        "fed_funds": elevated,
+        "fed_balance_sheet": direction < 0,
+        "high_yield_spread": elevated,
+        "vix": elevated,
+        "cpi": value >= 3.0 or direction > 0,
+    }.get(key, False)
+    return DEFENSIVE_COMPANY_TYPE if unfavorable else AGGRESSIVE_COMPANY_TYPE
 
 
 def _historical_level_context(

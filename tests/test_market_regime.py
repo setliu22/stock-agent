@@ -3,7 +3,10 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 from portfolio.market_regime import (
+    AGGRESSIVE_COMPANY_TYPE,
+    DEFENSIVE_COMPANY_TYPE,
     FRED_SERIES,
+    MACRO_REFERENCE_ROWS,
     Observation,
     build_market_regime,
     macro_default_policy,
@@ -47,6 +50,9 @@ def test_market_regime_classifies_easing_and_expanding_liquidity() -> None:
     assert snapshot.company_fit.startswith("Faster-growing companies")
     assert "over 3 months" in snapshot.indicators[0].trend
     assert "growth-stock valuations" in snapshot.indicators[0].meaning
+    assert len(snapshot.indicators) == 5
+    assert snapshot.indicators[0].favored_company_type == AGGRESSIVE_COMPANY_TYPE
+    assert snapshot.indicators[2].favored_company_type == DEFENSIVE_COMPANY_TYPE
     assert "Stock profile to prioritize" in snapshot.to_text()
     assert "not a buy or sell signal" in snapshot.to_text()
 
@@ -67,6 +73,10 @@ def test_market_regime_adds_inflation_and_stress_cautions() -> None:
     )
 
     assert snapshot.regime == "Tightening and contracting liquidity"
+    assert all(
+        indicator.favored_company_type == DEFENSIVE_COMPANY_TYPE
+        for indicator in snapshot.indicators
+    )
     assert any("Market stress is rising" in item for item in snapshot.emphasis)
     assert any("Inflation is speeding up" in item for item in snapshot.emphasis)
 
@@ -80,6 +90,7 @@ def test_market_regime_keeps_partial_data_failure_visible() -> None:
     assert snapshot.regime == "Regime incomplete"
     assert all(indicator.status == "unavailable" for indicator in snapshot.indicators)
     assert all(indicator.latest == "Unavailable" for indicator in snapshot.indicators)
+    assert all(indicator.favored_company_type == "Cannot assess" for indicator in snapshot.indicators)
     assert "FINRA margin debt" in snapshot.missing_evidence[0]
 
 
@@ -131,3 +142,15 @@ def test_macro_regimes_produce_explicit_plain_language_rules() -> None:
     assert any("profitability and financial resilience" in rule for rule in tightening.rules)
     assert any("growth and profitability" in rule for rule in mixed.rules)
     assert "%" not in easing.instruction_text()
+
+
+def test_macro_reference_covers_the_five_live_metrics() -> None:
+    assert len(MACRO_REFERENCE_ROWS) == 5
+    assert {row[0] for row in MACRO_REFERENCE_ROWS} == {
+        "Fed funds rate",
+        "Fed assets / balance sheet",
+        "High-yield credit spread",
+        "VIX",
+        "CPI inflation",
+    }
+    assert {row[2] for row in MACRO_REFERENCE_ROWS} == {DEFENSIVE_COMPANY_TYPE}
