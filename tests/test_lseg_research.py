@@ -189,10 +189,10 @@ def test_candidate_screen_ranks_quality_and_value() -> None:
     )
     output = apply_screen_filters(frame, filters)
     assert output.iloc[0]["TR.CommonName"] == "B"
-    assert output.iloc[0]["Research Score"] > output.iloc[1]["Research Score"]
+    assert output.iloc[0]["Value Discount Count"] > output.iloc[1]["Value Discount Count"]
 
 
-def test_macro_weights_change_candidate_ranking_transparently() -> None:
+def test_macro_regime_is_reported_without_changing_valuation_first_ranking() -> None:
     import portfolio.lseg_research as module
 
     frame = pd.DataFrame(
@@ -217,23 +217,18 @@ def test_macro_weights_change_candidate_ranking_transparently() -> None:
             "TR.F.CashCashEquiv": [5, 15, 30],
         }
     )
-    growth = module._rank_candidate_screen(
-        frame,
-        {"growth": 0.85, "profitability": 0.05, "valuation": 0.05, "balance_sheet": 0.05},
-    )
-    defensive = module._rank_candidate_screen(
-        frame,
-        {"growth": 0.05, "profitability": 0.35, "valuation": 0.30, "balance_sheet": 0.30},
-    )
+    easing = module._rank_candidate_screen(frame, "Easing and expanding liquidity")
+    tightening = module._rank_candidate_screen(frame, "Tightening and contracting liquidity")
 
-    assert growth.iloc[0]["TR.CommonName"] == "Growth"
-    assert defensive.iloc[0]["TR.CommonName"] == "Defensive"
-    assert {"Growth Score", "Profitability Score", "Valuation Score", "Balance Sheet Score"}.issubset(
-        growth.columns
+    assert easing.iloc[0]["TR.CommonName"] == "Defensive"
+    assert tightening.iloc[0]["TR.CommonName"] == "Defensive"
+    assert tightening.iloc[0]["Macro Fit"] == "Supportive"
+    assert {"Growth Percentile", "Profitability Percentile", "Valuation Percentile", "Financial Resilience Percentile"}.issubset(
+        easing.columns
     )
 
 
-def test_debt_free_company_keeps_balance_sheet_coverage() -> None:
+def test_debt_free_company_keeps_financial_resilience_coverage() -> None:
     import portfolio.lseg_research as module
 
     frame = pd.DataFrame(
@@ -250,8 +245,8 @@ def test_debt_free_company_keeps_balance_sheet_coverage() -> None:
 
     cash = ranked.loc[ranked["Instrument"] == "CASH.N"].iloc[0]
     debt = ranked.loc[ranked["Instrument"] == "DEBT.N"].iloc[0]
-    assert cash["Balance Sheet Score"] > debt["Balance Sheet Score"]
-    assert "balance_sheet" in cash["Evidence Families"]
+    assert cash["Financial Resilience Percentile"] > debt["Financial Resilience Percentile"]
+    assert "financial_resilience" in cash["Evidence Families"]
 
 
 def test_closed_lseg_session_raises_clear_error(tmp_path) -> None:

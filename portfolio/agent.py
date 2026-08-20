@@ -450,8 +450,6 @@ class StockAgent:
                 raise ResearchCancelled("Research stopped by user.")
             plan = build_research_plan(query, self.settings, prior_plan=prior_plan)
             plan.macro_regime = self._research_policy.regime
-            plan.research_weights = self._research_policy.weights.as_dict()
-            plan.research_weight_source = self._research_policy.source
             if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
                 raise ResearchCancelled("Research stopped by user.")
             progress(4, "Research plan ready", f"Workflow: {plan.workflow or plan.mode}.")

@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import date
 import json
 import math
+import re
 from typing import Any, Callable, Iterable
 
 import pandas as pd
@@ -15,7 +16,13 @@ from .models import Holding
 
 
 ProgressCallback = Callable[[int | None, str, str], None]
-SECTION_ORDER = ("Company thesis", "Valuation", "Macro fit", "Event risk")
+SECTION_ORDER = (
+    "Recent developments",
+    "Company fundamentals",
+    "Valuation",
+    "Macro fit",
+    "Event risk",
+)
 
 
 @dataclass(frozen=True)
@@ -24,6 +31,16 @@ class RiskSignal:
     label: str
     detail: str
     points: int
+
+
+@dataclass(frozen=True)
+class MaterialDevelopment:
+    evidence_ids: tuple[str, ...]
+    evidence: tuple[str, ...]
+    materiality: str
+    price_relationship: str
+    evaluation_effect: str
+    interpretation: str
 
 
 @dataclass
@@ -38,6 +55,7 @@ class HoldingPositionRisk:
     signals: list[RiskSignal] = field(default_factory=list)
     conditions: list[str] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)
+    developments: list[MaterialDevelopment] = field(default_factory=list)
     upcoming_event: str | None = None
     event_date: str | None = None
     days_to_event: int | None = None
@@ -73,7 +91,7 @@ class PortfolioPositionRiskReview:
         ]
         for item in self.holdings:
             lines.append(
-                f"\n{item.ticker}: {item.rating} ({item.score}/10, confidence {item.confidence})"
+                f"\n{item.ticker}: {item.rating} (quantitative score {item.score}/10, confidence {item.confidence})"
             )
             for section in SECTION_ORDER:
                 details = item.sections.get(section) or ["Insufficient evidence."]
@@ -106,7 +124,7 @@ def build_portfolio_review_plan(tickers: Iterable[str]) -> Any:
         raise ValueError("A portfolio review batch cannot contain more than eight holdings.")
     return ResearchPlan(
         mode="compare" if len(clean) > 1 else "company",
-        workflow="company_compare" if len(clean) > 1 else "company_deep_dive",
+        workflow="position_review",
         entities=clean,
         topics=[
             "fundamentals",
@@ -159,7 +177,7 @@ def score_portfolio_position_risk(
         ric = resolved.ric
         signals: list[RiskSignal] = []
         sections: dict[str, list[str]] = {section: [] for section in SECTION_ORDER}
-        missing: list[str] = ["stored original investment thesis"]
+        missing: list[str] = []
         conditions: list[str] = []
 
         growth = _growth_metrics(result, ric)
@@ -167,7 +185,7 @@ def score_portfolio_position_risk(
         leverage = _leverage_metrics(result, ric)
         valuation = _valuation_metrics(result, ric)
 
-        _score_company_thesis(
+        _score_company_fundamentals(
             result, ric, growth, profitability, leverage, signals, sections, missing
         )
         _score_valuation(result, ric, growth, valuation, signals, sections, missing)
@@ -191,7 +209,13 @@ def score_portfolio_position_risk(
             missing,
         )
 
-        section_caps = {"Company thesis": 4, "Valuation": 2, "Macro fit": 2, "Event risk": 2}
+        section_caps = {
+            "Recent developments": 0,
+            "Company fundamentals": 4,
+            "Valuation": 2,
+            "Macro fit": 2,
+            "Event risk": 2,
+        }
         score = min(
             10,
             sum(
@@ -239,7 +263,7 @@ def run_portfolio_position_risk_review(
     progress_callback: ProgressCallback | None = None,
     cancel_event: Any | None = None,
 ) -> PortfolioPositionRiskReview:
-    """Retrieve consistent dossiers, score locally, then optionally summarize."""
+    """Retrieve consistent dossiers, score locally, then interpret bounded news evidence."""
     from .lseg_research import run_research
 
     holdings = list(holdings)
@@ -261,8 +285,6 @@ def run_portfolio_position_risk_review(
         plan = build_portfolio_review_plan(item.ticker for item in batch)
         policy = macro_snapshot.research_policy
         plan.macro_regime = policy.regime
-        plan.research_weights = policy.weights.as_dict()
-        plan.research_weight_source = policy.source
         if progress_callback:
             progress_callback(
                 min(90, 5 + int(start / max(len(holdings), 1) * 85)),
@@ -275,20 +297,355 @@ def run_portfolio_position_risk_review(
             progress_callback=progress_callback,
             cancel_event=cancel_event,
         )
-        reviews.append(score_portfolio_position_risk(batch, result, macro_snapshot))
+        batch_review = score_portfolio_position_risk(batch, result, macro_snapshot)
+        _augment_review_with_news(batch_review, result, settings)
+        reviews.append(batch_review)
     review = PortfolioPositionRiskReview(
         holdings=[item for batch_review in reviews for item in batch_review.holdings],
         generated_at=pd.Timestamp.now(tz="UTC").isoformat(),
         macro_regime=macro_snapshot.regime,
         horizon_days=90,
     )
-    review.llm_summary = _llm_summary(review, settings)
+    summaries = [item.llm_summary for item in reviews if item.llm_summary]
+    review.llm_summary = "\n".join(summaries) or None
     if progress_callback:
-        progress_callback(100, "Position review complete", "Thesis, valuation, macro, and event evidence was scored separately.")
+        progress_callback(
+            100,
+            "Position review complete",
+            "Fundamentals, valuation, macro, events, and relevant company news were reviewed separately.",
+        )
     return review
 
 
-def _score_company_thesis(
+def _augment_review_with_news(
+    review: PortfolioPositionRiskReview,
+    result: Any,
+    settings: Any,
+) -> None:
+    """Select material developments from a bounded, entity-validated news packet."""
+    packet, evidence_by_ticker = _news_evidence_packet(result)
+    holdings = {item.ticker: item for item in review.holdings}
+    for ticker, item in holdings.items():
+        if ticker not in evidence_by_ticker:
+            item.sections["Recent developments"].append(
+                "No company-specific Reuters/LSEG news evidence was available."
+            )
+            item.missing.append("recent company news or story evidence")
+
+    if not packet:
+        return
+    if not getattr(settings, "groq_api_key", None):
+        for ticker in evidence_by_ticker:
+            item = holdings.get(ticker)
+            if item is None:
+                continue
+            item.sections["Recent developments"].append(
+                "Company-specific news was retrieved, but materiality was not interpreted because Groq is unavailable."
+            )
+            item.missing.append("semantic news materiality review")
+        return
+
+    schema = {
+        "title": "PositionNewsReview",
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "developments": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "ticker": {"type": "string"},
+                        "evidence_ids": {"type": "array", "items": {"type": "string"}},
+                        "materiality": {
+                            "type": "string",
+                            "enum": ["material", "context", "not_material", "unclear"],
+                        },
+                        "price_relationship": {
+                            "type": "string",
+                            "enum": [
+                                "likely_primary_driver",
+                                "likely_contributor",
+                                "not_price_related",
+                                "unclear",
+                            ],
+                        },
+                        "evaluation_effect": {
+                            "type": "string",
+                            "enum": [
+                                "standard_metrics_may_be_secondary",
+                                "changes_company_outlook",
+                                "event_watch",
+                                "context_only",
+                                "none",
+                                "unclear",
+                            ],
+                        },
+                        "interpretation": {"type": "string"},
+                    },
+                    "required": [
+                        "ticker",
+                        "evidence_ids",
+                        "materiality",
+                        "price_relationship",
+                        "evaluation_effect",
+                        "interpretation",
+                    ],
+                },
+            },
+            "portfolio_priorities": {"type": "string"},
+        },
+        "required": ["developments", "portfolio_priorities"],
+    }
+    try:
+        from langchain_groq import ChatGroq
+
+        model = ChatGroq(
+            model=settings.groq_model,
+            temperature=0,
+            max_retries=1,
+            max_tokens=1400,
+            api_key=settings.groq_api_key,
+        ).with_structured_output(schema, method="json_mode", include_raw=False)
+        payload = model.invoke(
+            [
+                (
+                    "system",
+                    "Review only the supplied company-specific Reuters/LSEG evidence. Select a development "
+                    "only when it materially explains recent price behavior or changes how the quantitative "
+                    "position review should be interpreted. Return only supplied evidence IDs and never use "
+                    "outside knowledge. Do not infer price causality when the evidence does not support it; "
+                    "use unclear instead. A material transaction or company event can make ordinary valuation "
+                    "or analyst-target comparisons secondary, but it must be supported by selected evidence. "
+                    "Do not change the deterministic rating, issue trade instructions, or invent facts. "
+                    "Keep each interpretation to two short sentences and return the exact schema.",
+                ),
+                (
+                    "human",
+                    json.dumps(
+                        {
+                            "quantitative_review": _compact_review_payload(review, result),
+                            "news_evidence": packet,
+                        },
+                        default=str,
+                        allow_nan=False,
+                    ),
+                ),
+            ]
+        )
+    except Exception:
+        for ticker in evidence_by_ticker:
+            item = holdings.get(ticker)
+            if item is None:
+                continue
+            item.sections["Recent developments"].append(
+                "Company-specific news was retrieved, but the semantic materiality review did not complete."
+            )
+            item.missing.append("semantic news materiality review")
+        return
+
+    selected_tickers: set[str] = set()
+    for candidate in payload.get("developments", []) if isinstance(payload, dict) else []:
+        if not isinstance(candidate, dict):
+            continue
+        ticker = str(candidate.get("ticker", "")).strip().upper()
+        if ticker in selected_tickers or ticker not in holdings:
+            continue
+        lookup = evidence_by_ticker.get(ticker, {})
+        evidence_ids = tuple(
+            dict.fromkeys(
+                evidence_id
+                for value in candidate.get("evidence_ids", [])
+                if (evidence_id := str(value).strip()) in lookup
+            )
+        )[:3]
+        materiality = _enum_value(
+            candidate.get("materiality"),
+            {"material", "context", "not_material", "unclear"},
+        )
+        if not evidence_ids or materiality == "not_material":
+            continue
+        development = MaterialDevelopment(
+            evidence_ids=evidence_ids,
+            evidence=tuple(lookup[evidence_id] for evidence_id in evidence_ids),
+            materiality=materiality,
+            price_relationship=_enum_value(
+                candidate.get("price_relationship"),
+                {
+                    "likely_primary_driver",
+                    "likely_contributor",
+                    "not_price_related",
+                    "unclear",
+                },
+            ),
+            evaluation_effect=_enum_value(
+                candidate.get("evaluation_effect"),
+                {
+                    "standard_metrics_may_be_secondary",
+                    "changes_company_outlook",
+                    "event_watch",
+                    "context_only",
+                    "none",
+                    "unclear",
+                },
+            ),
+            interpretation=_clean_interpretation(candidate.get("interpretation")),
+        )
+        item = holdings[ticker]
+        item.developments.append(development)
+        item.sections["Recent developments"].extend(
+            [
+                "Reuters/LSEG evidence: " + " | ".join(development.evidence),
+                "Evidence interpretation "
+                f"({_display_enum(development.price_relationship)}): "
+                + (development.interpretation or "Material effect is unclear."),
+            ]
+        )
+        if development.evaluation_effect == "standard_metrics_may_be_secondary":
+            item.sections["Recent developments"].append(
+                "This development may make ordinary valuation and analyst-target comparisons secondary."
+            )
+        item.conditions.append("the terms, status, or expected impact of the material development changes")
+        selected_tickers.add(ticker)
+
+    for ticker in evidence_by_ticker:
+        item = holdings.get(ticker)
+        if item is not None and not item.sections["Recent developments"]:
+            item.sections["Recent developments"].append(
+                "No retrieved company news was identified as materially changing this review."
+            )
+    if isinstance(payload, dict):
+        priorities = _clean_interpretation(payload.get("portfolio_priorities"), limit=600)
+        review.llm_summary = priorities or None
+
+
+def _news_evidence_packet(
+    result: Any,
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, str]]]:
+    packet: list[dict[str, Any]] = []
+    evidence_by_ticker: dict[str, dict[str, str]] = {}
+    resolved_by_ric = {item.ric: item for item in result.resolved}
+    for ric, resolved in resolved_by_ric.items():
+        frame = result.tables.get(f"news:{ric}")
+        if not isinstance(frame, pd.DataFrame) or frame.empty:
+            continue
+        text_column = _column_matching(frame, "companyrelevanttext")
+        if text_column is None:
+            continue
+        story_column = _column_matching(frame, "storyid", "storyidentifier")
+        date_column = _date_column(frame)
+        stories = result.tables.get(f"stories:{ric}", pd.DataFrame())
+        story_excerpts: dict[str, str] = {}
+        if isinstance(stories, pd.DataFrame) and not stories.empty:
+            for _, row in stories.iterrows():
+                story_id = str(row.get("story_id", "")).strip()
+                excerpt = _clean_evidence(row.get("company_excerpt"), limit=600)
+                if story_id and excerpt:
+                    story_excerpts[story_id] = excerpt
+
+        ticker = str(resolved.ticker).upper()
+        lookup: dict[str, str] = {}
+        company_items: list[dict[str, str]] = []
+        for _, row in frame.head(5).iterrows():
+            headline = _clean_evidence(row.get(text_column), limit=350)
+            if not headline:
+                continue
+            story_id = str(row.get(story_column, "")).strip() if story_column else ""
+            excerpt = story_excerpts.get(story_id, "")
+            evidence_id = f"{ticker}-N{len(company_items) + 1}"
+            display = headline
+            if excerpt and excerpt.casefold() not in headline.casefold():
+                display += " Story: " + excerpt
+            published = _clean_evidence(row.get(date_column), limit=40) if date_column else ""
+            if published:
+                display = f"{published}: {display}"
+            display = _clean_evidence(display, limit=600)
+            lookup[evidence_id] = display
+            company_items.append(
+                {"id": evidence_id, "published": published, "text": display}
+            )
+        if company_items:
+            evidence_by_ticker[ticker] = lookup
+            packet.append(
+                {
+                    "ticker": ticker,
+                    "company": resolved.company_name,
+                    "items": company_items,
+                }
+            )
+    return packet, evidence_by_ticker
+
+
+def _compact_review_payload(
+    review: PortfolioPositionRiskReview,
+    result: Any,
+) -> dict[str, Any]:
+    resolved = {str(item.ticker).upper(): item.ric for item in result.resolved}
+    holdings = []
+    for item in review.holdings:
+        ric = resolved.get(item.ticker)
+        holdings.append(
+            {
+                "ticker": item.ticker,
+                "rating": item.rating,
+                "quantitative_score": item.score,
+                "one_month_return": _metric(result, f"{ric}:return_1m") if ric else None,
+                "risk_signals": [
+                    {
+                        "category": signal.category,
+                        "label": signal.label,
+                        "detail": _clean_interpretation(signal.detail, limit=180),
+                    }
+                    for signal in item.signals[:6]
+                ],
+                "valuation_context": _clean_interpretation(
+                    " ".join(item.sections.get("Valuation", [])), limit=400
+                ),
+            }
+        )
+    return {"macro_regime": review.macro_regime, "holdings": holdings}
+
+
+def _column_matching(frame: pd.DataFrame, *names: str) -> Any | None:
+    wanted = set(names)
+    for column in frame.columns:
+        normalized = re.sub(r"[^a-z0-9]", "", str(column).casefold())
+        if normalized in wanted:
+            return column
+    return None
+
+
+def _date_column(frame: pd.DataFrame) -> Any | None:
+    for column in frame.columns:
+        normalized = re.sub(r"[^a-z0-9]", "", str(column).casefold())
+        if any(token in normalized for token in ("versioncreated", "firstcreated", "timestamp", "date")):
+            return column
+    return None
+
+
+def _clean_evidence(value: Any, *, limit: int) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    text = re.sub(r"\s+", " ", str(value)).strip()
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def _clean_interpretation(value: Any, *, limit: int = 360) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def _display_enum(value: str) -> str:
+    return value.replace("_", " ")
+
+
+def _enum_value(value: Any, allowed: set[str]) -> str:
+    candidate = str(value or "unclear")
+    return candidate if candidate in allowed else "unclear"
+
+
+def _score_company_fundamentals(
     result: Any,
     ric: str,
     growth: dict[str, float | None],
@@ -302,13 +659,13 @@ def _score_company_thesis(
     if revision is None:
         missing.append("30-day EPS revision history")
     elif revision <= -0.05:
-        _add_signal(signals, "Company thesis", "Falling estimates", f"FY1 EPS consensus fell {abs(revision):.1%} over roughly 30 days.", 3)
+        _add_signal(signals, "Company fundamentals", "Falling estimates", f"FY1 EPS consensus fell {abs(revision):.1%} over roughly 30 days.", 3)
     elif revision <= -0.02:
-        _add_signal(signals, "Company thesis", "Falling estimates", f"FY1 EPS consensus fell {abs(revision):.1%} over roughly 30 days.", 2)
+        _add_signal(signals, "Company fundamentals", "Falling estimates", f"FY1 EPS consensus fell {abs(revision):.1%} over roughly 30 days.", 2)
     elif revision < 0:
-        _add_signal(signals, "Company thesis", "Softening estimates", f"FY1 EPS consensus edged down {abs(revision):.1%} over roughly 30 days.", 1)
+        _add_signal(signals, "Company fundamentals", "Softening estimates", f"FY1 EPS consensus edged down {abs(revision):.1%} over roughly 30 days.", 1)
     else:
-        sections["Company thesis"].append(f"EPS estimates are stable to improving ({revision:+.1%} over roughly 30 days).")
+        sections["Company fundamentals"].append(f"EPS estimates are stable to improving ({revision:+.1%} over roughly 30 days).")
 
     revenue_growth = growth["revenue"]
     eps_growth = growth["eps"]
@@ -316,17 +673,17 @@ def _score_company_thesis(
     if revenue_growth is not None:
         growth_parts.append(f"forward revenue growth {revenue_growth:+.1%}")
         if revenue_growth < 0:
-            _add_signal(signals, "Company thesis", "Revenue contraction", f"Consensus implies {revenue_growth:.1%} forward revenue growth.", 2)
+            _add_signal(signals, "Company fundamentals", "Revenue contraction", f"Consensus implies {revenue_growth:.1%} forward revenue growth.", 2)
         elif revenue_growth < 0.05:
-            _add_signal(signals, "Company thesis", "Slowing growth", f"Consensus implies only {revenue_growth:.1%} forward revenue growth.", 1)
+            _add_signal(signals, "Company fundamentals", "Slowing growth", f"Consensus implies only {revenue_growth:.1%} forward revenue growth.", 1)
     else:
         missing.append("forward revenue growth")
     if eps_growth is not None:
         growth_parts.append(f"forward EPS growth {eps_growth:+.1%}")
         if eps_growth < 0:
-            _add_signal(signals, "Company thesis", "EPS contraction", f"Positive consensus EPS is expected to decline {abs(eps_growth):.1%}.", 2)
+            _add_signal(signals, "Company fundamentals", "EPS contraction", f"Positive consensus EPS is expected to decline {abs(eps_growth):.1%}.", 2)
     if growth_parts:
-        sections["Company thesis"].append("Consensus shows " + " and ".join(growth_parts) + ".")
+        sections["Company fundamentals"].append("Consensus shows " + " and ".join(growth_parts) + ".")
 
     operating_margin = profitability["operating_margin"]
     fcf_margin = profitability["fcf_margin"]
@@ -338,22 +695,22 @@ def _score_company_thesis(
             margin_parts.append(f"operating margin {operating_margin:.1%}")
         if fcf_margin is not None:
             margin_parts.append(f"FCF margin {fcf_margin:.1%}")
-        sections["Company thesis"].append("Current profitability: " + ", ".join(margin_parts) + ".")
+        sections["Company fundamentals"].append("Current profitability: " + ", ".join(margin_parts) + ".")
         if operating_margin is not None and fcf_margin is not None and operating_margin < 0 and fcf_margin < 0:
-            _add_signal(signals, "Company thesis", "Weak profitability", "Both operating profit and free cash flow are negative relative to revenue.", 2)
+            _add_signal(signals, "Company fundamentals", "Weak profitability", "Both operating profit and free cash flow are negative relative to revenue.", 2)
         elif any(value is not None and value < 0 for value in (operating_margin, fcf_margin)):
-            _add_signal(signals, "Company thesis", "Weak profitability", "At least one current operating or cash-flow margin is negative.", 1)
+            _add_signal(signals, "Company fundamentals", "Weak profitability", "At least one current operating or cash-flow margin is negative.", 1)
 
     historical_margin = profitability["historical_operating_margin"]
     if operating_margin is not None and historical_margin is not None:
         margin_change = operating_margin - historical_margin
-        sections["Company thesis"].append(
+        sections["Company fundamentals"].append(
             f"LTM operating margin is {margin_change:+.1%} versus its five-year average."
         )
         if margin_change <= -0.10:
-            _add_signal(signals, "Company thesis", "Margin deterioration", "LTM operating margin is at least 10 percentage points below its five-year average.", 2)
+            _add_signal(signals, "Company fundamentals", "Margin deterioration", "LTM operating margin is at least 10 percentage points below its five-year average.", 2)
         elif margin_change <= -0.05:
-            _add_signal(signals, "Company thesis", "Margin deterioration", "LTM operating margin is at least 5 percentage points below its five-year average.", 1)
+            _add_signal(signals, "Company fundamentals", "Margin deterioration", "LTM operating margin is at least 5 percentage points below its five-year average.", 1)
     else:
         missing.append("historical operating-margin comparison")
 
@@ -362,19 +719,21 @@ def _score_company_thesis(
     if net_debt is None:
         missing.append("net debt")
     elif net_debt <= 0:
-        sections["Company thesis"].append("Cash covers reported total debt.")
+        sections["Company fundamentals"].append("Cash covers reported total debt.")
     elif fcf_margin is not None and fcf_margin <= 0:
-        _add_signal(signals, "Company thesis", "Refinancing exposure", "The company has net debt while current free cash flow is non-positive.", 2)
+        _add_signal(signals, "Company fundamentals", "Refinancing exposure", "The company has net debt while current free cash flow is non-positive.", 2)
     elif debt_to_fcf is not None and debt_to_fcf > 5:
-        _add_signal(signals, "Company thesis", "High leverage", f"Total debt is about {debt_to_fcf:.1f} times LTM free cash flow.", 2)
+        _add_signal(signals, "Company fundamentals", "High leverage", f"Total debt is about {debt_to_fcf:.1f} times LTM free cash flow.", 2)
     elif debt_to_fcf is not None and debt_to_fcf > 3:
-        _add_signal(signals, "Company thesis", "Leverage watch", f"Total debt is about {debt_to_fcf:.1f} times LTM free cash flow.", 1)
+        _add_signal(signals, "Company fundamentals", "Leverage watch", f"Total debt is about {debt_to_fcf:.1f} times LTM free cash flow.", 1)
 
     for signal in signals:
-        if signal.category == "Company thesis":
-            sections["Company thesis"].append(signal.detail)
-    if not sections["Company thesis"]:
-        sections["Company thesis"].append("No thesis deterioration was supported by the retrieved company evidence.")
+        if signal.category == "Company fundamentals":
+            sections["Company fundamentals"].append(signal.detail)
+    if not sections["Company fundamentals"]:
+        sections["Company fundamentals"].append(
+            "No deterioration was supported by the retrieved company fundamentals."
+        )
 
 
 def _score_valuation(
@@ -526,7 +885,7 @@ def _score_event_risk(
         days = (event_day - today).days
         sections["Event risk"].append(f"{event_name} is {days} days away ({event_day.isoformat()}).")
         if days <= 14:
-            _add_signal(signals, "Event risk", "Immediate event", "A material event is within 14 days and warrants a pre-event thesis check.", 2)
+            _add_signal(signals, "Event risk", "Immediate event", "A material event is within 14 days and warrants a pre-event review.", 2)
         elif days <= 30:
             _add_signal(signals, "Event risk", "Near-term event", "A material event is within 30 days and warrants monitoring.", 1)
         else:
@@ -645,7 +1004,9 @@ def _add_signal(signals: list[RiskSignal], category: str, label: str, detail: st
 
 
 def _rating(score: int, signals: list[RiskSignal]) -> str:
-    company_points = sum(signal.points for signal in signals if signal.category == "Company thesis")
+    company_points = sum(
+        signal.points for signal in signals if signal.category == "Company fundamentals"
+    )
     independent_categories = len({signal.category for signal in signals if signal.points > 0})
     if score >= 9 and company_points >= 3 and independent_categories >= 3:
         return "EXIT CANDIDATE"
@@ -659,7 +1020,7 @@ def _rating(score: int, signals: list[RiskSignal]) -> str:
 def _reassessment_conditions(signals: list[RiskSignal], regime: str) -> list[str]:
     categories = {signal.category for signal in signals}
     conditions = ["revenue or EPS expectations deteriorate materially"]
-    if "Company thesis" not in categories:
+    if "Company fundamentals" not in categories:
         conditions.append("profitability weakens or leverage rises")
     if "Valuation" not in categories:
         conditions.append("valuation moves materially beyond growth or target evidence")
@@ -669,36 +1030,24 @@ def _reassessment_conditions(signals: list[RiskSignal], regime: str) -> list[str
 
 
 def _conclusion(item: HoldingPositionRisk) -> str:
+    material_development = any(
+        development.materiality == "material" for development in item.developments
+    )
+    if material_development:
+        return (
+            "Material retrieved news changes how this quantitative score should be read; "
+            "review the cited development before relying on standard fundamentals or valuation comparisons."
+        )
     if item.rating == "HOLD":
         return "No evidence-backed reduce or exit trigger is present now."
     if item.rating == "REVIEW":
-        return "No automatic sell trigger; review the flagged evidence and the conditions that would invalidate the thesis."
+        return "No automatic sell trigger; review the flagged fundamentals, valuation, and event evidence."
     if item.rating == "TRIM":
-        return "Multiple independent risks support reviewing position size, subject to your thesis, target value, taxes, and risk tolerance."
-    return "Severe thesis risk plus corroborating evidence makes this an exit candidate for immediate human review, not an automatic order."
-
-
-def _llm_summary(review: PortfolioPositionRiskReview, settings: Any) -> str | None:
-    if not getattr(settings, "groq_api_key", None):
-        return None
-    try:
-        from langchain_groq import ChatGroq
-
-        response = ChatGroq(
-            model=settings.groq_model,
-            temperature=0,
-            max_retries=1,
-            api_key=settings.groq_api_key,
-        ).invoke(
-            [
-                (
-                    "system",
-                    "Summarize only the supplied deterministic position-risk evidence. Preserve each HOLD, REVIEW, TRIM, or EXIT CANDIDATE classification. Separate company thesis, valuation, macro fit, and event risk. A price run-up or volatility alone is not a sell signal. Do not invent facts, infer a missing original thesis, or issue personalized trade instructions. Return at most eight concise lines.",
-                ),
-                ("human", json.dumps(review.as_payload(), default=str)),
-            ]
+        return (
+            "Multiple independent risks support reviewing position size, subject to current "
+            "evidence, target value, taxes, and risk tolerance."
         )
-        text = str(getattr(response, "content", response)).strip()
-        return text or None
-    except Exception:
-        return None
+    return (
+        "Severe fundamental risk plus corroborating evidence makes this an exit candidate "
+        "for immediate human review, not an automatic order."
+    )

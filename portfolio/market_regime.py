@@ -6,7 +6,6 @@ import csv
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from io import StringIO
-import math
 from typing import Callable, Iterable
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -19,108 +18,51 @@ FRED_SERIES = {
     "high_yield_spread": "BAMLH0A0HYM2",
 }
 
-RESEARCH_WEIGHT_KEYS = ("growth", "profitability", "valuation", "balance_sheet")
-
-
-@dataclass(frozen=True)
-class ResearchWeights:
-    growth: float
-    profitability: float
-    valuation: float
-    balance_sheet: float
-
-    def __post_init__(self) -> None:
-        values = self.as_dict()
-        if any(not math.isfinite(value) or value < 0 for value in values.values()):
-            raise ValueError("Research weights must be finite and nonnegative.")
-        if not math.isclose(sum(values.values()), 1.0, abs_tol=1e-6):
-            raise ValueError("Research weights must add up to 100%.")
-
-    @classmethod
-    def from_mapping(cls, values: dict[str, float]) -> "ResearchWeights":
-        if set(values) != set(RESEARCH_WEIGHT_KEYS):
-            raise ValueError(
-                "Research weights require growth, profitability, valuation, and balance_sheet."
-            )
-        return cls(**{key: float(values[key]) for key in RESEARCH_WEIGHT_KEYS})
-
-    @classmethod
-    def from_percentages(cls, values: dict[str, float]) -> "ResearchWeights":
-        return cls.from_mapping({key: float(value) / 100 for key, value in values.items()})
-
-    def as_dict(self) -> dict[str, float]:
-        return {key: getattr(self, key) for key in RESEARCH_WEIGHT_KEYS}
-
-    def percentages(self) -> dict[str, int]:
-        return {key: round(value * 100) for key, value in self.as_dict().items()}
-
-
 @dataclass(frozen=True)
 class MacroResearchPolicy:
     regime: str
-    weights: ResearchWeights
-    source: str = "macro_defaults"
+    rules: tuple[str, ...]
 
     def __post_init__(self) -> None:
         if not self.regime.strip():
             raise ValueError("A macro research policy requires a regime label.")
-        if self.source not in {"macro_defaults", "custom"}:
-            raise ValueError("Unknown macro research policy source.")
-
-    def with_weights(self, weights: ResearchWeights) -> "MacroResearchPolicy":
-        return MacroResearchPolicy(self.regime, weights, source="custom")
 
     def instruction_text(self) -> str:
-        percentages = self.weights.percentages()
-        labels = {
-            "growth": "forward revenue and EPS growth",
-            "profitability": "margins and returns on capital",
-            "valuation": "forward valuation relative to peers",
-            "balance_sheet": "cash flow, cash, and debt resilience",
-        }
-        weights = " | ".join(
-            f"{key.replace('_', ' ').title()} {percentages[key]}%"
-            for key in RESEARCH_WEIGHT_KEYS
-        )
-        highest_value = max(percentages.values())
-        priorities = [labels[key] for key, value in percentages.items() if value == highest_value]
-        priority_text = ", ".join(priorities[:-1])
-        if len(priorities) > 1:
-            priority_text += f" and {priorities[-1]}"
-        else:
-            priority_text = priorities[0]
         return (
-            f"Current regime: {self.regime}. Deterministic research weights: {weights}. "
-            f"Give the most emphasis to {priority_text}. Treat the score as shortlist priority, "
-            "not a return forecast or buy/sell recommendation. Use only validated retrieved data, "
-            "show missing factor coverage, and do not invent unavailable metrics."
+            f"Current regime: {self.regime}. Deterministic research rules: "
+            + " ".join(self.rules)
+            + " Use only validated retrieved data, show missing coverage, and do not invent metrics."
         )
 
     def focus_summary(self) -> str:
-        percentages = self.weights.percentages()
-        highest = max(percentages.values())
-        priorities = [
-            key.replace("_", " ").title()
-            for key, value in percentages.items()
-            if value == highest
-        ]
-        if len(priorities) == 1:
-            focus = priorities[0]
-        else:
-            focus = ", ".join(priorities[:-1]) + f" and {priorities[-1]}"
-        return f"Applied automatically to stock research. Highest priority: {focus}."
+        return "Applied automatically: valuation first, then the regime checks below."
 
 
 def macro_default_policy(regime: str) -> MacroResearchPolicy:
     if regime == "Easing and expanding liquidity":
-        weights = ResearchWeights(0.45, 0.20, 0.15, 0.20)
+        rules = (
+            "Require peer-relative valuation evidence.",
+            "Prefer above-median forward growth.",
+            "Show weak profitability or financial resilience as cautions, not hidden penalties.",
+        )
     elif regime == "Tightening and contracting liquidity":
-        weights = ResearchWeights(0.15, 0.30, 0.25, 0.30)
+        rules = (
+            "Require peer-relative valuation evidence.",
+            "Prefer above-median profitability and financial resilience.",
+            "Flag weak cash flow or debt resilience as a macro caution.",
+        )
     elif regime == "Mixed liquidity regime":
-        weights = ResearchWeights(0.30, 0.30, 0.20, 0.20)
+        rules = (
+            "Require peer-relative valuation evidence.",
+            "Prefer companies with above-median growth and profitability.",
+            "Flag weak financial resilience as a macro caution.",
+        )
     else:
-        weights = ResearchWeights(0.25, 0.25, 0.25, 0.25)
-    return MacroResearchPolicy(regime=regime, weights=weights)
+        rules = (
+            "Rank by peer-relative valuation evidence.",
+            "Do not apply a macro preference until the regime is complete.",
+        )
+    return MacroResearchPolicy(regime=regime, rules=rules)
 
 
 @dataclass(frozen=True)
@@ -175,17 +117,8 @@ class MarketRegimeSnapshot:
         if self.missing_evidence:
             lines.extend(("", "Not yet measured:"))
             lines.extend(f"- {item}" for item in self.missing_evidence)
-        weights = self.research_policy.weights.percentages()
-        lines.extend(
-            (
-                "",
-                "Default research weights: "
-                + " | ".join(
-                    f"{key.replace('_', ' ').title()} {weights[key]}%"
-                    for key in RESEARCH_WEIGHT_KEYS
-                ),
-            )
-        )
+        lines.extend(("", "Research rules:"))
+        lines.extend(f"- {rule}" for rule in self.research_policy.rules)
         lines.extend(("", "This is a market-condition checklist, not a buy or sell signal."))
         return "\n".join(lines)
 
@@ -556,7 +489,7 @@ def _interpret(
         regime = "Easing and expanding liquidity"
         summary = "Interest rates are falling and the Federal Reserve is adding liquidity. This is the most supportive environment for growth stocks."
         emphasis = (
-            "Give more weight to companies growing revenue and earnings quickly.",
+            "Focus on companies growing revenue and earnings quickly.",
             "Still check cash flow and debt; easier money does not fix a weak business.",
         )
         company_fit = (
@@ -566,8 +499,8 @@ def _interpret(
         regime = "Tightening and contracting liquidity"
         summary = "Interest rates are rising and the Federal Reserve is removing liquidity. Expensive or debt-dependent growth stocks face more pressure."
         emphasis = (
-            "Give more weight to current profits, cash flow, low debt, and a reasonable stock price.",
-            "Give less weight to companies that need cheap financing to survive or justify their valuation.",
+            "Focus on current profits, cash flow, low debt, and a reasonable stock price.",
+            "Be cautious with companies that need cheap financing to survive or justify their valuation.",
         )
         company_fit = (
             "Profitable, cash-generating, lower-debt companies trading at reasonable valuations."

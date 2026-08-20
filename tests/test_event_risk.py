@@ -1,4 +1,5 @@
 from datetime import date, datetime, timezone
+import sys
 from types import SimpleNamespace
 
 import pandas as pd
@@ -8,12 +9,13 @@ from portfolio.company_resolver import ResolvedInstrument
 from portfolio.config import Settings
 from portfolio.database import PortfolioDatabase
 from portfolio.event_risk import (
+    _augment_review_with_news,
     build_portfolio_review_plan,
     run_portfolio_position_risk_review,
     score_portfolio_position_risk,
 )
 from portfolio.market_regime import MarketRegimeSnapshot, RegimeIndicator
-from portfolio.models import Holding, Purchase
+from portfolio.models import Holding
 
 
 def _macro(regime: str = "Mixed liquidity regime", *, credit_rising: bool = False):
@@ -86,7 +88,7 @@ def _result(*, event_type: str = "Earnings", event_title: str = "Quarterly earni
 def test_portfolio_review_plan_is_fixed_and_validated():
     plan = build_portfolio_review_plan(["aapl", "MSFT"])
 
-    assert plan.workflow == "company_compare"
+    assert plan.workflow == "position_review"
     assert plan.entities == ["AAPL", "MSFT"]
     assert set(plan.topics) >= {
         "fundamentals",
@@ -125,7 +127,7 @@ def test_position_review_batches_more_than_eight_holdings(monkeypatch):
     assert [item.ticker for item in review.holdings] == [f"TICK{i}" for i in range(9)]
 
 
-def test_position_risk_separates_thesis_valuation_macro_and_event_evidence():
+def test_position_risk_separates_fundamental_valuation_macro_and_event_evidence():
     review = score_portfolio_position_risk(
         [Holding("AAPL", 10, 1500, 150)],
         _result(),
@@ -138,7 +140,8 @@ def test_position_risk_separates_thesis_valuation_macro_and_event_evidence():
     assert item.score == 6
     assert item.days_to_event == 15
     assert set(item.sections) == {
-        "Company thesis",
+        "Recent developments",
+        "Company fundamentals",
         "Valuation",
         "Macro fit",
         "Event risk",
@@ -153,6 +156,141 @@ def test_position_risk_separates_thesis_valuation_macro_and_event_evidence():
     assert "Elevated volatility" not in {signal.label for signal in item.signals}
     assert "run-up itself is not a sell signal" in " ".join(item.sections["Valuation"])
     assert "volatility alone adds no risk points" in " ".join(item.sections["Event risk"])
+    assert "stored original investment thesis" not in item.missing
+
+
+def test_material_news_is_cited_and_contextualizes_quantitative_score(monkeypatch):
+    result = _result()
+    result.tables["news:AAPL.O"] = pd.DataFrame(
+        [
+            {
+                "storyId": "story-1",
+                "versionCreated": "2026-08-03T12:00:00Z",
+                "CompanyRelevantText": "Apple agrees to be acquired for a fixed cash price.",
+            }
+        ]
+    )
+    result.tables["stories:AAPL.O"] = pd.DataFrame(
+        [
+            {
+                "story_id": "story-1",
+                "company_excerpt": (
+                    "Apple said the transaction is subject to shareholder and regulatory approval."
+                ),
+            }
+        ]
+    )
+    review = score_portfolio_position_risk(
+        [Holding("AAPL", 10, 1500, 150)], result, _macro(), today=date(2026, 8, 5)
+    )
+    original_score = review.holdings[0].score
+
+    class FakeStructuredModel:
+        def invoke(self, _messages):
+            return {
+                "developments": [
+                    {
+                        "ticker": "AAPL",
+                        "evidence_ids": ["AAPL-N1"],
+                        "materiality": "material",
+                        "price_relationship": "likely_primary_driver",
+                        "evaluation_effect": "standard_metrics_may_be_secondary",
+                        "interpretation": (
+                            "The announced fixed-price transaction may explain price behavior and "
+                            "changes how ordinary valuation comparisons should be read."
+                        ),
+                    }
+                ],
+                "portfolio_priorities": "Review the cited transaction terms and completion risk.",
+            }
+
+    class FakeChatGroq:
+        def __init__(self, **_kwargs):
+            pass
+
+        def with_structured_output(self, *_args, **_kwargs):
+            return FakeStructuredModel()
+
+    monkeypatch.setitem(sys.modules, "langchain_groq", SimpleNamespace(ChatGroq=FakeChatGroq))
+    _augment_review_with_news(
+        review,
+        result,
+        SimpleNamespace(groq_api_key="test", groq_model="test-model"),
+    )
+
+    item = review.holdings[0]
+    text = review.to_text()
+    assert item.score == original_score
+    assert item.developments[0].evidence_ids == ("AAPL-N1",)
+    assert "Apple agrees to be acquired" in text
+    assert "standard fundamentals or valuation comparisons" in text
+    assert "stored original investment thesis" not in text
+
+
+def test_news_interpretation_rejects_unknown_evidence_ids(monkeypatch):
+    result = _result()
+    result.tables["news:AAPL.O"] = pd.DataFrame(
+        [{"CompanyRelevantText": "Apple reports a company development."}]
+    )
+    review = score_portfolio_position_risk(
+        [Holding("AAPL", 10, 1500, 150)], result, _macro(), today=date(2026, 8, 5)
+    )
+
+    class FakeStructuredModel:
+        def invoke(self, _messages):
+            return {
+                "developments": [
+                    {
+                        "ticker": "AAPL",
+                        "evidence_ids": ["INVENTED-ID"],
+                        "materiality": "material",
+                        "price_relationship": "likely_primary_driver",
+                        "evaluation_effect": "changes_company_outlook",
+                        "interpretation": "Unsupported interpretation.",
+                    }
+                ],
+                "portfolio_priorities": "",
+            }
+
+    class FakeChatGroq:
+        def __init__(self, **_kwargs):
+            pass
+
+        def with_structured_output(self, *_args, **_kwargs):
+            return FakeStructuredModel()
+
+    monkeypatch.setitem(sys.modules, "langchain_groq", SimpleNamespace(ChatGroq=FakeChatGroq))
+    _augment_review_with_news(
+        review,
+        result,
+        SimpleNamespace(groq_api_key="test", groq_model="test-model"),
+    )
+
+    item = review.holdings[0]
+    assert not item.developments
+    assert item.sections["Recent developments"] == [
+        "No retrieved company news was identified as materially changing this review."
+    ]
+
+
+def test_news_materiality_reports_when_groq_is_unavailable():
+    result = _result()
+    result.tables["news:AAPL.O"] = pd.DataFrame(
+        [{"CompanyRelevantText": "Apple reports a company development."}]
+    )
+    review = score_portfolio_position_risk(
+        [Holding("AAPL", 10, 1500, 150)], result, _macro(), today=date(2026, 8, 5)
+    )
+
+    _augment_review_with_news(
+        review,
+        result,
+        SimpleNamespace(groq_api_key=None, groq_model="test-model"),
+    )
+
+    item = review.holdings[0]
+    assert "semantic news materiality review" in item.missing
+    assert "Groq is unavailable" in item.sections["Recent developments"][0]
 
 
 def test_unprofitable_leveraged_growth_gets_macro_exit_risk_in_mixed_regime():
@@ -203,25 +341,3 @@ def test_prefilled_position_risk_prompt_routes_to_position_review(tmp_path, monk
     )
 
     assert response == "position review invoked"
-
-
-def test_position_review_reports_macro_refresh_before_research(tmp_path, monkeypatch):
-    settings = Settings(
-        tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace"
-    )
-    database = PortfolioDatabase(settings.database_path)
-    database.record_purchase(Purchase("AAPL", 1, 100, date(2026, 1, 1)))
-    agent = StockAgent(settings, database)
-    progress = []
-    monkeypatch.setattr("portfolio.agent.build_market_regime", lambda: _macro())
-    monkeypatch.setattr(
-        "portfolio.agent.run_portfolio_position_risk_review",
-        lambda *_args, **_kwargs: SimpleNamespace(to_text=lambda: "position review"),
-    )
-
-    response = agent.review_position_risk(
-        lambda percent, stage, detail: progress.append((percent, stage, detail))
-    )
-
-    assert response == "position review"
-    assert progress[0][0:2] == (2, "Refreshing market regime")

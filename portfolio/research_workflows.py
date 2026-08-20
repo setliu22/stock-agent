@@ -61,6 +61,23 @@ WORKFLOWS: dict[str, WorkflowDefinition] = {
         ),
         deep_dive_candidates=8,
     ),
+    "position_review": WorkflowDefinition(
+        workflow_id="position_review",
+        mode="compare",
+        purpose=(
+            "Review portfolio positions with consistent company evidence and a broader "
+            "recent-news packet for material-development interpretation."
+        ),
+        stages=(
+            WorkflowStage("resolve", "Resolve every portfolio ticker.", ("discovery.search", "discovery.convert_symbols")),
+            WorkflowStage("core", "Retrieve identical financial, valuation, estimate, and risk data.", ("access.get_data",)),
+            WorkflowStage("history", "Derive price momentum, volatility, and estimate revisions.", ("access.get_history", "access.get_data")),
+            WorkflowStage("context", "Retrieve Reuters news, stories, events, and peer context.", ("news.headlines", "news.story", "discovery.peers"), required=False),
+            WorkflowStage("synthesis", "Score quantitative risks and interpret material retrieved developments.", ("local.metrics", "llm.evidence_synthesis")),
+        ),
+        deep_dive_candidates=8,
+        news_stories_per_candidate=5,
+    ),
     "sector_opportunity": WorkflowDefinition(
         workflow_id="sector_opportunity",
         mode="screen",

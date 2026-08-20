@@ -9,7 +9,7 @@ from portfolio.company_resolver import AmbiguousInstrumentError, InstrumentResol
 from portfolio.config import Settings
 from portfolio.database import PortfolioDatabase
 from portfolio.models import Purchase
-from portfolio.market_regime import MacroResearchPolicy, ResearchWeights
+from portfolio.market_regime import MacroResearchPolicy
 
 
 def test_show_holdings_without_network(tmp_path) -> None:
@@ -129,7 +129,7 @@ def test_research_plan_receives_validated_macro_policy(tmp_path, monkeypatch) ->
     agent.set_research_policy(
         MacroResearchPolicy(
             "Mixed liquidity regime",
-            ResearchWeights(0.30, 0.30, 0.20, 0.20),
+            ("Require peer-relative valuation evidence.", "Prefer profitable growth."),
         )
     )
     plan = ResearchPlan(
@@ -149,8 +149,6 @@ def test_research_plan_receives_validated_macro_policy(tmp_path, monkeypatch) ->
 
     assert agent.research("screen technology stocks") == "Screen"
     assert captured[0].macro_regime == "Mixed liquidity regime"
-    assert captured[0].research_weights["growth"] == 0.30
-    assert captured[0].research_weight_source == "macro_defaults"
 
 
 def test_research_returns_stopped_when_cancelled(tmp_path, monkeypatch) -> None:
@@ -528,7 +526,7 @@ def test_general_chat_receives_bounded_macro_policy_context(tmp_path, monkeypatc
     agent.set_research_policy(
         MacroResearchPolicy(
             "Mixed liquidity regime",
-            ResearchWeights(0.30, 0.30, 0.20, 0.20),
+            ("Require peer-relative valuation evidence.", "Prefer profitable growth."),
         )
     )
     calls = []
@@ -546,9 +544,9 @@ def test_general_chat_receives_bounded_macro_policy_context(tmp_path, monkeypatc
     assert agent._general_chat("How should I think about stock selection?") == "Answer"
     system = calls[0][0][1]
     assert "Current regime: Mixed liquidity regime" in system
-    assert "Growth 30%" in system
-    assert "Profitability 30%" in system
-    assert "buy/sell recommendation" in system
+    assert "Require peer-relative valuation evidence" in system
+    assert "Prefer profitable growth" in system
+    assert "do not invent metrics" in system
 
 
 def test_operational_turn_breaks_general_chat_memory(tmp_path, monkeypatch) -> None:

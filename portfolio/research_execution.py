@@ -16,7 +16,11 @@ from .research_planner import ResearchPlan
 
 
 InstrumentResolver = Callable[[str], ResolvedInstrument]
-_NAMED_COMPANY_WORKFLOWS = {"company_deep_dive", "company_compare"}
+_NAMED_COMPANY_WORKFLOWS = {
+    "company_deep_dive",
+    "company_compare",
+    "position_review",
+}
 
 
 @dataclass(frozen=True)

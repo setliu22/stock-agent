@@ -21,7 +21,7 @@ import pandas as pd
 
 from .company_resolver import InstrumentResolutionError, ResolvedInstrument
 from .config import Settings
-from .market_regime import ResearchWeights, macro_default_policy
+from .market_regime import macro_default_policy
 from .research_planner import (
     ResearchPlan,
     ScreenFilters,
@@ -909,13 +909,9 @@ def build_screen_expression(filters: ScreenFilters) -> str:
 
 def _rank_candidate_screen(
     frame: pd.DataFrame,
-    research_weights: dict[str, float] | None = None,
+    macro_regime: str = "Regime incomplete",
 ) -> pd.DataFrame:
-    """Rank candidates using independent evidence families and coverage.
-
-    The score is not an investment recommendation. It is a transparent shortlist
-    mechanism for deciding which companies receive the expensive deep dive.
-    """
+    """Rank candidates by valuation evidence, then explicit macro-fit rules."""
     output = frame.copy()
     if output.empty:
         return output
@@ -988,13 +984,6 @@ def _rank_candidate_screen(
         {index: ", ".join(sorted(families)) for index, families in positive_signal_sets.items()}
     )
 
-    try:
-        weights = ResearchWeights.from_mapping(
-            research_weights
-            or macro_default_policy("Regime incomplete").weights.as_dict()
-        ).as_dict()
-    except (TypeError, ValueError) as exc:
-        raise LSEGResearchError(f"Invalid research ranking weights: {exc}") from exc
     components: list[tuple[str, pd.Series, str]] = []
 
     def add(
@@ -1037,61 +1026,102 @@ def _rank_candidate_screen(
     add(
         "valuation", "TR.PriceToBVPerShare", higher_is_better=False, positive_only=True
     )
-    add("balance_sheet", "FCF to Debt")
-    add("balance_sheet", "Cash to Debt")
+    add("financial_resilience", "FCF to Debt")
+    add("financial_resilience", "Cash to Debt")
 
     if not components:
-        output["Research Score"] = pd.NA
         output["Evidence Count"] = 0
+        output["Evidence Family Count"] = 0
         output["Evidence Families"] = ""
+        output["Value Discount Count"] = 0
+        output["Value Discount Fields"] = ""
+        output["Macro Fit"] = "Not assessed"
         return output.sort_values("TR.CompanyMarketCap", ascending=False, na_position="last")
 
     value_fields = (
-        "TR.PtoEPSMeanEst(Period=FY1)", "TR.EVToEBITDA",
-        "TR.PriceToSalesPerShare", "TR.PriceToBVPerShare",
+        ("TR.PtoEPSMeanEst(Period=FY1)", "forward P/E"),
+        ("Applicable EV/EBITDA", "EV/EBITDA"),
+        ("TR.PriceToSalesPerShare", "price/sales"),
+        ("TR.PriceToBVPerShare", "price/book"),
     )
     value_evidence = pd.Series(0, index=output.index, dtype="int64")
-    for field_name in value_fields:
+    value_discounts: dict[Any, list[str]] = {index: [] for index in output.index}
+    for field_name, label in value_fields:
         values = numeric(field_name)
-        if field_name == "TR.EVToEBITDA":
-            values = values.mask(financial_rows)
-        value_evidence = value_evidence.add((values > 0).astype(int), fill_value=0).astype(int)
+        positive = values.where(values > 0)
+        value_evidence = value_evidence.add(positive.notna().astype(int), fill_value=0).astype(int)
+        if not positive.notna().any():
+            continue
+        median = positive.median()
+        if pd.isna(median):
+            continue
+        discounted = positive < float(median)
+        for index in output.index[discounted.fillna(False)]:
+            value_discounts[index].append(label)
     output["Value Evidence Count"] = value_evidence
+    output["Value Discount Count"] = pd.Series(
+        {index: len(fields) for index, fields in value_discounts.items()}, dtype="int64"
+    )
+    output["Value Discount Fields"] = pd.Series(
+        {index: ", ".join(fields) for index, fields in value_discounts.items()}
+    )
 
-    weighted_sum = pd.Series(0.0, index=output.index, dtype="float64")
-    available_weight = pd.Series(0.0, index=output.index, dtype="float64")
     family_sets: dict[Any, set[str]] = {index: set() for index in output.index}
     evidence_count = pd.Series(0, index=output.index, dtype="int64")
-    for family, family_weight in weights.items():
+    for family in ("growth", "profitability", "valuation", "financial_resilience"):
         family_components = [percentile for name, percentile, _field in components if name == family]
         if not family_components:
-            output[f"{family.replace('_', ' ').title()} Score"] = pd.NA
+            output[f"{family.replace('_', ' ').title()} Percentile"] = pd.NA
             continue
         component_frame = pd.concat(family_components, axis=1)
         family_score = component_frame.mean(axis=1, skipna=True)
         valid = family_score.notna()
-        output[f"{family.replace('_', ' ').title()} Score"] = family_score.mul(100)
-        weighted_sum = weighted_sum.add(family_score.fillna(0) * family_weight, fill_value=0)
-        available_weight = available_weight.add(valid.astype(float) * family_weight, fill_value=0)
+        output[f"{family.replace('_', ' ').title()} Percentile"] = family_score.mul(100)
         component_count = component_frame.notna().sum(axis=1).astype(int)
         evidence_count = evidence_count.add(component_count, fill_value=0).astype(int)
         for index in output.index[valid]:
             family_sets[index].add(family)
 
-    raw_score = weighted_sum.div(available_weight.where(available_weight > 0)).mul(100)
     family_count = pd.Series({index: len(value) for index, value in family_sets.items()}, dtype="int64")
-    coverage_factor = family_count.div(4).clip(lower=0.45, upper=1.0)
-    output["Research Score"] = raw_score.mul(coverage_factor)
     output["Evidence Count"] = evidence_count
     output["Evidence Family Count"] = family_count
     output["Evidence Families"] = pd.Series({index: ", ".join(sorted(value)) for index, value in family_sets.items()})
     output["Data Coverage"] = evidence_count.div(max(len(components), 1))
+
+    growth = pd.to_numeric(output.get("Growth Percentile"), errors="coerce")
+    profitability = pd.to_numeric(output.get("Profitability Percentile"), errors="coerce")
+    resilience = pd.to_numeric(output.get("Financial Resilience Percentile"), errors="coerce")
+    has_discount = output["Value Discount Count"] > 0
+    fit = pd.Series("Neutral", index=output.index, dtype="object")
+    assessed = pd.Series(True, index=output.index)
+    if macro_regime == "Easing and expanding liquidity":
+        assessed = growth.notna()
+        fit = fit.mask(assessed & has_discount & (growth >= 50), "Supportive")
+        fit = fit.mask(assessed & (growth < 50), "Caution")
+    elif macro_regime == "Tightening and contracting liquidity":
+        assessed = profitability.notna() & resilience.notna()
+        fit = fit.mask(assessed & has_discount & (profitability >= 50) & (resilience >= 50), "Supportive")
+        fit = fit.mask(assessed & ((profitability < 50) | (resilience < 50)), "Caution")
+    elif macro_regime == "Mixed liquidity regime":
+        assessed = growth.notna() & profitability.notna() & resilience.notna()
+        fit = fit.mask(
+            assessed & has_discount & (growth >= 50) & (profitability >= 50) & (resilience >= 50),
+            "Supportive",
+        )
+        weak_count = (growth < 50).astype(int) + (profitability < 50).astype(int) + (resilience < 50).astype(int)
+        fit = fit.mask(assessed & (weak_count >= 2), "Caution")
+    else:
+        assessed = pd.Series(False, index=output.index)
+    output["Macro Fit"] = fit.mask(~assessed, "Not assessed")
+    output["_macro_fit_sort"] = output["Macro Fit"].map(
+        {"Supportive": 2, "Neutral": 1, "Caution": 0, "Not assessed": -1}
+    )
     output["_market_cap_sort"] = numeric("TR.CompanyMarketCap")
     return output.sort_values(
-        ["Research Score", "Evidence Family Count", "Evidence Count", "_market_cap_sort"],
-        ascending=[False, False, False, False],
+        ["Value Discount Count", "_macro_fit_sort", "Valuation Percentile", "Evidence Family Count", "Evidence Count", "_market_cap_sort"],
+        ascending=[False, False, False, False, False, False],
         na_position="last",
-    ).drop(columns="_market_cap_sort")
+    ).drop(columns=["_macro_fit_sort", "_market_cap_sort"])
 
 
 def _normalized_code(value: Any) -> str:
@@ -1107,7 +1137,7 @@ def apply_screen_filters(
     *,
     truncate: bool = True,
     strict: bool = True,
-    research_weights: dict[str, float] | None = None,
+    macro_regime: str = "Regime incomplete",
 ) -> pd.DataFrame:
     output = frame.copy()
     tests = (
@@ -1173,7 +1203,7 @@ def apply_screen_filters(
             allowed = set(definition.codes)
             output = output[output[definition.code_field].map(_normalized_code).isin(allowed)]
     if filters.candidate_search or filters.sort_by == "quality_value":
-        ranked = _rank_candidate_screen(output, research_weights).reset_index(drop=True)
+        ranked = _rank_candidate_screen(output, macro_regime).reset_index(drop=True)
         return ranked.head(filters.limit) if truncate else ranked
     sort_field = {
         "market_cap": "TR.CompanyMarketCap",
@@ -1358,7 +1388,7 @@ def _retrieve_screen(ld: Any, client: _LSEGClient, result: ResearchResult) -> No
         filters,
         truncate=False,
         strict=True,
-        research_weights=result.plan.research_weights or None,
+        macro_regime=result.plan.macro_regime or "Regime incomplete",
     )
     if full_ranked.empty:
         raise LSEGNoMatches(
@@ -1389,33 +1419,6 @@ def _retrieve_screen(ld: Any, client: _LSEGClient, result: ResearchResult) -> No
             }
     result.metrics["cohort_statistics"] = cohort_statistics
 
-    value_discount_count = pd.Series(0, index=full_ranked.index, dtype="int64")
-    value_discount_fields: dict[Any, list[str]] = {index: [] for index in full_ranked.index}
-    financial_rows = full_ranked.get(
-        "TR.TRBCEconSectorCode", pd.Series("", index=full_ranked.index)
-    ).map(_normalized_code).eq("55")
-    for field_name in (
-        "TR.PtoEPSMeanEst(Period=FY1)", "TR.EVToEBITDA",
-        "TR.PriceToSalesPerShare", "TR.PriceToBVPerShare",
-    ):
-        values = _column(full_ranked, field_name)
-        for index, value in values.items():
-            if not math.isfinite(value) or value <= 0:
-                continue
-            if field_name == "TR.EVToEBITDA" and bool(financial_rows.loc[index]):
-                continue
-            peers = values.drop(index=index).replace([math.inf, -math.inf], pd.NA).dropna()
-            peers = peers[peers > 0]
-            if len(peers) < 5:
-                continue
-            median = float(peers.median())
-            if value < median * 0.90:
-                value_discount_count.loc[index] += 1
-                value_discount_fields[index].append(field_name)
-    full_ranked["Value Discount Count"] = value_discount_count
-    full_ranked["Value Discount Fields"] = pd.Series(
-        {index: ", ".join(fields) for index, fields in value_discount_fields.items()}
-    )
     result.tables["screen_universe"] = full_ranked.reset_index(drop=True)
 
     eligible = full_ranked
@@ -1463,7 +1466,7 @@ def _retrieve_screen(ld: Any, client: _LSEGClient, result: ResearchResult) -> No
             result.metrics["screen_value_eligible_count"] = len(eligible)
             if eligible.empty:
                 raise LSEGNoMatches(
-                    "The screen matched companies, but none traded at least 10% below a validated cohort median on a usable positive valuation multiple."
+                    "The screen matched companies, but none traded below the cohort median on a usable positive valuation multiple."
                 )
         result.metrics["screen_evidence_eligible_count"] = len(eligible)
 
@@ -2213,41 +2216,16 @@ def _derive_evidence_coverage(result: ResearchResult) -> None:
 
 
 def _rerank_finalists(result: ResearchResult) -> None:
-    """Combine the broad multi-factor screen with deep-dive evidence coverage.
-
-    This is a shortlist priority score, not a return forecast. It prevents a
-    candidate with one attractive metric and sparse evidence from automatically
-    remaining first.
-    """
+    """Keep the valuation-first screen order after enforcing evidence coverage."""
     workflow = get_workflow(result.plan.workflow, result.plan.mode, candidate_search=True)
-    ranked: list[tuple[float, ResolvedInstrument]] = []
-    for resolved in result.resolved:
-        ric = resolved.ric
-        row = _screen_row(result, ric)
-        base = _numeric(row.get("Research Score")) if row is not None else None
-        score = base if base is not None else 50.0
-        family_count = int(result.metrics.get(f"{ric}:evidence_family_count", 0) or 0)
-        score += min(family_count, 12) * 1.25
-        if family_count < workflow.minimum_evidence_families:
-            score -= 15.0
-        revision = result.metrics.get(f"{ric}:eps_revision_30d")
-        if isinstance(revision, (int, float)):
-            score += max(-6.0, min(6.0, revision * 100))
-        smart_gap = result.metrics.get(f"{ric}:smart_gap")
-        if isinstance(smart_gap, (int, float)):
-            score += max(-4.0, min(4.0, smart_gap * 100))
-        upside = result.metrics.get(f"{ric}:target_upside")
-        if isinstance(upside, (int, float)):
-            score += max(-5.0, min(5.0, upside * 20))
-        risk_hits = result.metrics.get(f"{ric}:risk_headline_hits")
-        if isinstance(risk_hits, int):
-            score -= min(risk_hits, 4) * 1.5
-        vol = result.metrics.get(f"{ric}:annualized_vol")
-        if isinstance(vol, (int, float)) and vol > 0.45:
-            score -= 4.0
-        result.metrics[f"{ric}:finalist_score"] = score
-        ranked.append((score, resolved))
-    ordered = [item for _, item in sorted(ranked, key=lambda pair: pair[0], reverse=True)]
+    screen = result.tables.get("screen", pd.DataFrame())
+    screen_order: dict[str, int] = {}
+    if not screen.empty:
+        for position, (_, row) in enumerate(screen.iterrows()):
+            ric = row.get("Instrument")
+            if not _missing(ric):
+                screen_order[str(ric)] = position
+    ordered = sorted(result.resolved, key=lambda item: screen_order.get(item.ric, len(screen_order)))
     qualified = [
         item
         for item in ordered
@@ -2371,11 +2349,8 @@ def run_research(
 
     _raise_if_cancelled(cancel_event)
     plan = plan.normalized()
-    if not plan.research_weights:
-        fallback_policy = macro_default_policy(plan.macro_regime or "Regime incomplete")
-        plan.macro_regime = fallback_policy.regime
-        plan.research_weights = fallback_policy.weights.as_dict()
-        plan.research_weight_source = fallback_policy.source
+    policy = macro_default_policy(plan.macro_regime or "Regime incomplete")
+    plan.macro_regime = policy.regime
     workflow = get_workflow(plan.workflow, plan.mode, candidate_search=plan.screen.candidate_search)
     _emit_progress(
         progress_callback,
@@ -2387,8 +2362,7 @@ def run_research(
     result.metrics["workflow"] = workflow.to_dict()
     result.metrics["macro_research_policy"] = {
         "regime": plan.macro_regime,
-        "weights": plan.research_weights,
-        "source": plan.research_weight_source,
+        "rules": list(policy.rules),
     }
     session = None
     try:
@@ -2664,9 +2638,9 @@ def _candidate_opportunities(result: ResearchResult, resolved: ResolvedInstrumen
         if value is None and row is not None:
             value = _numeric(row.get(field_name))
         median = _sector_median(result, field_name, exclude_ric=ric)
-        if value is not None and median is not None and value > 0 and value < median * 0.90:
+        if value is not None and median is not None and value > 0 and value < median:
             items.append(
-                f"{label} {_format_number(value)} is at least 10% below the screened median {_format_number(median)}."
+                f"{label} {_format_number(value)} is below the screened median {_format_number(median)}."
             )
     roe = _numeric(_first_value(result, "profitability", "TR.ReturnonAvgTotEqtyPctNetIncomeBeforeExtraItemsTTM", ric))
     median_roe = _sector_median(
@@ -2777,7 +2751,7 @@ def _deterministic_screen_report(result: ResearchResult) -> str:
         lines = [f"Candidate: {_company_name(result, candidate)} ({ric})"]
         opportunities = _candidate_opportunities(result, candidate)
         risks = _candidate_risks(result, candidate)
-        lines.append("Opportunity: " + (" ".join(opportunities[:2]) if opportunities else "The ranking was supported mainly by relative factor scores, not a clear standalone opportunity."))
+        lines.append("Opportunity: " + (" ".join(opportunities[:2]) if opportunities else "The ranking was supported by peer-relative valuation and macro fit, not a clear standalone opportunity."))
         titles = _latest_company_developments(result.tables.get(f"news:{ric}", pd.DataFrame()), 2)
         if titles:
             lines.append("Catalyst: No positive catalyst was independently validated; recent developments include " + " | ".join(titles))
@@ -2786,23 +2760,24 @@ def _deterministic_screen_report(result: ResearchResult) -> str:
         lines.append("Major risks: " + (" ".join(risks[:2]) if risks else "No dominant quantitative risk was available; review the retrieved news and filings."))
         alternatives: list[str] = []
         for other in (item for item in result.resolved if item.ric != ric):
-            score = _numeric(result.metrics.get(f"{other.ric}:finalist_score"))
-            alternatives.append(f"{_company_name(result, other)} ({other.ric})" + (f" score {_format_number(score)}" if score is not None else ""))
+            alternatives.append(f"{_company_name(result, other)} ({other.ric})")
             if len(alternatives) >= 2:
                 break
         category_scores: list[str] = []
         if row is not None:
-            for category in ("Growth", "Profitability", "Valuation", "Balance Sheet"):
-                score = _numeric(row.get(f"{category} Score"))
+            for category in ("Growth", "Profitability", "Valuation", "Financial Resilience"):
+                score = _numeric(row.get(f"{category} Percentile"))
                 if score is not None:
                     category_scores.append(f"{category.lower()} {_format_number(score)}")
         score_context = (
-            " Category scores were " + ", ".join(category_scores) + "."
+            " Peer percentiles were " + ", ".join(category_scores) + "."
             if category_scores
             else ""
         )
         if alternatives:
-            lines.append("Why selected: It had the strongest post-deep-dive score among adequately covered finalists." + score_context + " Other finalists were " + "; ".join(alternatives) + ".")
+            discount_count = int(row.get("Value Discount Count", 0) or 0) if row is not None else 0
+            macro_fit = str(row.get("Macro Fit", "Not assessed")) if row is not None else "Not assessed"
+            lines.append(f"Why selected: It led the valuation-first screen with {discount_count} peer-relative valuation discount(s) and {macro_fit.lower()} macro fit." + score_context + " Other adequately covered finalists were " + "; ".join(alternatives) + ".")
         else:
             lines.append("Why selected: It was the only finalist that met the required screen and deep-evidence postconditions." + score_context)
         families = result.metrics.get(f"{ric}:evidence_families", [])
@@ -2811,21 +2786,16 @@ def _deterministic_screen_report(result: ResearchResult) -> str:
             f"deeply researched {int(result.metrics.get('deep_dive_count', len(result.resolved)))}; "
             f"selected candidate has {len(families)} evidence families. Universe scope was capped at the top "
             f"{int(result.metrics.get('screen_universe_cap', 200))} qualifying companies by USD market capitalization. "
-            f"Ranking used {result.plan.research_weight_source.replace('_', ' ')} weights for "
+            f"Ranking used peer-relative valuation first, then explicit checks for "
             f"{result.plan.macro_regime or 'an incomplete macro regime'}."
         )
         return "\n".join(lines)
 
     lines = [f"Screen results ({min(len(frame), 10)} shown)"]
-    if result.plan.research_weights:
-        lines.append(
-            "Ranking weights: "
-            + " | ".join(
-                f"{key.replace('_', ' ').title()} {value * 100:.0f}%"
-                for key, value in result.plan.research_weights.items()
-            )
-            + f" ({result.plan.research_weight_source.replace('_', ' ')})"
-        )
+    lines.append(
+        f"Ranking: peer-relative valuation first; macro fit uses explicit rules for "
+        f"{result.plan.macro_regime or 'an incomplete macro regime'}."
+    )
     if expression:
         lines.append(f"Criteria: {expression}")
     for _, row in frame.head(10).iterrows():
@@ -3072,7 +3042,7 @@ def _llm_report(result: ResearchResult, settings: Settings, cancel_event: Any | 
                     "Identify major opportunities, catalysts, risks, contradictions, and missing coverage. "
                     "Do not call a company promising because of one metric. Do not issue a buy or sell recommendation. "
                     "Every factual claim must be directly supported by a supplied value, story, headline, filing, or derived metric. "
-                    "Treat the supplied macro research policy as an explanation of deterministic ranking weights, not as evidence about a company. "
+                    "Treat the supplied macro research policy as an explanation of deterministic ranking rules, not as evidence about a company. "
                     + format_instruction,
                 ),
                 ("human", evidence),
@@ -3251,14 +3221,17 @@ def _deterministic_selection_follow_up(result: ResearchResult) -> str:
     if selected is None:
         return "The prior research did not select a company."
     row = _screen_row(result, selected.ric)
-    score = _numeric(row.get("Research Score")) if row is not None else None
     families = result.metrics.get(f"{selected.ric}:evidence_families", [])
     parts = [
         f"{_company_name(result, selected)} ({selected.ric}) was selected only after passing the requested "
         "country/TRBC postconditions and the minimum screen and deep-evidence thresholds."
     ]
-    if score is not None:
-        parts.append(f"Its final screen score was {_format_number(score)}.")
+    if row is not None:
+        discount_count = int(row.get("Value Discount Count", 0) or 0)
+        macro_fit = str(row.get("Macro Fit", "Not assessed"))
+        parts.append(
+            f"It had {discount_count} peer-relative valuation discount(s); macro fit was {macro_fit.lower()}."
+        )
     parts.append(f"The deep dive retained {len(families)} evidence families.")
     alternatives = [item for item in result.resolved if item.ric != selected.ric][:2]
     if alternatives:

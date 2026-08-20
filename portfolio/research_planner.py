@@ -15,7 +15,6 @@ from typing import Any, Callable
 
 from .company_resolver import is_explicit_ticker, is_probable_ticker
 from .config import Settings
-from .market_regime import ResearchWeights
 from .research_workflows import WORKFLOWS, get_workflow
 
 
@@ -324,8 +323,6 @@ class ResearchPlan:
     context_parent_request: str | None = None
     intent_resolution: dict[str, Any] = field(default_factory=dict)
     macro_regime: str | None = None
-    research_weights: dict[str, float] = field(default_factory=dict)
-    research_weight_source: str = "none"
 
     def normalized(self) -> "ResearchPlan":
         self.mode = self.mode if self.mode in {"company", "compare", "screen", "market_news"} else "company"
@@ -342,19 +339,6 @@ class ResearchPlan:
                 "Unsupported selection objectives: " + ", ".join(sorted(unknown_objectives))
             )
         self.selection_objectives = list(dict.fromkeys(self.selection_objectives))
-        if self.research_weights:
-            try:
-                self.research_weights = ResearchWeights.from_mapping(
-                    self.research_weights
-                ).as_dict()
-            except (TypeError, ValueError) as exc:
-                raise UnsupportedResearchConstraint(str(exc)) from exc
-        if self.research_weight_source not in {"none", "macro_defaults", "custom"}:
-            raise UnsupportedResearchConstraint("Unknown research-weight source.")
-        if bool(self.research_weights) != (self.research_weight_source != "none"):
-            raise UnsupportedResearchConstraint(
-                "Research weights and their source must be supplied together."
-            )
         if self.macro_regime is not None:
             self.macro_regime = str(self.macro_regime).strip()[:120] or None
         self.topics = [topic for topic in dict.fromkeys(self.topics) if topic in VALID_TOPICS]
@@ -485,11 +469,17 @@ class ResearchPlan:
                 raise UnsupportedResearchConstraint(
                     "An interrogative or clausal phrase cannot be resolved as a named security."
                 )
-        elif self.workflow == "company_compare":
-            if not 2 <= len(self.entities) <= 8:
-                raise UnsupportedResearchConstraint("A company comparison requires between two and eight named companies.")
+        elif self.workflow in {"company_compare", "position_review"}:
+            minimum = 1 if self.workflow == "position_review" else 2
+            if not minimum <= len(self.entities) <= 8:
+                label = "A position review" if self.workflow == "position_review" else "A company comparison"
+                raise UnsupportedResearchConstraint(
+                    f"{label} requires between {minimum} and eight named companies."
+                )
             if any(entity.casefold() in {"it", "this", "that", "the company", "the stock"} for entity in self.entities):
-                raise UnsupportedResearchConstraint("A comparison cannot resolve a pronoun without explicit prior-company routing.")
+                raise UnsupportedResearchConstraint(
+                    "A named-company workflow cannot resolve a pronoun without explicit prior-company routing."
+                )
         elif self.workflow == "sector_opportunity":
             if self.entities:
                 raise UnsupportedResearchConstraint("A sector opportunity request cannot also name a company.")

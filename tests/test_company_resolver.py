@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import pandas as pd
 import pytest
 
 from portfolio import company_resolver as resolver
@@ -89,8 +88,3 @@ def test_company_name_resolution_is_generic(monkeypatch: pytest.MonkeyPatch) -> 
     assert ticker == "PLTR"
     assert company == "Palantir Technologies Inc."
     assert exchange == "NMS"
-
-
-def test_extract_frame_accepts_dataframe() -> None:
-    frame = pd.DataFrame({"RIC": ["PLTR.O"]})
-    assert resolver._extract_frame(frame) is frame

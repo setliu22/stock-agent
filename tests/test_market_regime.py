@@ -2,13 +2,9 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-import pytest
-
 from portfolio.market_regime import (
     FRED_SERIES,
-    MacroResearchPolicy,
     Observation,
-    ResearchWeights,
     build_market_regime,
     macro_default_policy,
 )
@@ -126,44 +122,12 @@ def test_stable_trend_does_not_hide_an_elevated_rate_level() -> None:
     assert "Rates remain high" in rate.meaning
 
 
-def test_macro_regimes_produce_explicit_research_weights() -> None:
-    assert macro_default_policy("Easing and expanding liquidity").weights.percentages() == {
-        "growth": 45,
-        "profitability": 20,
-        "valuation": 15,
-        "balance_sheet": 20,
-    }
-    assert macro_default_policy("Mixed liquidity regime").weights.percentages() == {
-        "growth": 30,
-        "profitability": 30,
-        "valuation": 20,
-        "balance_sheet": 20,
-    }
-    assert macro_default_policy("Tightening and contracting liquidity").weights.percentages() == {
-        "growth": 15,
-        "profitability": 30,
-        "valuation": 25,
-        "balance_sheet": 30,
-    }
+def test_macro_regimes_produce_explicit_plain_language_rules() -> None:
+    easing = macro_default_policy("Easing and expanding liquidity")
+    tightening = macro_default_policy("Tightening and contracting liquidity")
+    mixed = macro_default_policy("Mixed liquidity regime")
 
-
-def test_research_weights_reject_incomplete_or_unbalanced_values() -> None:
-    with pytest.raises(ValueError, match="require"):
-        ResearchWeights.from_mapping({"growth": 1.0})
-    with pytest.raises(ValueError, match="100%"):
-        ResearchWeights.from_percentages(
-            {"growth": 30, "profitability": 30, "valuation": 30, "balance_sheet": 30}
-        )
-    with pytest.raises(ValueError, match="source"):
-        MacroResearchPolicy(
-            "Mixed liquidity regime",
-            ResearchWeights(0.25, 0.25, 0.25, 0.25),
-            source="generated",
-        )
-
-
-def test_policy_focus_summary_explains_automatic_use() -> None:
-    summary = macro_default_policy("Mixed liquidity regime").focus_summary()
-
-    assert summary.startswith("Applied automatically")
-    assert "Growth and Profitability" in summary
+    assert any("growth" in rule for rule in easing.rules)
+    assert any("profitability and financial resilience" in rule for rule in tightening.rules)
+    assert any("growth and profitability" in rule for rule in mixed.rules)
+    assert "%" not in easing.instruction_text()

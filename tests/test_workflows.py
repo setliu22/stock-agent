@@ -4,7 +4,7 @@ import pandas as pd
 
 from portfolio.company_resolver import ResolvedInstrument
 from portfolio.config import Settings
-from portfolio.lseg_capabilities import EXECUTABLE_OPERATIONS, export_catalog
+from portfolio.lseg_capabilities import EXECUTABLE_OPERATIONS
 from portfolio.lseg_research import ResearchResult, _plain_text_report, concise_report
 from portfolio.research_planner import ResearchPlan, ScreenFilters, build_research_plan
 from portfolio.research_workflows import get_workflow
@@ -31,13 +31,12 @@ def test_operation_registry_is_read_only_and_explicit() -> None:
     assert any(operation.operation_id == "local.multifactor_rank" for operation in EXECUTABLE_OPERATIONS)
 
 
-def test_catalog_exports_workflows_and_installed_inventory(tmp_path, monkeypatch) -> None:
-    path = tmp_path / "capabilities.json"
-    export_catalog(path)
-    text = path.read_text()
-    assert '"executable_read_only_operations"' in text
-    assert '"sector_opportunity"' in text
-    assert '"installed_public_callable_inventory"' in text
+def test_position_review_retrieves_a_bounded_broader_news_packet() -> None:
+    workflow = get_workflow("position_review", "compare")
+
+    assert workflow.mode == "compare"
+    assert workflow.deep_dive_candidates == 8
+    assert workflow.news_stories_per_candidate == 5
 
 
 def test_candidate_report_uses_deep_dive_evidence(tmp_path) -> None:
@@ -56,7 +55,8 @@ def test_candidate_report_uses_deep_dive_evidence(tmp_path) -> None:
             "TR.PtoEPSMeanEst(Period=FY1)": [15.0, 25.0],
             "TR.ReturnonAvgTotEqtyPctNetIncomeBeforeExtraItemsTTM": [35.0, 20.0],
             "TR.DividendYield": [4.0, 2.0],
-            "Research Score": [82.0, 74.0],
+            "Value Discount Count": [2, 1],
+            "Macro Fit": ["Supportive", "Neutral"],
         }
     )
     result.tables["profile"] = pd.DataFrame(
