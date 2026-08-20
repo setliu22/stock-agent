@@ -39,6 +39,15 @@ def tab_drag_target(
     return target if target != current_index else None
 
 
+def _center_dialog(dialog: tk.Toplevel, parent: tk.Misc) -> None:
+    dialog.update_idletasks()
+    width = dialog.winfo_width()
+    height = dialog.winfo_height()
+    x = parent.winfo_rootx() + max(0, (parent.winfo_width() - width) // 2)
+    y = parent.winfo_rooty() + max(0, (parent.winfo_height() - height) // 2)
+    dialog.geometry(f"+{x}+{y}")
+
+
 class PurchaseDialog(tk.Toplevel):
     def __init__(self, parent: tk.Misc) -> None:
         super().__init__(parent)
@@ -183,28 +192,46 @@ class IndustryResearchDialog(tk.Toplevel):
         self.resizable(False, False)
         self.transient(parent)
         self.grab_set()
+        self.configure(background=StockAgentApp.BG)
         self.result: tuple[str, int] | None = None
         self.industry = tk.StringVar()
         self.stock_count = tk.IntVar(value=5)
 
-        frame = ttk.Frame(self, padding=20)
+        frame = ttk.Frame(self, padding=24)
         frame.pack(fill="both", expand=True)
-        ttk.Label(frame, text="Industry of interest", style="Section.TLabel").pack(anchor="w")
-        entry = ttk.Entry(frame, textvariable=self.industry, width=48)
-        entry.pack(fill="x", pady=(7, 15))
-        ttk.Label(frame, text="Stocks to return", style="Section.TLabel").pack(anchor="w")
-        ttk.Spinbox(frame, from_=1, to=20, textvariable=self.stock_count, width=8).pack(
-            anchor="w", pady=(7, 18)
+        ttk.Label(frame, text="Start industry research", style="DialogTitle.TLabel").pack(
+            anchor="w"
         )
+        ttk.Label(
+            frame,
+            text="Choose a market category and result count.",
+            style="DialogMuted.TLabel",
+        ).pack(anchor="w", pady=(4, 18))
+
+        form = ttk.Frame(frame, style="Panel.TFrame", padding=18)
+        form.pack(fill="x")
+        ttk.Label(form, text="Industry or sector", style="DialogLabel.TLabel").pack(anchor="w")
+        entry = ttk.Entry(form, textvariable=self.industry, width=48)
+        entry.pack(fill="x", pady=(8, 16))
+        ttk.Label(form, text="Stocks to return", style="DialogLabel.TLabel").pack(anchor="w")
+        count = ttk.Combobox(
+            form,
+            textvariable=self.stock_count,
+            values=tuple(range(1, 21)),
+            state="readonly",
+            width=7,
+        )
+        count.pack(anchor="w", pady=(8, 0))
         buttons = ttk.Frame(frame)
-        buttons.pack(fill="x")
-        ttk.Button(buttons, text="Cancel", command=self.destroy).pack(side="right", padx=(8, 0))
-        ttk.Button(buttons, text="Research", style="Accent.TButton", command=self._submit).pack(
+        buttons.pack(fill="x", pady=(18, 0))
+        ttk.Button(buttons, text="Start research", style="Accent.TButton", command=self._submit).pack(
             side="right"
         )
+        ttk.Button(buttons, text="Cancel", command=self.destroy).pack(side="right", padx=(0, 8))
         entry.focus_set()
         self.bind("<Return>", lambda _event: self._submit())
         self.bind("<Escape>", lambda _event: self.destroy())
+        self.after_idle(lambda: _center_dialog(self, parent))
 
     def _submit(self) -> None:
         industry = self.industry.get().strip()
@@ -229,38 +256,61 @@ class PositionRiskDialog(tk.Toplevel):
         self.resizable(False, False)
         self.transient(parent)
         self.grab_set()
+        self.configure(background=StockAgentApp.BG)
         self.result: list[str] | None = None
         self.scope = tk.StringVar(value="all")
         self.selections = {ticker: tk.BooleanVar(value=False) for ticker in tickers}
 
-        frame = ttk.Frame(self, padding=20)
+        frame = ttk.Frame(self, padding=24)
         frame.pack(fill="both", expand=True)
-        ttk.Label(frame, text="Positions to review", style="Section.TLabel").pack(anchor="w")
+        ttk.Label(frame, text="Review position risk", style="DialogTitle.TLabel").pack(anchor="w")
+        ttk.Label(
+            frame,
+            text="Select the positions to include.",
+            style="DialogMuted.TLabel",
+        ).pack(anchor="w", pady=(4, 18))
+
+        scope_panel = ttk.Frame(frame, style="Panel.TFrame", padding=16)
+        scope_panel.pack(fill="x")
         ttk.Radiobutton(
-            frame, text=f"Entire portfolio ({len(tickers)} stocks)", variable=self.scope,
-            value="all", command=self._update_scope,
-        ).pack(anchor="w", pady=(10, 5))
-        ttk.Radiobutton(
-            frame, text="Specific stocks", variable=self.scope, value="specific",
+            scope_panel,
+            text=f"Entire portfolio ({len(tickers)} stocks)",
+            variable=self.scope,
+            value="all",
             command=self._update_scope,
-        ).pack(anchor="w", pady=(0, 8))
-        self.stock_frame = ttk.Frame(frame, style="Panel.TFrame", padding=(12, 8))
+            style="Dialog.TRadiobutton",
+        ).pack(anchor="w")
+        ttk.Radiobutton(
+            scope_panel,
+            text="Specific stocks",
+            variable=self.scope,
+            value="specific",
+            command=self._update_scope,
+            style="Dialog.TRadiobutton",
+        ).pack(anchor="w", pady=(10, 0))
+
+        ttk.Separator(scope_panel).pack(fill="x", pady=14)
+        self.stock_frame = ttk.Frame(scope_panel, style="Surface.TFrame")
         self.stock_frame.pack(fill="x")
         self.stock_checks: list[ttk.Checkbutton] = []
         for index, ticker in enumerate(tickers):
             check = ttk.Checkbutton(
-                self.stock_frame, text=ticker, variable=self.selections[ticker]
+                self.stock_frame,
+                text=ticker,
+                variable=self.selections[ticker],
+                style="Dialog.TCheckbutton",
             )
-            check.grid(row=index // 4, column=index % 4, sticky="w", padx=(0, 18), pady=3)
+            check.grid(row=index // 3, column=index % 3, sticky="w", padx=(0, 28), pady=5)
             self.stock_checks.append(check)
         buttons = ttk.Frame(frame)
         buttons.pack(fill="x", pady=(18, 0))
-        ttk.Button(buttons, text="Cancel", command=self.destroy).pack(side="right", padx=(8, 0))
-        ttk.Button(buttons, text="Review", style="Accent.TButton", command=self._submit).pack(
+        ttk.Button(buttons, text="Start review", style="Accent.TButton", command=self._submit).pack(
             side="right"
         )
+        ttk.Button(buttons, text="Cancel", command=self.destroy).pack(side="right", padx=(0, 8))
         self._update_scope()
         self.bind("<Escape>", lambda _event: self.destroy())
+        self.after_idle(lambda: _center_dialog(self, parent))
 
     def _update_scope(self) -> None:
         state = "normal" if self.scope.get() == "specific" else "disabled"
@@ -324,6 +374,7 @@ class StockAgentApp(tk.Tk):
         self.portfolio_refresh_busy = False
         self.portfolio_refresh_generation = 0
         self.current_holdings: list[Any] = []
+        self.delete_buttons: dict[str, ttk.Button] = {}
         self._tab_drag_anchor_x: int | None = None
         families = set(tkfont.families(self))
         self.ui_font = next(
@@ -352,6 +403,24 @@ class StockAgentApp(tk.Tk):
         style.configure("Section.TLabel", background=self.BG, foreground=self.TEXT, font=(self.ui_font, 13, "bold"))
         style.configure("SurfaceSection.TLabel", background=self.SURFACE, foreground=self.TEXT, font=(self.ui_font, 13, "bold"))
         style.configure("Muted.TLabel", background=self.BG, foreground=self.MUTED, font=(self.ui_font, 10))
+        style.configure(
+            "DialogTitle.TLabel",
+            background=self.BG,
+            foreground=self.TEXT,
+            font=(self.ui_font, 18, "bold"),
+        )
+        style.configure(
+            "DialogMuted.TLabel",
+            background=self.BG,
+            foreground=self.MUTED,
+            font=(self.ui_font, 10),
+        )
+        style.configure(
+            "DialogLabel.TLabel",
+            background=self.SURFACE,
+            foreground=self.MUTED,
+            font=(self.ui_font, 9, "bold"),
+        )
         style.configure("Surface.TFrame", background=self.SURFACE)
         style.configure(
             "Panel.TFrame",
@@ -384,6 +453,23 @@ class StockAgentApp(tk.Tk):
         style.configure("Toolbar.TButton", padding=(10, 6), font=(self.ui_font, 9))
         style.configure("Accent.TButton", background=self.ACCENT, foreground="#071014", bordercolor=self.ACCENT, lightcolor=self.ACCENT, darkcolor=self.ACCENT, font=(self.ui_font, 10, "bold"))
         style.map("Accent.TButton", background=[("active", "#7AD7EF"), ("pressed", "#45B4D4")])
+        style.configure(
+            "DeleteIcon.TButton",
+            background=self.SURFACE_ALT,
+            foreground=self.MUTED,
+            bordercolor=self.BORDER,
+            lightcolor=self.BORDER,
+            darkcolor=self.BORDER,
+            borderwidth=1,
+            relief="flat",
+            padding=0,
+            font=(self.ui_font, 11, "bold"),
+        )
+        style.map(
+            "DeleteIcon.TButton",
+            background=[("active", "#242A32"), ("pressed", "#20252C")],
+            foreground=[("active", self.TEXT), ("pressed", self.TEXT)],
+        )
         style.configure("Segment.TButton", padding=(10, 4), font=(self.ui_font, 9))
         style.configure("Selected.Segment.TButton", background="#193841", foreground=self.ACCENT, bordercolor="#32616D", padding=(10, 4), font=(self.ui_font, 9, "bold"))
         style.configure("TNotebook", background=self.BG, borderwidth=0, tabmargins=(0, 0, 0, 0))
@@ -403,8 +489,45 @@ class StockAgentApp(tk.Tk):
         style.map("Treeview.Heading", background=[("active", "#20262D")])
         style.configure("TEntry", fieldbackground=self.SURFACE_ALT, foreground=self.TEXT, insertcolor=self.TEXT, bordercolor=self.BORDER, padding=8)
         style.map("TEntry", bordercolor=[("focus", self.ACCENT)])
+        style.configure(
+            "TCombobox",
+            fieldbackground=self.SURFACE_ALT,
+            background=self.SURFACE_ALT,
+            foreground=self.TEXT,
+            arrowcolor=self.MUTED,
+            bordercolor=self.BORDER,
+            padding=7,
+        )
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", self.SURFACE_ALT)],
+            foreground=[("readonly", self.TEXT)],
+            bordercolor=[("focus", self.ACCENT)],
+        )
         style.configure("TCheckbutton", background=self.BG, foreground=self.TEXT, font=(self.ui_font, 10))
         style.map("TCheckbutton", background=[("active", self.BG)], foreground=[("active", self.TEXT)])
+        style.configure(
+            "Dialog.TCheckbutton",
+            background=self.SURFACE,
+            foreground=self.TEXT,
+            font=(self.ui_font, 10),
+        )
+        style.map(
+            "Dialog.TCheckbutton",
+            background=[("active", self.SURFACE)],
+            foreground=[("disabled", "#666D76"), ("active", self.TEXT)],
+        )
+        style.configure(
+            "Dialog.TRadiobutton",
+            background=self.SURFACE,
+            foreground=self.TEXT,
+            font=(self.ui_font, 10),
+        )
+        style.map(
+            "Dialog.TRadiobutton",
+            background=[("active", self.SURFACE)],
+            foreground=[("active", self.TEXT)],
+        )
         style.configure("TSeparator", background=self.BORDER)
         style.configure("Horizontal.TProgressbar", background=self.ACCENT, troughcolor=self.SURFACE_ALT, bordercolor=self.BORDER)
         style.configure(
@@ -677,13 +800,23 @@ class StockAgentApp(tk.Tk):
         for column in columns:
             self.holdings_tree.heading(column, text=headings[column])
             self.holdings_tree.column(column, width=widths[column], anchor="center")
-        scrollbar = ttk.Scrollbar(self.holdings_tab, orient="vertical", command=self.holdings_tree.yview)
-        self.holdings_tree.configure(yscrollcommand=scrollbar.set)
+        self.holdings_scrollbar = ttk.Scrollbar(
+            self.holdings_tab,
+            orient="vertical",
+            command=self._scroll_holdings,
+        )
+        self.holdings_tree.configure(yscrollcommand=self._update_holdings_scrollbar)
         self.holdings_tree.tag_configure("positive", foreground=self.POSITIVE)
         self.holdings_tree.tag_configure("negative", foreground=self.NEGATIVE)
         self.holdings_tree.bind("<Button-1>", self._toggle_holding_chart, add="+")
+        self.holdings_tree.bind(
+            "<Configure>", lambda _event: self.after_idle(self._position_delete_buttons), add="+"
+        )
+        self.holdings_tree.bind(
+            "<MouseWheel>", lambda _event: self.after_idle(self._position_delete_buttons), add="+"
+        )
         self.holdings_tree.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+        self.holdings_scrollbar.pack(side="right", fill="y")
         self.refresh_holdings(refresh_prices=False)
 
     def _metric(self, parent: ttk.Frame, column: int, title: str, variable: tk.StringVar) -> ttk.Label:
@@ -1609,6 +1742,9 @@ class StockAgentApp(tk.Tk):
     def _render_holding_rows(self) -> None:
         if not hasattr(self, "holdings_tree"):
             return
+        for button in self.delete_buttons.values():
+            button.destroy()
+        self.delete_buttons.clear()
         for item in self.holdings_tree.get_children():
             self.holdings_tree.delete(item)
         period = self._period_label()
@@ -1637,17 +1773,51 @@ class StockAgentApp(tk.Tk):
                     f"${holding.market_value:,.2f}" if getattr(holding, "market_value", None) is not None else "N/A",
                     f"${gain_loss:+,.2f}" if gain_loss is not None else "N/A",
                     f"{return_percent:+,.2f}%" if return_percent is not None else "N/A",
-                    "X",
+                    "",
                 ),
             )
+            self.delete_buttons[holding.ticker] = ttk.Button(
+                self.holdings_tree,
+                text="×",
+                style="DeleteIcon.TButton",
+                command=lambda ticker=holding.ticker: self.delete_position(ticker),
+                takefocus=False,
+            )
+        self.after_idle(self._position_delete_buttons)
+
+    def _scroll_holdings(self, *args: str) -> None:
+        self.holdings_tree.yview(*args)
+        self.after_idle(self._position_delete_buttons)
+
+    def _update_holdings_scrollbar(self, first: str, last: str) -> None:
+        self.holdings_scrollbar.set(first, last)
+        self.after_idle(self._position_delete_buttons)
+
+    def _position_delete_buttons(self) -> None:
+        if not hasattr(self, "holdings_tree") or not self.holdings_tree.winfo_exists():
+            return
+        for ticker, button in self.delete_buttons.items():
+            if not button.winfo_exists():
+                continue
+            box = self.holdings_tree.bbox(ticker, "delete")
+            if not box:
+                button.place_forget()
+                continue
+            x, y, width, height = box
+            button_width = min(26, max(20, width - 8))
+            button_height = min(26, max(20, height - 8))
+            button.place(
+                x=x + (width - button_width) // 2,
+                y=y + (height - button_height) // 2,
+                width=button_width,
+                height=button_height,
+            )
+            button.lift()
 
     def _toggle_holding_chart(self, event: tk.Event) -> str | None:
         row = self.holdings_tree.identify_row(event.y)
         if not row:
             return None
-        if self.holdings_tree.identify_column(event.x) == "#9":
-            self.delete_position(row)
-            return "break"
         ticker = str(self.holdings_tree.item(row, "values")[0])
         if self.selected_performance_ticker == ticker:
             self.selected_performance_ticker = None

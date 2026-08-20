@@ -82,13 +82,20 @@ def test_clicking_same_holding_twice_returns_to_portfolio_chart() -> None:
     assert draws == ["AAPL", None]
 
 
-def test_delete_column_invokes_position_deletion() -> None:
+def test_delete_position_requires_confirmation(monkeypatch) -> None:
     deleted: list[str] = []
-    tree = SimpleNamespace(
-        identify_row=lambda _y: "AAPL",
-        identify_column=lambda _x: "#9",
+    refreshed: list[bool] = []
+    app = SimpleNamespace(
+        controller=SimpleNamespace(delete_position=deleted.append),
+        _invalidate_portfolio_refresh=lambda: None,
+        refresh_holdings=lambda **kwargs: refreshed.append(kwargs["refresh_prices"]),
     )
-    app = SimpleNamespace(holdings_tree=tree, delete_position=deleted.append)
 
-    assert StockAgentApp._toggle_holding_chart(app, SimpleNamespace(x=10, y=10)) == "break"
+    monkeypatch.setattr("gui.messagebox.askyesno", lambda *args, **kwargs: False)
+    StockAgentApp.delete_position(app, "AAPL")
+    assert deleted == []
+
+    monkeypatch.setattr("gui.messagebox.askyesno", lambda *args, **kwargs: True)
+    StockAgentApp.delete_position(app, "AAPL")
     assert deleted == ["AAPL"]
+    assert refreshed == [False]
