@@ -11,6 +11,7 @@ from typing import Any, Callable, Iterable
 
 import pandas as pd
 
+from .groq_client import invoke_structured_groq
 from .market_regime import MarketRegimeSnapshot, build_market_regime
 from .models import Holding
 
@@ -399,16 +400,9 @@ def _augment_review_with_news(
         "required": ["developments", "portfolio_priorities"],
     }
     try:
-        from langchain_groq import ChatGroq
-
-        model = ChatGroq(
-            model=settings.groq_model,
-            temperature=0,
-            max_retries=1,
-            max_tokens=1400,
-            api_key=settings.groq_api_key,
-        ).with_structured_output(schema, method="json_mode", include_raw=False)
-        payload = model.invoke(
+        payload = invoke_structured_groq(
+            settings,
+            schema,
             [
                 (
                     "system",
@@ -432,7 +426,9 @@ def _augment_review_with_news(
                         allow_nan=False,
                     ),
                 ),
-            ]
+            ],
+            max_retries=1,
+            max_tokens=1400,
         )
     except Exception:
         for ticker in evidence_by_ticker:

@@ -7,7 +7,24 @@ import pytest
 
 from portfolio.certificates import configure_ssl_certificates
 from portfolio.cloud_portfolios import friendly_auth_error, is_certificate_error
-from portfolio.config import save_supabase_settings
+from portfolio.config import DEFAULT_GROQ_MODEL, get_settings, save_supabase_settings
+
+
+def test_settings_use_current_groq_default(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("GROQ_MODEL", raising=False)
+
+    settings = get_settings(tmp_path / "portfolio.db")
+
+    assert settings.groq_model == DEFAULT_GROQ_MODEL
+
+
+def test_settings_migrate_retired_groq_model_without_rewriting_env(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+
+    settings = get_settings(tmp_path / "portfolio.db")
+
+    assert settings.groq_model == DEFAULT_GROQ_MODEL
+    assert os.environ["GROQ_MODEL"] == "llama-3.3-70b-versatile"
 
 
 def test_save_supabase_settings_persists_connection_without_password(tmp_path, monkeypatch) -> None:

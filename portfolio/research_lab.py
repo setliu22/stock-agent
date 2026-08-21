@@ -11,6 +11,7 @@ from typing import Any, Callable
 import pandas as pd
 
 from .config import Settings
+from .groq_client import invoke_structured_groq
 from .lseg_research import (
     FIELD_LABELS,
     ResearchCancelled,
@@ -384,18 +385,9 @@ def propose_research(
             "Research Lab proposals require GROQ_API_KEY. No LSEG request was run."
         )
     try:
-        from langchain_groq import ChatGroq
-
-        model = ChatGroq(
-            model=settings.groq_model,
-            temperature=0,
-            max_retries=0,
-            api_key=settings.groq_api_key,
-        )
-        structured = model.with_structured_output(
-            _proposal_schema(), method="json_mode", include_raw=False
-        )
-        payload = structured.invoke(
+        payload = invoke_structured_groq(
+            settings,
+            _proposal_schema(),
             [
                 (
                     "system",
@@ -419,7 +411,8 @@ def propose_research(
                         sort_keys=True,
                     ),
                 ),
-            ]
+            ],
+            max_retries=0,
         )
     except Exception as exc:
         raise ResearchLabError(
@@ -958,17 +951,9 @@ def summarize_findings(
             "required": ["highlights", "caveats"],
         }
         try:
-            from langchain_groq import ChatGroq
-
-            model = ChatGroq(
-                model=settings.groq_model,
-                temperature=0,
-                max_retries=0,
-                api_key=settings.groq_api_key,
-            )
-            payload = model.with_structured_output(
-                schema, method="json_mode", include_raw=False
-            ).invoke(
+            payload = invoke_structured_groq(
+                settings,
+                schema,
                 [
                     (
                         "system",
@@ -990,7 +975,8 @@ def summarize_findings(
                             sort_keys=True,
                         ),
                     ),
-                ]
+                ],
+                max_retries=0,
             )
             if isinstance(payload, dict) and set(payload) == {"highlights", "caveats"}:
                 valid_ids = {item.finding_id for item in findings}

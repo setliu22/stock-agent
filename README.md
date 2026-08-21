@@ -108,6 +108,12 @@ data.
 
 Keep LSEG Workspace open and signed in while running research.
 
+Groq defaults to the current production `openai/gpt-oss-20b` model. Retired
+Llama model IDs from older installs are migrated in memory, without rewriting
+`.env`. If an explicit custom model returns `model_not_found`, the shared Groq
+client retries a bounded list of current structured-output models; other errors
+are returned without an unrelated retry.
+
 ## LSEG diagnostic
 
 Run:

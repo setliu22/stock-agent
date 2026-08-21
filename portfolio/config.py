@@ -14,6 +14,18 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ENV_PATH = PROJECT_ROOT / ".env"
 load_dotenv(ENV_PATH, override=False)
 
+DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
+GROQ_MODEL_MIGRATIONS = {
+    "llama-3.1-8b-instant": DEFAULT_GROQ_MODEL,
+    "llama-3.3-70b-versatile": DEFAULT_GROQ_MODEL,
+}
+
+
+def normalize_groq_model(value: str | None) -> str:
+    """Return a current model while preserving active explicit overrides."""
+    configured = (value or "").strip() or DEFAULT_GROQ_MODEL
+    return GROQ_MODEL_MIGRATIONS.get(configured, configured)
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -37,7 +49,7 @@ def get_settings(database_path: Path | None = None) -> Settings:
         project_root=PROJECT_ROOT,
         database_path=db_path,
         groq_api_key=os.getenv("GROQ_API_KEY") or None,
-        groq_model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+        groq_model=normalize_groq_model(os.getenv("GROQ_MODEL")),
         lseg_session_name=os.getenv("LSEG_SESSION", "desktop.workspace"),
         lseg_app_key=os.getenv("LSEG_APP_KEY") or None,
         lseg_session_timeout=float(os.getenv("LSEG_SESSION_TIMEOUT", "8")),
