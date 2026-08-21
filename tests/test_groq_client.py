@@ -91,3 +91,38 @@ def test_non_model_error_is_not_hidden_by_fallback(monkeypatch) -> None:
         )
 
     assert requested == ["configured-model"]
+
+
+def test_client_uses_strict_json_schema_without_rewriting_messages(monkeypatch) -> None:
+    structured_calls = []
+    received = []
+
+    class FakeChatGroq:
+        def __init__(self, **_options):
+            pass
+
+        def with_structured_output(self, schema, **options):
+            structured_calls.append((schema, options))
+            return self
+
+        def invoke(self, messages):
+            received.append(messages)
+            return {"status": "ok"}
+
+    monkeypatch.setattr("portfolio.groq_client._chat_groq_class", lambda: FakeChatGroq)
+
+    schema = {"title": "Result", "type": "object"}
+    messages = [("system", "Follow the supplied schema."), ("human", "test")]
+    invoke_structured_groq(
+        _settings(DEFAULT_GROQ_MODEL),
+        schema,
+        messages,
+    )
+
+    assert structured_calls == [
+        (
+            schema,
+            {"method": "json_schema", "include_raw": False, "strict": True},
+        )
+    ]
+    assert received == [messages]

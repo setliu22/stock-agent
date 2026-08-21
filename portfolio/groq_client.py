@@ -71,8 +71,9 @@ def invoke_structured_groq(
         try:
             model = chat_groq(**options).with_structured_output(
                 schema,
-                method="json_mode",
+                method="json_schema",
                 include_raw=False,
+                strict=True,
             )
             return model.invoke(list(messages))
         except Exception as exc:
