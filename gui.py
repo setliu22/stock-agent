@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 import queue
+import re
 import threading
 import time
 import tkinter as tk
@@ -15,12 +16,20 @@ from typing import Any
 from portfolio.config import save_supabase_settings
 from portfolio.controller import StockAgentController
 from portfolio.cloud_portfolios import AuthResult, friendly_auth_error
+from portfolio.lseg_research import ResearchCancelled
 from portfolio.market_regime import (
     DEFENSIVE_MACRO_TILT,
     MACRO_REFERENCE_ROWS,
     MarketRegimeSnapshot,
     NEUTRAL_MACRO_TILT,
     TOLERANT_MACRO_TILT,
+)
+from portfolio.research_lab import (
+    ANALYSES,
+    CAPABILITIES,
+    ApprovedResearchPlan,
+    ResearchLabError,
+    ResearchProposal,
 )
 
 
@@ -46,6 +55,23 @@ def _center_dialog(dialog: tk.Toplevel, parent: tk.Misc) -> None:
     x = parent.winfo_rootx() + max(0, (parent.winfo_width() - width) // 2)
     y = parent.winfo_rooty() + max(0, (parent.winfo_height() - height) // 2)
     dialog.geometry(f"+{x}+{y}")
+
+
+def _select_all_text(widget: tk.Text) -> str:
+    widget.tag_add("sel", "1.0", "end-1c")
+    widget.mark_set("insert", "end-1c")
+    widget.see("insert")
+    return "break"
+
+
+def _collapse_text_selection(widget: tk.Text, *, to_end: bool) -> str | None:
+    ranges = widget.tag_ranges("sel")
+    if not ranges:
+        return None
+    widget.mark_set("insert", ranges[1] if to_end else ranges[0])
+    widget.tag_remove("sel", "1.0", "end")
+    widget.see("insert")
+    return "break"
 
 
 class PurchaseDialog(tk.Toplevel):
@@ -186,7 +212,7 @@ class PortfolioJsonDialog(tk.Toplevel):
 
 
 class IndustryResearchDialog(tk.Toplevel):
-    def __init__(self, parent: tk.Misc) -> None:
+    def __init__(self, parent: tk.Misc, options: tuple[tuple[str, str], ...]) -> None:
         super().__init__(parent)
         self.title("Start industry research")
         self.resizable(False, False)
@@ -194,6 +220,7 @@ class IndustryResearchDialog(tk.Toplevel):
         self.grab_set()
         self.configure(background=StockAgentApp.BG)
         self.result: tuple[str, int] | None = None
+        self.option_values = dict(options)
         self.industry = tk.StringVar()
         self.stock_count = tk.IntVar(value=5)
 
@@ -211,8 +238,14 @@ class IndustryResearchDialog(tk.Toplevel):
         form = ttk.Frame(frame, style="Panel.TFrame", padding=18)
         form.pack(fill="x")
         ttk.Label(form, text="Industry or sector", style="DialogLabel.TLabel").pack(anchor="w")
-        entry = ttk.Entry(form, textvariable=self.industry, width=48)
-        entry.pack(fill="x", pady=(8, 16))
+        self.category = ttk.Combobox(
+            form,
+            textvariable=self.industry,
+            values=tuple(self.option_values),
+            state="readonly",
+            width=48,
+        )
+        self.category.pack(fill="x", pady=(8, 16))
         ttk.Label(form, text="Stocks to return", style="DialogLabel.TLabel").pack(anchor="w")
         count = ttk.Combobox(
             form,
@@ -228,24 +261,221 @@ class IndustryResearchDialog(tk.Toplevel):
             side="right"
         )
         ttk.Button(buttons, text="Cancel", command=self.destroy).pack(side="right", padx=(0, 8))
-        entry.focus_set()
+        self.category.focus_set()
         self.bind("<Return>", lambda _event: self._submit())
         self.bind("<Escape>", lambda _event: self.destroy())
         self.after_idle(lambda: _center_dialog(self, parent))
 
     def _submit(self) -> None:
-        industry = self.industry.get().strip()
+        selected = self.industry.get().strip()
+        industry = self.option_values.get(selected, "")
         try:
             count = int(self.stock_count.get())
         except (TypeError, ValueError):
             count = 0
         if not industry:
-            messagebox.showerror("Industry required", "Enter an industry or sector.", parent=self)
+            messagebox.showerror("Industry required", "Select an industry or sector.", parent=self)
             return
         if not 1 <= count <= 20:
             messagebox.showerror("Invalid range", "Choose between 1 and 20 stocks.", parent=self)
             return
         self.result = (industry, count)
+        self.destroy()
+
+
+class ResearchApprovalDialog(tk.Toplevel):
+    TIMEFRAMES = {
+        "3 months": 90,
+        "6 months": 180,
+        "1 year": 365,
+        "2 years": 730,
+        "5 years": 1825,
+    }
+
+    def __init__(self, parent: tk.Misc, proposal: ResearchProposal) -> None:
+        super().__init__(parent)
+        self.title("Approve research plan")
+        self.geometry("1040x720")
+        self.minsize(940, 640)
+        self.transient(parent)
+        self.grab_set()
+        self.configure(background=StockAgentApp.BG)
+        self.result: ApprovedResearchPlan | None = None
+        self.proposal = proposal
+        self.securities = tk.StringVar(value="; ".join(proposal.securities))
+        self.benchmark = tk.StringVar(value=proposal.benchmark or "")
+        timeframe_label = next(
+            (
+                label
+                for label, days in self.TIMEFRAMES.items()
+                if days == proposal.lookback_days
+            ),
+            f"{proposal.lookback_days} days",
+        )
+        self.timeframe = tk.StringVar(value=timeframe_label)
+        selected_capabilities = {item.item_id for item in proposal.capabilities}
+        selected_analyses = {item.item_id for item in proposal.analyses}
+        self.capability_vars = {
+            item.capability_id: tk.BooleanVar(
+                value=item.required or item.capability_id in selected_capabilities
+            )
+            for item in CAPABILITIES
+        }
+        self.analysis_vars = {
+            item.analysis_id: tk.BooleanVar(value=item.analysis_id in selected_analyses)
+            for item in ANALYSES
+        }
+
+        outer = ttk.Frame(self, padding=22)
+        outer.pack(fill="both", expand=True)
+        ttk.Label(outer, text="Approve research plan", style="DialogTitle.TLabel").pack(
+            anchor="w"
+        )
+        ttk.Label(
+            outer,
+            text=proposal.question,
+            style="DialogMuted.TLabel",
+            wraplength=880,
+            justify="left",
+        ).pack(anchor="w", fill="x", pady=(4, 14))
+
+        controls = ttk.Frame(outer)
+        controls.pack(fill="x", pady=(0, 14))
+        ttk.Label(controls, text="Securities (separate with ;)", style="DialogMuted.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Label(controls, text="Timeframe", style="DialogMuted.TLabel").grid(
+            row=0, column=1, sticky="w", padx=(12, 0)
+        )
+        ttk.Label(controls, text="Benchmark", style="DialogMuted.TLabel").grid(
+            row=0, column=2, sticky="w", padx=(12, 0)
+        )
+        ttk.Entry(controls, textvariable=self.securities).grid(
+            row=1, column=0, sticky="ew", pady=(5, 0)
+        )
+        timeframe_values = list(self.TIMEFRAMES)
+        if timeframe_label not in timeframe_values:
+            timeframe_values.append(timeframe_label)
+        ttk.Combobox(
+            controls,
+            textvariable=self.timeframe,
+            values=timeframe_values,
+            state="readonly",
+            width=14,
+        ).grid(row=1, column=1, sticky="ew", padx=(12, 0), pady=(5, 0))
+        ttk.Entry(controls, textvariable=self.benchmark, width=18).grid(
+            row=1, column=2, sticky="ew", padx=(12, 0), pady=(5, 0)
+        )
+        controls.columnconfigure(0, weight=1)
+
+        body = ttk.Frame(outer)
+        body.pack(fill="both", expand=True)
+        data_frame = ttk.Frame(body)
+        data_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 18))
+        analysis_frame = ttk.Frame(body)
+        analysis_frame.grid(row=0, column=1, sticky="nsew")
+        body.columnconfigure(0, weight=2)
+        body.columnconfigure(1, weight=1)
+        body.rowconfigure(0, weight=1)
+        ttk.Label(data_frame, text="Data to retrieve", style="Section.TLabel").grid(
+            row=0, column=0, columnspan=2, sticky="w"
+        )
+        reasons = {item.item_id: item.reason for item in proposal.capabilities}
+        split = (len(CAPABILITIES) + 1) // 2
+        for index, capability in enumerate(CAPABILITIES):
+            row = ttk.Frame(data_frame)
+            row.grid(
+                row=index % split + 1,
+                column=index // split,
+                sticky="new",
+                padx=(0, 12),
+                pady=(7, 0),
+            )
+            check = ttk.Checkbutton(
+                row,
+                text=f"{capability.label} · {capability.source}",
+                variable=self.capability_vars[capability.capability_id],
+            )
+            check.pack(anchor="w")
+            if capability.required:
+                check.configure(state="disabled")
+            reason = reasons.get(capability.capability_id)
+            if reason:
+                ttk.Label(
+                    row,
+                    text=reason,
+                    style="Muted.TLabel",
+                    wraplength=245,
+                    justify="left",
+                ).pack(anchor="w", padx=(24, 0))
+
+        ttk.Label(analysis_frame, text="Python analyses", style="Section.TLabel").pack(anchor="w")
+        analysis_reasons = {item.item_id: item.reason for item in proposal.analyses}
+        for analysis in ANALYSES:
+            row = ttk.Frame(analysis_frame)
+            row.pack(fill="x", pady=(7, 0))
+            ttk.Checkbutton(
+                row,
+                text=analysis.label,
+                variable=self.analysis_vars[analysis.analysis_id],
+            ).pack(anchor="w")
+            reason = analysis_reasons.get(analysis.analysis_id)
+            if reason:
+                ttk.Label(
+                    row,
+                    text=reason,
+                    style="Muted.TLabel",
+                    wraplength=400,
+                    justify="left",
+                ).pack(anchor="w", padx=(24, 0))
+
+        buttons = ttk.Frame(outer)
+        buttons.pack(fill="x", pady=(16, 0))
+        ttk.Button(
+            buttons,
+            text="Run approved plan",
+            style="Accent.TButton",
+            command=self._submit,
+        ).pack(side="right")
+        ttk.Button(buttons, text="Cancel", command=self.destroy).pack(
+            side="right", padx=(0, 8)
+        )
+        self.bind("<Escape>", lambda _event: self.destroy())
+        self.after_idle(lambda: _center_dialog(self, parent))
+
+    def _submit(self) -> None:
+        securities = tuple(
+            item.strip()
+            for item in re.split(r"[;\n]", self.securities.get())
+            if item.strip()
+        )
+        timeframe_text = self.timeframe.get().strip()
+        if timeframe_text in self.TIMEFRAMES:
+            lookback_days = self.TIMEFRAMES[timeframe_text]
+        else:
+            match = re.fullmatch(r"(\d+)\s+days", timeframe_text)
+            lookback_days = int(match.group(1)) if match else 0
+        approved = ApprovedResearchPlan(
+            question=self.proposal.question,
+            securities=securities,
+            lookback_days=lookback_days,
+            benchmark=self.benchmark.get().strip() or None,
+            capability_ids=tuple(
+                item.capability_id
+                for item in CAPABILITIES
+                if self.capability_vars[item.capability_id].get()
+            ),
+            analysis_ids=tuple(
+                item.analysis_id
+                for item in ANALYSES
+                if self.analysis_vars[item.analysis_id].get()
+            ),
+        )
+        try:
+            self.result = approved.validated()
+        except ResearchLabError as exc:
+            messagebox.showerror("Incomplete research plan", str(exc), parent=self)
+            return
         self.destroy()
 
 
@@ -504,6 +734,12 @@ class StockAgentApp(tk.Tk):
             foreground=[("readonly", self.TEXT)],
             bordercolor=[("focus", self.ACCENT)],
         )
+        self.option_add("*TCombobox*Listbox.background", self.SURFACE_ALT)
+        self.option_add("*TCombobox*Listbox.foreground", self.TEXT)
+        self.option_add("*TCombobox*Listbox.selectBackground", "#204A55")
+        self.option_add("*TCombobox*Listbox.selectForeground", self.TEXT)
+        self.option_add("*TCombobox*Listbox.font", (self.ui_font, 10))
+        self.option_add("*TCombobox*Listbox.relief", "flat")
         style.configure("TCheckbutton", background=self.BG, foreground=self.TEXT, font=(self.ui_font, 10))
         style.map("TCheckbutton", background=[("active", self.BG)], foreground=[("active", self.TEXT)])
         style.configure(
@@ -563,7 +799,7 @@ class StockAgentApp(tk.Tk):
         self.holdings_tab = ttk.Frame(notebook, padding=(8, 16, 8, 8))
         self.market_tab = ttk.Frame(notebook, padding=(8, 16, 8, 8))
         self.account_tab = ttk.Frame(notebook, padding=(8, 16, 8, 8))
-        notebook.add(self.chat_tab, text="Chat")
+        notebook.add(self.chat_tab, text="Research Lab")
         notebook.add(self.holdings_tab, text="Portfolio")
         notebook.add(self.market_tab, text="Market")
         notebook.add(self.account_tab, text="Account")
@@ -609,7 +845,7 @@ class StockAgentApp(tk.Tk):
     def _build_chat_tab(self) -> None:
         header = ttk.Frame(self.chat_tab)
         header.pack(fill="x", pady=(0, 12))
-        ttk.Label(header, text="Chat", style="Title.TLabel").pack(side="left")
+        ttk.Label(header, text="Research Lab", style="Title.TLabel").pack(side="left")
         self.stop_button = ttk.Button(
             header,
             text="Stop",
@@ -618,6 +854,58 @@ class StockAgentApp(tk.Tk):
             state="disabled",
         )
         self.stop_button.pack(side="right")
+
+        composer = ttk.Frame(self.chat_tab, style="Panel.TFrame", padding=12)
+        composer.pack(fill="x", pady=(0, 12))
+        ttk.Label(composer, text="Research question", style="SurfaceSection.TLabel").pack(
+            anchor="w", pady=(0, 7)
+        )
+        input_row = ttk.Frame(composer, style="Surface.TFrame")
+        input_row.pack(fill="x")
+        self.research_question = tk.Text(
+            input_row,
+            height=3,
+            wrap="word",
+            font=(self.ui_font, 11),
+            background=self.SURFACE_ALT,
+            foreground=self.TEXT,
+            insertbackground=self.TEXT,
+            selectbackground="#285665",
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground=self.BORDER,
+            padx=10,
+            pady=8,
+        )
+        self.research_question.pack(side="left", fill="x", expand=True)
+        self.propose_research_button = ttk.Button(
+            input_row,
+            text="Propose plan",
+            style="Accent.TButton",
+            command=self.start_research_proposal,
+        )
+        self.propose_research_button.pack(side="right", anchor="s", padx=(10, 0))
+        self.research_question.bind(
+            "<Control-Return>", lambda _event: self.start_research_proposal()
+        )
+        self.research_question.bind(
+            "<Command-Return>", lambda _event: self.start_research_proposal()
+        )
+        self.research_question.bind(
+            "<Control-a>", lambda _event: _select_all_text(self.research_question)
+        )
+        self.research_question.bind(
+            "<Command-a>", lambda _event: _select_all_text(self.research_question)
+        )
+        self.research_question.bind(
+            "<Left>",
+            lambda _event: _collapse_text_selection(self.research_question, to_end=False),
+        )
+        self.research_question.bind(
+            "<Right>",
+            lambda _event: _collapse_text_selection(self.research_question, to_end=True),
+        )
 
         transcript_frame = ttk.Frame(self.chat_tab)
         self.transcript = ScrolledText(
@@ -639,7 +927,7 @@ class StockAgentApp(tk.Tk):
             spacing3=3,
         )
         self.transcript.pack(fill="both", expand=True)
-        self.transcript.insert("end", "Agent:\nResearch results will appear here.\n\n")
+        self.transcript.insert("end", "Agent:\nApproved research results will appear here.\n\n")
         self.transcript.configure(state="disabled")
 
         self.progress_frame = ttk.Frame(
@@ -1088,19 +1376,6 @@ class StockAgentApp(tk.Tk):
         self._refresh_stop_button()
         self._replace_live_progress_message()
 
-    def _start_message(self, message: str) -> None:
-        if self.is_busy:
-            messagebox.showinfo("Research in progress", "Wait for the current research to finish or stop it.", parent=self)
-            return
-        self.notebook.select(self.chat_tab)
-        self._append("You", message)
-        cancel_event = threading.Event()
-        self.cancel_event = cancel_event
-        self._set_busy(True, cancellable=True)
-        threading.Thread(
-            target=self._message_worker, args=(message, cancel_event), daemon=True
-        ).start()
-
     def _start_position_risk_worker(self, tickers: list[str]) -> None:
         if self.is_busy:
             messagebox.showinfo("Research in progress", "Wait for the current research to finish or stop it.", parent=self)
@@ -1129,7 +1404,90 @@ class StockAgentApp(tk.Tk):
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _message_worker(self, message: str, cancel_event: threading.Event) -> None:
+    def start_research_proposal(self) -> None:
+        if self.is_busy:
+            messagebox.showinfo(
+                "Research in progress",
+                "Wait for the current research to finish or stop it.",
+                parent=self,
+            )
+            return
+        question = self.research_question.get("1.0", "end").strip()
+        if not question:
+            messagebox.showerror(
+                "Question required", "Enter a research question.", parent=self
+            )
+            return
+        self._append("You", question)
+        self._set_busy(True, cancellable=False)
+        self._update_progress(10, "Proposing research plan", "Matching the question to registered capabilities.")
+
+        def worker() -> None:
+            try:
+                proposal = self.controller.propose_custom_research(question)
+                self.results.put(("research_proposal", proposal))
+            except Exception as exc:
+                self.results.put(
+                    (
+                        "research_proposal_error",
+                        f"Could not propose a research plan: {type(exc).__name__}: {exc}",
+                    )
+                )
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _start_research_lab_worker(self, approved: ApprovedResearchPlan) -> None:
+        if self.is_busy:
+            return
+        capability_labels = [
+            item.label for item in CAPABILITIES if item.capability_id in approved.capability_ids
+        ]
+        analysis_labels = [
+            item.label for item in ANALYSES if item.analysis_id in approved.analysis_ids
+        ]
+        summary = "Approved data: " + ", ".join(capability_labels)
+        if analysis_labels:
+            summary += ". Analyses: " + ", ".join(analysis_labels)
+        self._append("You", summary + ".")
+        cancel_event = threading.Event()
+        self.cancel_event = cancel_event
+        self._set_busy(True, cancellable=True)
+
+        def progress_callback(percent: int | None, stage: str, detail: str = "") -> None:
+            self.results.put(
+                ("progress", {"percent": percent, "stage": stage, "detail": detail})
+            )
+
+        def worker() -> None:
+            try:
+                result = self.controller.run_custom_research(
+                    approved,
+                    progress_callback=progress_callback,
+                    cancel_event=cancel_event,
+                )
+                response = result.report
+            except ResearchCancelled:
+                response = "Research stopped. Partial results were discarded."
+            except Exception as exc:
+                response = f"Unexpected error: {type(exc).__name__}: {exc}"
+            self.results.put(("message", response))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _start_industry_research_worker(self, industry: str, count: int) -> None:
+        if self.is_busy:
+            messagebox.showinfo(
+                "Research in progress",
+                "Wait for the current research to finish or stop it.",
+                parent=self,
+            )
+            return
+        self.notebook.select(self.chat_tab)
+        self._append("You", f"Research {industry}; return {count} stocks.")
+        cancel_event = threading.Event()
+        self.cancel_event = cancel_event
+        self._set_busy(True, cancellable=True)
+
         def progress_callback(percent: int | None, stage: str, detail: str = "") -> None:
             self.results.put(
                 (
@@ -1138,15 +1496,19 @@ class StockAgentApp(tk.Tk):
                 )
             )
 
-        try:
-            response = self.controller.handle_message(
-                message,
-                progress_callback=progress_callback,
-                cancel_event=cancel_event,
-            )
-        except Exception as exc:
-            response = f"Unexpected error: {type(exc).__name__}: {exc}"
-        self.results.put(("message", response))
+        def worker() -> None:
+            try:
+                response = self.controller.research_industry(
+                    industry,
+                    count,
+                    progress_callback=progress_callback,
+                    cancel_event=cancel_event,
+                )
+            except Exception as exc:
+                response = f"Unexpected error: {type(exc).__name__}: {exc}"
+            self.results.put(("message", response))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _run_direct(self, kind: str, function) -> None:
         self._set_busy(True, cancellable=False)
@@ -1174,6 +1536,27 @@ class StockAgentApp(tk.Tk):
                         stage,
                         str(payload.get("detail") or ""),
                     )
+                    continue
+                if kind == "research_proposal":
+                    self._finish_progress("Proposal ready.")
+                    self._set_busy(False)
+                    proposal = payload
+                    if not isinstance(proposal, ResearchProposal):
+                        self._append("Agent", "The proposal model returned an invalid result.")
+                        continue
+                    if not proposal.ready:
+                        self._append("Agent", proposal.clarification or "Clarification is required.")
+                        continue
+                    dialog = ResearchApprovalDialog(self, proposal)
+                    self.wait_window(dialog)
+                    if dialog.result is not None:
+                        self._start_research_lab_worker(dialog.result)
+                    continue
+                if kind == "research_proposal_error":
+                    response = str(payload)
+                    self._finish_progress(response)
+                    self._append("Agent", response)
+                    self._set_busy(False)
                     continue
                 if kind == "auth":
                     result = payload
@@ -1234,6 +1617,8 @@ class StockAgentApp(tk.Tk):
 
     def _set_busy(self, busy: bool, *, cancellable: bool = True) -> None:
         self.is_busy = busy
+        if hasattr(self, "propose_research_button"):
+            self.propose_research_button.configure(state="disabled" if busy else "normal")
         self.current_task_cancellable = busy and cancellable
         if busy:
             self.stop_requested = False
@@ -1454,19 +1839,12 @@ class StockAgentApp(tk.Tk):
             self._start_position_risk_worker(dialog.result)
 
     def start_industry_research(self) -> None:
-        while True:
-            dialog = IndustryResearchDialog(self)
-            self.wait_window(dialog)
-            if dialog.result is None:
-                return
-            industry, count = dialog.result
-            try:
-                request = self.controller.build_industry_research_request(industry, count)
-            except ValueError as exc:
-                messagebox.showerror("Industry not recognized", str(exc), parent=self)
-                continue
-            self._start_message(request)
+        dialog = IndustryResearchDialog(self, self.controller.industry_research_options())
+        self.wait_window(dialog)
+        if dialog.result is None:
             return
+        industry, count = dialog.result
+        self._start_industry_research_worker(industry, count)
 
     def refresh_market_regime(self) -> None:
         if self.market_refresh_busy:

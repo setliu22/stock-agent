@@ -5,8 +5,8 @@ import pandas as pd
 from portfolio.company_resolver import ResolvedInstrument
 from portfolio.config import Settings
 from portfolio.lseg_capabilities import EXECUTABLE_OPERATIONS
-from portfolio.lseg_research import ResearchResult, _plain_text_report, concise_report
-from portfolio.research_planner import ResearchPlan, ScreenFilters, build_research_plan
+from portfolio.lseg_research import ResearchResult, concise_report
+from portfolio.research_plan import ResearchPlan, ScreenFilters
 from portfolio.research_workflows import get_workflow
 
 
@@ -15,7 +15,11 @@ def settings(tmp_path: Path) -> Settings:
 
 
 def test_sector_request_compiles_to_fixed_workflow(tmp_path) -> None:
-    plan = build_research_plan("research a promising industrials stock", settings(tmp_path))
+    plan = ResearchPlan(
+        mode="screen",
+        workflow="sector_opportunity",
+        screen=ScreenFilters(sector="Industrials", candidate_search=True),
+    ).normalized()
     assert plan.workflow == "sector_opportunity"
     workflow = get_workflow(plan.workflow, plan.mode, candidate_search=True)
     assert [stage.stage_id for stage in workflow.stages] == [
@@ -86,10 +90,3 @@ def test_candidate_report_uses_deep_dive_evidence(tmp_path) -> None:
     assert "Opportunity:" in text
     assert "Major risks:" in text
     assert "screened 120 companies" in text
-
-
-def test_markdown_is_removed_for_tkinter() -> None:
-    text = _plain_text_report("**Candidate:** UPS\n* Risk one\n## Coverage")
-    assert "**" not in text
-    assert "##" not in text
-    assert "• Risk one" in text

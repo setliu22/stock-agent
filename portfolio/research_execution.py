@@ -12,7 +12,7 @@ from .company_resolver import (
     extract_security_reference,
     resolve_instrument,
 )
-from .research_planner import ResearchPlan
+from .research_plan import ResearchPlan
 
 
 InstrumentResolver = Callable[[str], ResolvedInstrument]
@@ -20,6 +20,7 @@ _NAMED_COMPANY_WORKFLOWS = {
     "company_deep_dive",
     "company_compare",
     "position_review",
+    "research_lab",
 }
 
 

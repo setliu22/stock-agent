@@ -1,9 +1,4 @@
-"""Machine-readable catalog of the public LSEG Data Library capabilities.
-
-The application uses this catalog to constrain natural-language planning. It is
-not an entitlement guarantee: the user's Workspace variant and add-ons decide
-which calls and content sets actually return data.
-"""
+"""Machine-readable catalog of public LSEG Data Library capabilities."""
 
 from __future__ import annotations
 
@@ -41,7 +36,7 @@ class OperationSpec:
 
 
 # Exact read-only operations that deterministic workflows may execute. The raw
-# installed callable inventory is broader, but natural language never invokes
+# installed callable inventory is broader, but the application never invokes
 # an arbitrary callable directly.
 EXECUTABLE_OPERATIONS: tuple[OperationSpec, ...] = (
     OperationSpec("session.open", "lseg.data.open_session", "Open the configured Workspace or platform session.", "_open_lseg_session", ("session_name",), entitlement="session"),
@@ -59,7 +54,6 @@ EXECUTABLE_OPERATIONS: tuple[OperationSpec, ...] = (
     OperationSpec("content.filings", "lseg.data.content.filings.search.Definition", "Search entitled company filings.", "_retrieve_filings", ("org_id", "start_date", "end_date"), entitlement="filings"),
     OperationSpec("local.multifactor_rank", "portfolio.lseg_research._rank_candidate_screen", "Rank candidates using value, quality, cash flow, expectations, momentum, target, risk, and data coverage.", "_rank_candidate_screen", ("screen_frame",), access_points=("local",), entitlement="none"),
     OperationSpec("local.metrics", "portfolio.lseg_research._derive_metrics", "Derive revisions, margins, returns, volatility, peer medians, and evidence coverage.", "_derive_metrics", ("research_result",), access_points=("local",), entitlement="none"),
-    OperationSpec("llm.evidence_synthesis", "portfolio.lseg_research._llm_report", "Identify major opportunities, catalysts, risks, and contradictions from retrieved evidence only.", "_llm_report", ("evidence_payload",), access_points=("local",), entitlement="groq-key", response="plain text"),
 )
 
 
@@ -234,7 +228,7 @@ def capability_answer(query: str, catalog_path: Path | None = None) -> str:
         lines.append(f"• {name}: {summary}" if summary else f"• {name}")
         if len(lines) >= 9:
             break
-    lines.append("Natural-language research uses only predefined read-only workflows; specialized functions require explicit parameters.")
+    lines.append("Research uses only predefined read-only workflows; specialized functions require explicit parameters.")
     return "\n".join(lines)
 
 
@@ -242,9 +236,9 @@ def concise_capability_summary() -> str:
     return "\n".join(
         [
             "LSEG capabilities recognized by this application:",
-            "• Predefined research workflows: company deep dive, consistent company comparison, multi-factor sector opportunity research, explicit stock screens, and market news.",
+            "• Predefined research workflows: approved Research Lab plans, company comparison, position review, multi-factor sector opportunity research, explicit stock screens, and market news.",
             "• Research evidence: company data, financials, quality, valuation, estimate histories and revisions, SmartEstimate, recommendations, prices, Reuters news and stories, events, guidance, ownership, insiders, filings, peers, suppliers, and customers when entitled.",
-            "• The LLM only classifies intent and synthesizes retrieved evidence. It cannot invent LSEG calls, fields, tickers, or workflows.",
+            "• Industry selection maps directly to a validated workflow. Research Lab models may propose registered capability IDs, but user approval and deterministic code choose every LSEG call and field.",
             "• Specialized functions such as real-time streams, Tradefeedr, custom-instrument writes, derivative pricing, curves, surfaces, low-level endpoints, and bulk delivery are catalogued but not autonomously invoked.",
             "• Exact installed-package function and class inventory: data/lseg_capabilities.json.",
             "",
@@ -336,7 +330,7 @@ def export_catalog(path: Path) -> Path:
         "scope": "Curated LSEG Data Library research map plus installed-package callable inventory",
         "installed_lseg_data_version": installed_version,
         "entitlement_note": "Actual availability depends on Workspace variant, add-ons, content permissions, session type, and service limits.",
-        "planner_policy": "Only curated research-safe capabilities are executable from natural language. Specialized pricing, trade, streaming, bulk-delivery, and write operations remain catalogued but require explicit parameters and are not guessed.",
+        "execution_policy": "Only curated read-only workflows are executable. Specialized pricing, trade, streaming, bulk-delivery, and write operations remain catalogued and require explicit parameters.",
         "executable_read_only_operations": [asdict(item) for item in EXECUTABLE_OPERATIONS],
         "capabilities": [asdict(item) for item in CAPABILITIES],
         "workflows": __import__("portfolio.research_workflows", fromlist=["WORKFLOWS"]).WORKFLOWS and [item.to_dict() for item in __import__("portfolio.research_workflows", fromlist=["WORKFLOWS"]).WORKFLOWS.values()],

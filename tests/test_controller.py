@@ -8,6 +8,7 @@ from portfolio.cloud_portfolios import CloudPortfolio, CloudPurchase, CloudSessi
 from portfolio.models import Purchase
 from portfolio.market_regime import MarketRegimeSnapshot
 from portfolio.portfolio_import import parse_portfolio_update_json_message
+from portfolio.research_lab import ApprovedResearchPlan, ResearchProposal
 
 
 def test_controller_records_explicit_ticker(tmp_path) -> None:
@@ -281,26 +282,107 @@ def test_delete_and_reset_remove_signed_in_cloud_rows(tmp_path) -> None:
     assert controller.holdings() == []
 
 
-def test_industry_research_request_uses_validated_taxonomy_and_count(tmp_path) -> None:
+def test_industry_research_builds_structured_plan_without_llm(tmp_path, monkeypatch) -> None:
     settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
     controller = StockAgentController(settings=settings)
+    captured = []
 
-    request = controller.build_industry_research_request("technology", 7)
+    class _Result:
+        metrics = {"lseg_request_count": 2, "lseg_request_succeeded": 2}
 
-    assert "Technology" in request
-    assert "7 stocks" in request
+    def fake_run(plan, *_args, **_kwargs):
+        captured.append(plan)
+        return _Result()
+
+    monkeypatch.setattr("portfolio.controller.run_research", fake_run)
+    monkeypatch.setattr("portfolio.controller.concise_report", lambda *_args, **_kwargs: "report")
+
+    assert controller.research_industry("Technology", 7) == "report"
+    plan = captured[0]
+    assert plan.screen.sector == "Technology"
+    assert plan.screen.limit == 7
+    assert plan.workflow == "sector_opportunity"
 
 
-def test_industry_research_rejects_unmatched_wording_without_llm(tmp_path) -> None:
+def test_industry_research_options_include_every_supported_sector_and_industry() -> None:
+    options = StockAgentController.industry_research_options()
+
+    labels = [label for label, _value in options]
+    values = [value for _label, value in options]
+    assert len(options) == 23
+    assert len(labels) == len(set(labels))
+    assert "Technology (Sector)" in labels
+    assert "Software (Technology industry)" in labels
+    assert "Technology" in values
+    assert "Software" in values
+
+
+def test_industry_research_rejects_unmatched_option(tmp_path) -> None:
     settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
     controller = StockAgentController(settings=settings)
 
     try:
-        controller.build_industry_research_request("flibbertigibbet", 5)
+        controller.research_industry("flibbertigibbet", 5)
     except ValueError as exc:
-        assert "Could not match" in str(exc)
+        assert "supported LSEG" in str(exc)
     else:
         raise AssertionError("Unmatched industry wording should be rejected.")
+
+
+def test_controller_returns_non_executable_research_proposal(tmp_path, monkeypatch) -> None:
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
+    controller = StockAgentController(settings=settings)
+    expected = ResearchProposal(
+        question="Compare AAPL and MSFT",
+        securities=("AAPL", "MSFT"),
+        lookback_days=365,
+        benchmark=None,
+        capabilities=(),
+        analyses=(),
+        clarification="Choose data.",
+    )
+    captured = []
+
+    def fake_proposal(question, received_settings):
+        captured.append((question, received_settings))
+        return expected
+
+    monkeypatch.setattr("portfolio.controller.propose_research", fake_proposal)
+
+    assert controller.propose_custom_research("Compare AAPL and MSFT") is expected
+    assert captured == [("Compare AAPL and MSFT", settings)]
+
+
+def test_controller_executes_only_approved_research_plan(tmp_path, monkeypatch) -> None:
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
+    controller = StockAgentController(settings=settings)
+    controller._market_snapshot = MarketRegimeSnapshot(
+        regime="Neutral liquidity regime",
+        summary="Test",
+        emphasis=(),
+        indicators=(),
+        missing_evidence=(),
+        generated_at=datetime.now(timezone.utc),
+    )
+    approved = ApprovedResearchPlan(
+        question="Research AAPL",
+        securities=("AAPL",),
+        lookback_days=365,
+        benchmark=None,
+        capability_ids=("macro_context", "company_profile"),
+        analysis_ids=(),
+    )
+    expected = object()
+    captured = []
+
+    def fake_execute(plan, received_settings, snapshot, **kwargs):
+        captured.append((plan, received_settings, snapshot, kwargs))
+        return expected
+
+    monkeypatch.setattr("portfolio.controller.execute_research", fake_execute)
+
+    assert controller.run_custom_research(approved) is expected
+    assert captured[0][:3] == (approved, settings, controller._market_snapshot)
 
 
 def test_position_risk_review_can_be_scoped_to_selected_tickers(tmp_path, monkeypatch) -> None:

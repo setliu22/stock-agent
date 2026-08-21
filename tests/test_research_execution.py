@@ -4,7 +4,7 @@ import pytest
 
 from portfolio.company_resolver import InstrumentResolutionError, ResolvedInstrument
 from portfolio.research_execution import compile_execution_request
-from portfolio.research_planner import ResearchPlan, ScreenFilters
+from portfolio.research_plan import ResearchPlan, ScreenFilters
 
 
 def _resolved(reference: str, ticker: str, ric: str) -> ResolvedInstrument:

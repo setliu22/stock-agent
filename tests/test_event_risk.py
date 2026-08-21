@@ -4,10 +4,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 
-from portfolio.agent import StockAgent
 from portfolio.company_resolver import ResolvedInstrument
-from portfolio.config import Settings
-from portfolio.database import PortfolioDatabase
 from portfolio.event_risk import (
     _augment_review_with_news,
     build_portfolio_review_plan,
@@ -325,19 +322,3 @@ def test_ordinary_dividend_is_not_treated_as_downside_event_risk():
     item = review.holdings[0]
     assert item.upcoming_event is None
     assert not any(signal.category == "Event risk" for signal in item.signals)
-
-
-def test_prefilled_position_risk_prompt_routes_to_position_review(tmp_path, monkeypatch):
-    settings = Settings(
-        tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace"
-    )
-    agent = StockAgent(settings, PortfolioDatabase(settings.database_path))
-    monkeypatch.setattr(
-        agent, "review_position_risk", lambda *_args: "position review invoked"
-    )
-
-    response = agent.handle(
-        "Review my portfolio positions for reasons to hold, review, trim, or consider exiting."
-    )
-
-    assert response == "position review invoked"

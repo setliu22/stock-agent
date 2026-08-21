@@ -12,9 +12,9 @@ if [[ ! -x "$PYTHON" ]]; then
 fi
 
 echo "Keep LSEG Workspace open and signed in."
-echo "Testing: natural language -> fixed workflow -> broad screen -> finalist deep dives -> evidence-checked concise report"
+echo "Testing: fixed workflow -> broad screen -> finalist deep dives -> deterministic report"
 echo
-"$PYTHON" "$PROJECT_ROOT/test_lseg_name_resolution.py" "Can you do some research on a potential bargain buy in the industrial sector?"
+"$PYTHON" "$PROJECT_ROOT/test_lseg_connection.py"
 STATUS=$?
 echo
 read -k 1 "?Press any key to close."

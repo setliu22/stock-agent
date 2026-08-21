@@ -1,9 +1,4 @@
-"""Deterministic, read-only LSEG research workflows.
-
-The language model chooses a workflow and extracts constraints. It never writes
-LSEG code or chooses arbitrary API functions. This module compiles the intent
-into a fixed sequence of validated read-only operations.
-"""
+"""Deterministic, read-only LSEG research workflows."""
 
 from __future__ import annotations
 
@@ -45,7 +40,7 @@ WORKFLOWS: dict[str, WorkflowDefinition] = {
             WorkflowStage("core", "Retrieve identity, financials, quality, valuation, estimates, recommendations, and risk.", ("access.get_data",)),
             WorkflowStage("history", "Retrieve price and estimate histories and derive momentum and revisions.", ("access.get_history", "access.get_data")),
             WorkflowStage("context", "Retrieve peers, Reuters news and stories, events, guidance, ownership, insiders, filings, suppliers, and customers when entitled.", ("discovery.peers", "news.headlines", "news.story", "content.filings", "discovery.suppliers", "discovery.customers"), required=False),
-            WorkflowStage("synthesis", "Identify evidence-backed opportunities, catalysts, risks, and contradictions.", ("local.metrics", "llm.evidence_synthesis")),
+            WorkflowStage("synthesis", "Render evidence-backed opportunities, catalysts, risks, and contradictions.", ("local.metrics",)),
         ),
     ),
     "company_compare": WorkflowDefinition(
@@ -57,7 +52,7 @@ WORKFLOWS: dict[str, WorkflowDefinition] = {
             WorkflowStage("core", "Retrieve identical cross-company data bundles.", ("access.get_data",)),
             WorkflowStage("history", "Derive price momentum, volatility, and estimate revisions.", ("access.get_history", "access.get_data")),
             WorkflowStage("context", "Retrieve Reuters news, events, guidance, and peer context.", ("news.headlines", "news.story", "discovery.peers"), required=False),
-            WorkflowStage("synthesis", "Compare opportunities and risks without changing the evidence standard.", ("local.metrics", "llm.evidence_synthesis")),
+            WorkflowStage("synthesis", "Compare opportunities and risks without changing the evidence standard.", ("local.metrics",)),
         ),
         deep_dive_candidates=8,
     ),
@@ -73,10 +68,23 @@ WORKFLOWS: dict[str, WorkflowDefinition] = {
             WorkflowStage("core", "Retrieve identical financial, valuation, estimate, and risk data.", ("access.get_data",)),
             WorkflowStage("history", "Derive price momentum, volatility, and estimate revisions.", ("access.get_history", "access.get_data")),
             WorkflowStage("context", "Retrieve Reuters news, stories, events, and peer context.", ("news.headlines", "news.story", "discovery.peers"), required=False),
-            WorkflowStage("synthesis", "Score quantitative risks and interpret material retrieved developments.", ("local.metrics", "llm.evidence_synthesis")),
+            WorkflowStage("synthesis", "Score quantitative risks and interpret material retrieved developments.", ("local.metrics",)),
         ),
         deep_dive_candidates=8,
         news_stories_per_candidate=5,
+    ),
+    "research_lab": WorkflowDefinition(
+        workflow_id="research_lab",
+        mode="compare",
+        purpose="Run only user-approved company data capabilities and Python analyses.",
+        stages=(
+            WorkflowStage("resolve", "Resolve every approved security reference.", ("discovery.search", "discovery.convert_symbols")),
+            WorkflowStage("evidence", "Retrieve only the approved data families.", ("access.get_data", "access.get_history", "news.headlines", "news.story")),
+            WorkflowStage("analysis", "Calculate approved findings from retrieved observations.", ("local.metrics",)),
+        ),
+        deep_dive_candidates=8,
+        news_stories_per_candidate=3,
+        minimum_evidence_families=1,
     ),
     "sector_opportunity": WorkflowDefinition(
         workflow_id="sector_opportunity",
@@ -87,7 +95,7 @@ WORKFLOWS: dict[str, WorkflowDefinition] = {
             WorkflowStage("ranking", "Retrieve value, quality, cash-flow, expectations, target, momentum, and risk factors for the broad universe.", ("access.get_data",)),
             WorkflowStage("shortlist", "Apply coverage-aware multi-factor ranking and select finalists.", ("local.multifactor_rank",)),
             WorkflowStage("deep_dive", "Retrieve comprehensive dossiers for the top five candidates.", ("access.get_data", "access.get_history", "discovery.peers", "news.headlines", "news.story", "content.filings")),
-            WorkflowStage("synthesis", "Let the LLM identify major opportunities, catalysts, risks, and contradictions from the complete evidence package.", ("llm.evidence_synthesis", "local.claim_guard")),
+            WorkflowStage("synthesis", "Render major opportunities, catalysts, risks, and contradictions from the complete evidence package.", ("local.metrics", "local.claim_guard")),
         ),
         screen_limit=200,
         deep_dive_candidates=5,
@@ -113,7 +121,7 @@ WORKFLOWS: dict[str, WorkflowDefinition] = {
         stages=(
             WorkflowStage("headlines", "Retrieve recent headlines.", ("news.headlines",)),
             WorkflowStage("stories", "Retrieve a small number of relevant stories when available.", ("news.story",), required=False),
-            WorkflowStage("synthesis", "Summarize only supported market developments.", ("llm.evidence_synthesis",)),
+            WorkflowStage("synthesis", "Summarize only supported market developments.", ("local.metrics",)),
         ),
     ),
 }

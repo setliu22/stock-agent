@@ -5,12 +5,9 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from portfolio.agent import StockAgent
 from portfolio.company_resolver import ResolvedInstrument
 from portfolio.config import Settings
-from portfolio.database import PortfolioDatabase
 from portfolio.lseg_research import (
-    LSEGNoMatches,
     LSEGResearchError,
     ResearchResult,
     _LSEGClient,
@@ -20,133 +17,23 @@ from portfolio.lseg_research import (
     _deterministic_screen_report,
     _deterministic_company_report,
     _first_value,
-    _llm_report_is_valid,
     _rank_candidate_screen,
     _retrieve_estimate_history,
     _retrieve_price_history,
     _retrieve_winner_optional_context,
     _safe_get_data,
-    answer_follow_up,
     build_screen_expression,
     concise_report,
 )
-from portfolio.research_planner import (
+from portfolio.research_plan import (
     ResearchPlan,
     ScreenFilters,
     UnsupportedResearchConstraint,
-    build_research_plan,
 )
 
 
 def settings(tmp_path: Path, *, groq_key: str | None = None) -> Settings:
     return Settings(tmp_path, tmp_path / "db.sqlite", groq_key, "test", "desktop.workspace")
-
-
-def test_requested_industrials_value_query_compiles_exactly(tmp_path: Path) -> None:
-    plan = build_research_plan(
-        "find a promising, undervalued US stock in the industrials sector",
-        settings(tmp_path),
-    )
-    assert plan.workflow == "sector_opportunity"
-    assert plan.entities == []
-    assert plan.screen.country_code == "US"
-    assert plan.screen.sector == "Industrials"
-    expression = build_screen_expression(plan.screen)
-    assert 'IN(TR.HQCountryCode,"US")' in expression
-    assert 'IN(TR.TRBCEconSectorCode,"52")' in expression
-
-
-@pytest.mark.parametrize(
-    ("user_request", "field", "code"),
-    [
-        ("find a promising biotech stock", "TR.TRBCIndustryCode", "56202010"),
-        ("find semiconductor stocks", "TR.TRBCIndustryCode", "57101010"),
-        ("find semiconductor equipment stocks", "TR.TRBCIndustryCode", "57101020"),
-        ("find bank stocks", "TR.TRBCIndustryCode", "55101010"),
-        ("find an aerospace & defense stock", "TR.TRBCIndustryCode", "52101010"),
-    ],
-)
-def test_lower_level_trbc_requests_use_exact_codes(
-    tmp_path: Path, user_request: str, field: str, code: str
-) -> None:
-    plan = build_research_plan(user_request, settings(tmp_path))
-    assert f'IN({field},"{code}")' in build_screen_expression(plan.screen)
-
-
-@pytest.mark.parametrize(
-    ("user_request", "entity"),
-    [
-        ("research Energy Transfer as an investment", "Energy Transfer"),
-        ("research Healthcare Realty as a good investment", "Healthcare Realty"),
-        ("research Industrial Logistics Properties Trust as a bargain", "Industrial Logistics Properties Trust"),
-        ("research British American Tobacco", "British American Tobacco"),
-        ("find Apple stock", "Apple"),
-        ("study Apple stock", "Apple"),
-        ("study AAPL stock", "AAPL"),
-        ("study Energy Transfer stock", "Energy Transfer"),
-        ("study United States Steel stock", "United States Steel"),
-    ],
-)
-def test_company_names_are_not_reinterpreted_as_taxonomy(
-    tmp_path: Path, user_request: str, entity: str
-) -> None:
-    plan = build_research_plan(user_request, settings(tmp_path))
-    assert plan.workflow == "company_deep_dive"
-    assert plan.entities == [entity]
-
-
-def test_comparison_parser_keeps_each_named_entity(tmp_path: Path) -> None:
-    assert build_research_plan("evaluate Nvidia versus AMD", settings(tmp_path)).entities == ["Nvidia", "AMD"]
-    assert build_research_plan("compare Apple vs Microsoft and Nvidia", settings(tmp_path)).entities == [
-        "Apple", "Microsoft", "Nvidia"
-    ]
-
-
-@pytest.mark.parametrize(
-    "user_request",
-    [
-        "find stocks not in technology",
-        "find non-US industrials",
-        "find no Chinese technology stocks",
-        "find bank stocks except JPMorgan",
-        "US-listed Chinese biotech stocks",
-        "find European industrial stocks",
-        "find quantum computing stocks",
-        "find stocks with P/E above 20",
-        "find stocks with market cap above 10 bps",
-        "study us and Canadian stocks",
-        "study us large-cap stocks",
-        "list industrial stocks that are not undervalued",
-    ],
-)
-def test_material_unsupported_constraints_fail_before_lseg(tmp_path: Path, user_request: str) -> None:
-    with pytest.raises(UnsupportedResearchConstraint):
-        build_research_plan(user_request, settings(tmp_path))
-
-
-def test_policy_prose_is_not_misread_as_a_named_company_exclusion(tmp_path: Path) -> None:
-    request = (
-        "Research promising tech stocks. Current regime: Mixed liquidity regime. "
-        "Treat the score as shortlist priority, not a return forecast or buy/sell recommendation. "
-        "Use validated data and do not invent unavailable metrics."
-    )
-
-    plan = build_research_plan(request, settings(tmp_path))
-
-    assert plan.workflow == "sector_opportunity"
-    assert plan.screen.sector == "Technology"
-
-
-def test_numeric_range_and_reverse_order_are_not_dropped(tmp_path: Path) -> None:
-    ranged = build_research_plan(
-        "find utilities stocks with market cap between $1 and $10 billion",
-        settings(tmp_path),
-    )
-    assert ranged.screen.market_cap_min == 1_000_000_000
-    assert ranged.screen.market_cap_max == 10_000_000_000
-    reverse = build_research_plan("find stocks under $500M market cap", settings(tmp_path))
-    assert reverse.screen.market_cap_max == 500_000_000
-    assert build_research_plan("find stocks with forward P/E at most 20", settings(tmp_path)).screen.forward_pe_max == 20
 
 
 def test_malformed_normalized_plans_fail_closed() -> None:
@@ -273,169 +160,6 @@ def test_nullable_lseg_numeric_columns_do_not_break_ranking() -> None:
     assert ranked["Value Evidence Count"].notna().all()
 
 
-def _selected_fixture() -> ResearchResult:
-    plan = ResearchPlan(
-        mode="screen",
-        workflow="sector_opportunity",
-        screen=ScreenFilters(sector="Industrials", candidate_search=True),
-        raw_request="find a promising undervalued industrials stock",
-    ).normalized()
-    morn = ResolvedInstrument("Morningstar", "Morningstar", "MORN", "MORN.O", "Morningstar")
-    cat = ResolvedInstrument("Caterpillar", "Caterpillar", "CAT", "CAT.N", "Caterpillar")
-    result = ResearchResult(plan=plan, resolved=[morn, cat])
-    result.metrics["selected_ric"] = "CAT.N"
-    result.metrics["CAT.N:evidence_families"] = ["profile", "valuation", "profitability", "news", "filings"]
-    result.tables["profile"] = pd.DataFrame(
-        {
-            "Instrument": ["MORN.O", "CAT.N"],
-            "TR.CommonName": ["Morningstar", "Caterpillar"],
-            "TR.BusinessSummary": [
-                "Morningstar provides investment research.",
-                "Caterpillar manufactures construction and mining equipment, engines, and turbines.",
-            ],
-        }
-    )
-    result.tables["valuation"] = pd.DataFrame(
-        {"Instrument": ["MORN.O", "CAT.N"], "TR.PtoEPSMeanEst(Period=FY1)": [30.0, 10.0]}
-    )
-    result.tables["screen_universe"] = pd.DataFrame(
-        {
-            "Instrument": ["MORN.O", "CAT.N", "A.N", "B.N", "C.N", "D.N", "E.N"],
-            "TR.PtoEPSMeanEst(Period=FY1)": [30.0, 10.0, 20.0, 21.0, 22.0, 23.0, 24.0],
-        }
-    )
-    result.tables["screen"] = result.tables["screen_universe"].head(2).copy()
-    return result
-
-
-def test_selected_ric_binds_report_and_valuation_follow_up(tmp_path: Path) -> None:
-    result = _selected_fixture()
-    report = _deterministic_screen_report(result)
-    assert report.startswith("Candidate: Caterpillar (CAT.N)")
-    follow_up = answer_follow_up(result, "why is this company undervalued?", settings(tmp_path))
-    assert "Caterpillar (CAT.N)" in follow_up
-    assert "forward P/E is 10" in follow_up
-    assert "Morningstar" not in follow_up
-
-    cheap = answer_follow_up(result, "why does it look cheap?", settings(tmp_path))
-    assert "Caterpillar (CAT.N)" in cheap
-    assert "forward P/E is 10" in cheap
-    assert StockAgent._is_research_follow_up("why does it look cheap?")
-
-
-def test_target_upside_alone_is_not_called_undervaluation(tmp_path: Path) -> None:
-    result = _selected_fixture()
-    result.tables["valuation"].loc[result.tables["valuation"]["Instrument"] == "CAT.N", "TR.PtoEPSMeanEst(Period=FY1)"] = 25.0
-    result.metrics["CAT.N:target_upside"] = 0.50
-    text = answer_follow_up(result, "why is this company undervalued?", settings(tmp_path))
-    assert "does not support calling Caterpillar" in text
-    assert "not proof that the shares are cheap" in text
-
-
-def test_risk_and_catalyst_followups_are_direct_and_cautious(tmp_path: Path) -> None:
-    result = _selected_fixture()
-    risk = answer_follow_up(result, "what are the major risks?", settings(tmp_path))
-    catalyst = answer_follow_up(result, "what's the catalyst?", settings(tmp_path))
-    assert "not that the company is risk-free" in risk
-    assert "No specific catalyst" in catalyst
-    assert not risk.startswith("Candidate:")
-
-
-def test_business_description_uses_validated_strategy_and_terse_risk_stays_local(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    import sys
-    from types import SimpleNamespace
-
-    result = _selected_fixture()
-    calls = []
-
-    class StructuredStrategy:
-        def invoke(self, messages):
-            calls.append(messages)
-            return {"strategy": "business_description", "confidence": 0.96}
-
-    class FakeChatGroq:
-        def __init__(self, **_kwargs):
-            pass
-
-        def with_structured_output(self, schema, **_kwargs):
-            assert "business_description" in schema["properties"]["strategy"]["enum"]
-            return StructuredStrategy()
-
-    monkeypatch.setitem(sys.modules, "langchain_groq", SimpleNamespace(ChatGroq=FakeChatGroq))
-
-    description = answer_follow_up(
-        result, "what does the company do", settings(tmp_path, groq_key="fake-key")
-    )
-    risk = answer_follow_up(result, "risk", settings(tmp_path))
-
-    assert description == (
-        "Caterpillar (CAT.N) operates as follows: Caterpillar manufactures "
-        "construction and mining equipment, engines, and turbines."
-    )
-    assert "what does the company do" in calls[0][1][1]
-    assert "not that the company is risk-free" in risk
-    assert StockAgent._is_research_follow_up("risk", result)
-
-
-def test_novel_follow_up_paraphrase_uses_validated_answer_strategy(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    import sys
-    from types import SimpleNamespace
-
-    result = _selected_fixture()
-    calls = []
-
-    class StructuredStrategy:
-        def invoke(self, messages):
-            calls.append(messages)
-            return {"strategy": "risk_summary", "confidence": 0.93}
-
-    class FakeChatGroq:
-        def __init__(self, **_kwargs):
-            pass
-
-        def with_structured_output(self, schema, **_kwargs):
-            assert "risk_summary" in schema["properties"]["strategy"]["enum"]
-            return StructuredStrategy()
-
-    monkeypatch.setitem(sys.modules, "langchain_groq", SimpleNamespace(ChatGroq=FakeChatGroq))
-
-    answer = answer_follow_up(
-        result,
-        "What could materially impair the investment case?",
-        settings(tmp_path, groq_key="fake-key"),
-    )
-
-    assert "not that the company is risk-free" in answer
-    assert "materially impair the investment case" in calls[0][1][1]
-
-
-def test_report_validator_uses_exact_selected_identity_and_multiline_schema() -> None:
-    result = ResearchResult(
-        plan=ResearchPlan(mode="company", workflow="company_deep_dive", entities=["Agilent"]).normalized(),
-        resolved=[ResolvedInstrument("Agilent", "Agilent", "A", "A.N", "Agilent Technologies")],
-    )
-    result.metrics["selected_ric"] = "A.N"
-    wrong = "\n".join(
-        [
-            "Company: Totally Wrong Corp",
-            "Opportunity: Unsupported.",
-            "Catalyst: Unsupported.",
-            "Major risks: Unsupported.",
-            "Valuation and expectations: Unsupported.",
-            "Coverage: Unsupported.",
-        ]
-    )
-    assert not _llm_report_is_valid(result, wrong)
-    one_line = "Company: Agilent Opportunity: x Catalyst: y Major risks: z Valuation and expectations: q Coverage: c"
-    assert not _llm_report_is_valid(result, one_line)
-
-
 def test_estimate_revision_does_not_cross_fiscal_period_rollover() -> None:
     class FakeLD:
         HeaderType = None
@@ -548,17 +272,3 @@ def test_unrequested_row_expanding_optional_data_is_not_queried(monkeypatch) -> 
     )
     _retrieve_winner_optional_context(object(), _LSEGClient(result, minimum_interval=0), result)
     assert result.call_records == []
-
-
-def test_failed_new_research_clears_prior_context(tmp_path: Path, monkeypatch) -> None:
-    agent = StockAgent(settings(tmp_path), PortfolioDatabase(tmp_path / "db.sqlite"))
-    agent._last_research_result = _selected_fixture()
-    plan = build_research_plan("find a promising industrials stock", settings(tmp_path))
-    monkeypatch.setattr("portfolio.agent.build_research_plan", lambda *_args, **_kwargs: plan)
-    monkeypatch.setattr(
-        "portfolio.agent.run_research",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(LSEGNoMatches("none")),
-    )
-    text = agent.research("find a promising industrials stock")
-    assert "No adequately supported company" in text
-    assert agent._last_research_result is None

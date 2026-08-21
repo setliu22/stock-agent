@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "stock-agent-local"
 version = "0.4.1"
-description = "Natural-language LSEG deep research, screening, and portfolio agent"
+description = "Deterministic LSEG industry research and portfolio risk review"
 requires-python = ">=3.11"
 
 [tool.setuptools.packages.find]

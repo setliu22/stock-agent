@@ -1,10 +1,4 @@
-"""Natural-language LSEG deep research executor.
-
-The planner decides what the user asked for. This module performs only
-research-safe, read-only calls, records failures caused by entitlements or field
-availability, derives comparable metrics, and returns a concise evidence-based
-report.
-"""
+"""Deterministic LSEG research execution and evidence reporting."""
 
 from __future__ import annotations
 
@@ -22,12 +16,11 @@ import pandas as pd
 from .company_resolver import InstrumentResolutionError, ResolvedInstrument
 from .config import Settings
 from .market_regime import macro_default_policy
-from .research_planner import (
+from .research_plan import (
     ResearchPlan,
     ScreenFilters,
     canonicalize_sector,
     classification_definition,
-    extract_requested_topics,
 )
 from .research_execution import compile_execution_request
 from .research_workflows import get_workflow
@@ -2419,18 +2412,37 @@ def run_research(
                 f"Resolving {len(plan.entities)} named company or ticker reference(s).",
             )
             rics = [item.ric for item in result.resolved]
+            company_rics = (
+                rics[:-1]
+                if workflow.workflow_id == "research_lab" and plan.benchmark and len(rics) > 1
+                else rics
+            )
             _emit_progress(
                 progress_callback,
                 24,
                 "Retrieving company fundamentals",
                 f"Collecting a consistent evidence bundle for {len(rics)} instrument(s).",
             )
-            result.metrics["deep_dive_count"] = len(rics)
+            result.metrics["deep_dive_count"] = len(company_rics)
             result.metrics["workflow_stages"] = [stage.stage_id for stage in workflow.stages]
 
-            # Every deep-dive workflow receives the same comprehensive core.
-            for topic in ("profile", "fundamentals", "profitability", "valuation", "estimates", "recommendations", "risk"):
-                frame = _safe_get_data(ld, client, rics, TOPIC_FIELDS[topic], label=topic.title())
+            core_topics = (
+                tuple(
+                    topic
+                    for topic in (
+                        "profile", "fundamentals", "profitability", "valuation",
+                        "estimates", "recommendations", "risk",
+                    )
+                    if topic in plan.topics
+                )
+                if workflow.workflow_id == "research_lab"
+                else (
+                    "profile", "fundamentals", "profitability", "valuation",
+                    "estimates", "recommendations", "risk",
+                )
+            )
+            for topic in core_topics:
+                frame = _safe_get_data(ld, client, company_rics, TOPIC_FIELDS[topic], label=topic.title())
                 if not frame.empty:
                     result.tables[topic] = frame
 
@@ -2438,29 +2450,48 @@ def run_research(
                 progress_callback,
                 45,
                 "Researching company evidence",
-                "Core data is complete. Retrieving price history, estimate revisions, Reuters news, peers, and filings.",
+                (
+                    "Core data is complete. Retrieving only the approved evidence families."
+                    if workflow.workflow_id == "research_lab"
+                    else "Core data is complete. Retrieving price history, estimate revisions, Reuters news, peers, and filings."
+                ),
             )
 
             total_companies = max(len(result.resolved), 1)
             for index, resolved in enumerate(result.resolved):
+                is_benchmark = (
+                    workflow.workflow_id == "research_lab"
+                    and plan.benchmark is not None
+                    and index == len(result.resolved) - 1
+                )
                 company_percent = 58 + int((index / total_companies) * 28)
                 _emit_progress(
                     progress_callback,
                     company_percent,
                     f"Researching company {index + 1}/{len(result.resolved)}",
-                    f"{resolved.company_name} ({resolved.ric}): price, revisions, Reuters news, peers, and filings.",
+                    (
+                        f"{resolved.company_name} ({resolved.ric}): approved evidence only."
+                        if workflow.workflow_id == "research_lab"
+                        else f"{resolved.company_name} ({resolved.ric}): price, revisions, Reuters news, peers, and filings."
+                    ),
                 )
-                _retrieve_price_history(ld, client, result, resolved)
-                _retrieve_estimate_history(ld, client, result, resolved)
-                _retrieve_news(ld, client, result, resolved)
-                _retrieve_news_stories(ld, client, result, resolved, workflow.news_stories_per_candidate)
-                if "events" in plan.topics and workflow.workflow_id != "company_deep_dive":
+                selective = workflow.workflow_id == "research_lab"
+                if is_benchmark or not selective or "price" in plan.topics:
+                    _retrieve_price_history(ld, client, result, resolved)
+                if not is_benchmark and (not selective or "estimate_history" in plan.topics):
+                    _retrieve_estimate_history(ld, client, result, resolved)
+                if not is_benchmark and (not selective or "news" in plan.topics):
+                    _retrieve_news(ld, client, result, resolved)
+                    _retrieve_news_stories(ld, client, result, resolved, workflow.news_stories_per_candidate)
+                if not is_benchmark and "events" in plan.topics and workflow.workflow_id != "company_deep_dive":
                     _retrieve_upcoming_events(ld, client, result, resolved)
-                _retrieve_peers(ld, client, result, resolved)
-                _retrieve_filings(client, result, resolved)
-                if "suppliers" in plan.topics:
+                if not is_benchmark and (not selective or "peers" in plan.topics):
+                    _retrieve_peers(ld, client, result, resolved)
+                if not is_benchmark and (not selective or "filings" in plan.topics):
+                    _retrieve_filings(client, result, resolved)
+                if not is_benchmark and "suppliers" in plan.topics:
                     _retrieve_stakeholders(client, result, resolved, "suppliers")
-                if "customers" in plan.topics:
+                if not is_benchmark and "customers" in plan.topics:
                     _retrieve_stakeholders(client, result, resolved, "customers")
 
             _emit_progress(
@@ -2828,117 +2859,6 @@ def _deterministic_news_report(result: ResearchResult) -> str:
     return "\n".join(lines)
 
 
-def _evidence_payload(result: ResearchResult) -> dict[str, Any]:
-    tables: dict[str, Any] = {}
-    for name, frame in result.tables.items():
-        if frame is None or frame.empty:
-            continue
-        if name in {"screen", "screen_universe"}:
-            limited = frame.head(12).copy()
-        elif name.startswith("estimate_history:"):
-            limited = frame.tail(20).copy()
-        elif name.startswith("news:"):
-            limited = frame.head(12).copy()
-        elif name.startswith("stories:"):
-            limited = frame.head(3).copy()
-        else:
-            limited = frame.head(15).copy()
-        for column in limited.columns:
-            limited[column] = limited[column].map(
-                lambda value: None if _missing(value) else str(value) if not isinstance(value, (int, float, bool)) else value
-            )
-        tables[name] = limited.to_dict(orient="records")
-    payload = {
-        "request": result.plan.raw_request,
-        "workflow": result.plan.workflow,
-        "investment_horizon": result.plan.investment_horizon,
-        "macro_research_policy": result.metrics.get("macro_research_policy"),
-        "resolved": [
-            {"name": _company_name(result, item), "ticker": item.ticker, "ric": item.ric}
-            for item in result.resolved
-        ],
-        "derived_metrics": result.metrics,
-        "tables": tables,
-        "unavailable": result.warnings[:20],
-        "research_trace": result.calls,
-        "request_trace": result.call_records,
-    }
-    return _json_safe(payload)
-
-
-def research_context_payload(
-    result: ResearchResult,
-    question: str = "",
-    *,
-    max_characters: int = 12_000,
-) -> dict[str, Any]:
-    """Return a bounded, topic-specific slice of validated prior evidence."""
-    selected = _selected_resolved(result)
-    selected_ric = selected.ric if selected is not None else None
-    lower = question.casefold()
-    if re.search(r"\b(risks?|downside|concerns?|volatility|debt|leverage)\b", lower):
-        table_names = ("profile", "risk", "fundamentals", f"news:{selected_ric}")
-    elif re.search(r"\b(catalysts?|news|developments?|events?|drivers?)\b", lower):
-        table_names = (
-            "profile", f"news:{selected_ric}", f"stories:{selected_ric}",
-            "events", "guidance",
-        )
-    elif re.search(r"\b(valuation|cheap|discount|p\s*/?\s*e|target|multiple)\b", lower):
-        table_names = ("profile", "valuation", "recommendations", "screen")
-    elif re.search(r"\b(what\s+does|business|products?|services?|industry|sector)\b", lower):
-        table_names = ("profile",)
-    else:
-        table_names = (
-            "profile", "fundamentals", "profitability", "valuation",
-            "recommendations", "risk", f"news:{selected_ric}",
-        )
-
-    payload: dict[str, Any] = {
-        "request": result.plan.raw_request[:1_000],
-        "workflow": result.plan.workflow,
-        "macro_research_policy": result.metrics.get("macro_research_policy"),
-        "selected": (
-            {
-                "name": _company_name(result, selected),
-                "ticker": selected.ticker,
-                "ric": selected.ric,
-            }
-            if selected is not None
-            else None
-        ),
-        "derived_metrics": {},
-        "tables": {},
-        "unavailable": [str(warning)[:300] for warning in result.warnings[:5]],
-    }
-
-    metrics = payload["derived_metrics"]
-    assert isinstance(metrics, dict)
-    for key, value in result.metrics.items():
-        if key == "selected_ric" or (selected_ric and key.startswith(f"{selected_ric}:")):
-            candidate = _json_safe(value)
-            trial = {**payload, "derived_metrics": {**metrics, str(key): candidate}}
-            if len(json.dumps(trial, default=str)) <= max_characters:
-                metrics[str(key)] = candidate
-
-    tables = payload["tables"]
-    assert isinstance(tables, dict)
-    for name in table_names:
-        if not name or name in tables:
-            continue
-        frame = result.tables.get(name)
-        if frame is None or frame.empty:
-            continue
-        limited = frame
-        if selected_ric and "Instrument" in frame.columns:
-            selected_rows = frame[frame["Instrument"].astype(str) == selected_ric]
-            if not selected_rows.empty:
-                limited = selected_rows
-        records = _json_safe(limited.head(3).to_dict(orient="records"))
-        trial = {**payload, "tables": {**tables, name: records}}
-        if len(json.dumps(trial, default=str)) <= max_characters:
-            tables[name] = records
-    return payload
-
 
 def _json_safe(value: Any) -> Any:
     if isinstance(value, dict):
@@ -2952,660 +2872,20 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
-def _plain_text_report(text: str) -> str:
-    cleaned = re.sub(r"```(?:text|markdown)?", "", text, flags=re.I)
-    cleaned = cleaned.replace("```", "")
-    cleaned = re.sub(r"^\s{0,3}#{1,6}\s*", "", cleaned, flags=re.M)
-    cleaned = re.sub(r"\*\*(.*?)\*\*", r"\1", cleaned)
-    cleaned = re.sub(r"__(.*?)__", r"\1", cleaned)
-    cleaned = re.sub(r"^\s*[-*]\s+", "• ", cleaned, flags=re.M)
-    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
-    return cleaned.strip()
 
-
-def _llm_report_is_valid(result: ResearchResult, text: str) -> bool:
-    """Deterministically bind generated prose to the validated workflow result."""
-    if not text.strip():
-        return False
-    lower = text.casefold()
-    if any(token in lower for token in (
-        "draft report", "none identified", "provided data does not contain",
-        "no companies from the", "no company identified",
-    )):
-        return False
-    workflow = result.plan.workflow
-    required_labels = {
-        "sector_opportunity": ("candidate:", "opportunity:", "catalyst:", "major risks:", "why selected:", "coverage:"),
-        "company_deep_dive": ("company:", "opportunity:", "catalyst:", "major risks:", "valuation and expectations:", "coverage:"),
-    }.get(str(workflow), ())
-    lines = [line.strip().casefold() for line in text.splitlines() if line.strip()]
-    if required_labels and (
-        len(lines) != len(required_labels)
-        or any(not any(line.startswith(label) for line in lines) for label in required_labels)
-    ):
-        return False
-    if result.resolved and workflow in {"sector_opportunity", "company_deep_dive"}:
-        selected = _selected_resolved(result)
-        if selected is None:
-            return False
-        name = _company_name(result, selected).casefold()
-        first_line = text.splitlines()[0].casefold() if text.splitlines() else lower
-        identifiers = [selected.ric.casefold()]
-        if len(name.strip()) >= 3:
-            identifiers.append(name)
-        if len(selected.ticker.strip()) >= 2:
-            identifiers.append(selected.ticker.casefold())
-        if not any(
-            identifier
-            and re.search(rf"(?<![a-z0-9]){re.escape(identifier)}(?![a-z0-9])", first_line)
-            for identifier in identifiers
-        ):
-            return False
-    return True
-
-
-def _llm_report(result: ResearchResult, settings: Settings, cancel_event: Any | None = None) -> str | None:
-    if not settings.groq_api_key or result.plan.workflow != "company_deep_dive":
-        return None
+def concise_report(
+    result: ResearchResult,
+    settings: Settings,
+    cancel_event: Any | None = None,
+) -> str:
+    """Render retrieved evidence without another model call."""
+    del settings
     _raise_if_cancelled(cancel_event)
-    try:
-        from langchain_groq import ChatGroq
-
-        llm = ChatGroq(model=settings.groq_model, temperature=0, max_retries=2, api_key=settings.groq_api_key)
-        evidence = json.dumps(_evidence_payload(result), default=str, allow_nan=False)
-        workflow = result.plan.workflow
-        if workflow == "sector_opportunity":
-            format_instruction = (
-                "Return exactly these plain-text lines, with no Markdown symbols:\n"
-                "Candidate: one finalist, or 'No adequately supported candidate'\n"
-                "Opportunity: the two strongest evidence-backed advantages\n"
-                "Catalyst: the strongest supported catalyst or recent development\n"
-                "Major risks: the two most material supported risks\n"
-                "Why selected: why it beat the other finalists\n"
-                "Coverage: number screened, number deeply researched, and evidence families available"
-            )
-        elif workflow == "company_compare":
-            format_instruction = (
-                "Return at most seven plain-text lines: Best-supported relative strength, valuation comparison, expectations, catalyst, major risks, winner if evidence supports one, and coverage. No Markdown symbols."
-            )
-        elif workflow == "market_news":
-            format_instruction = "Return a plain-text title and at most six concise developments. No Markdown symbols."
-        else:
-            format_instruction = (
-                "Return exactly these plain-text lines: Company, Opportunity, Catalyst, Major risks, Valuation and expectations, Coverage. No Markdown symbols."
-            )
-
-        response = llm.invoke(
-            [
-                (
-                    "system",
-                    "You are the evidence-synthesis stage of a deterministic LSEG research workflow. "
-                    "You do not choose API calls and you may not add outside knowledge. Use only supplied evidence. "
-                    "Identify major opportunities, catalysts, risks, contradictions, and missing coverage. "
-                    "Do not call a company promising because of one metric. Do not issue a buy or sell recommendation. "
-                    "Every factual claim must be directly supported by a supplied value, story, headline, filing, or derived metric. "
-                    "Treat the supplied macro research policy as an explanation of deterministic ranking rules, not as evidence about a company. "
-                    + format_instruction,
-                ),
-                ("human", evidence),
-            ]
-        )
-        _raise_if_cancelled(cancel_event)
-        draft = _plain_text_report(str(getattr(response, "content", response)).strip())
-        if not _llm_report_is_valid(result, draft):
-            result.warnings.append("Evidence synthesis draft failed deterministic schema/entity validation.")
-            return None
-
-        # A second constrained pass acts as a claim guard. It removes statements
-        # that cannot be traced to the retrieved evidence rather than adding new analysis.
-        verification = llm.invoke(
-            [
-                (
-                    "system",
-                    "Verify the draft report against the supplied evidence. Remove or rewrite every unsupported claim. "
-                    "Preserve the requested labels, concise length, and plain-text formatting. Add nothing from outside the evidence. Return only the corrected report.",
-                ),
-                ("human", "EVIDENCE:\n" + evidence + "\n\nDRAFT:\n" + draft),
-            ]
-        )
-        _raise_if_cancelled(cancel_event)
-        checked = _plain_text_report(str(getattr(verification, "content", verification)).strip())
-        if not _llm_report_is_valid(result, checked):
-            result.warnings.append("Evidence synthesis verification failed deterministic schema/entity validation.")
-            return None
-        return checked
-    except ResearchCancelled:
-        raise
-    except Exception as exc:
-        result.warnings.append(f"Evidence synthesis: {type(exc).__name__}: {exc}")
-        return None
-
-
-def concise_report(result: ResearchResult, settings: Settings, cancel_event: Any | None = None) -> str:
-    _raise_if_cancelled(cancel_event)
-    if result.plan.workflow == "stock_screen":
-        return _deterministic_screen_report(result)
-    generated = _llm_report(result, settings, cancel_event=cancel_event)
-    if generated:
-        return generated
     if result.plan.mode == "screen":
         return _deterministic_screen_report(result)
     if result.plan.mode == "market_news":
         return _deterministic_news_report(result)
     return _deterministic_company_report(result)
-
-
-def _deterministic_valuation_follow_up(result: ResearchResult) -> str:
-    selected = _selected_resolved(result)
-    if selected is None:
-        return "The prior research did not select a company, so there is no valuation case to explain."
-
-    ric = selected.ric
-    name = _company_name(result, selected)
-    discounts: list[str] = []
-    supporting_evidence: list[str] = []
-    valuation_fields = (
-        ("TR.PtoEPSMeanEst(Period=FY1)", "forward P/E"),
-        ("TR.EVToEBITDA", "EV/EBITDA"),
-        ("TR.PriceToSalesPerShare", "price/sales"),
-        ("TR.PricetoCFPerShare", "price/cash flow"),
-        ("TR.PriceToBVPerShare", "price/book"),
-    )
-    for field_name, label in valuation_fields:
-        value = _numeric(_first_value(result, "valuation", field_name, ric))
-        if value is None:
-            row = _screen_row(result, ric)
-            value = _numeric(row.get(field_name)) if row is not None else None
-        median = _sector_median(result, field_name, exclude_ric=ric)
-        comparison_label = "screened cohort"
-        if median is None:
-            median = _numeric(result.metrics.get(f"{ric}:peer_median:{field_name}"))
-            comparison_label = "direct-peer"
-        if value is None or median is None or value <= 0 or median <= 0:
-            continue
-        difference = 1.0 - (value / median)
-        if difference >= 0.10:
-            discount = _format_number(abs(difference), percent=True).lstrip("+")
-            discounts.append(
-                f"Its {label} is {_format_number(value)} versus {_format_number(median)} for the "
-                f"{comparison_label} median, about {discount} lower."
-            )
-
-    upside = result.metrics.get(f"{ric}:target_upside")
-    if isinstance(upside, (int, float)) and upside > 0:
-        supporting_evidence.append(
-            f"The mean analyst price target implies {_format_number(upside, percent=True)} upside, "
-            "but a target-price gap is expectations evidence, not proof that the shares are cheap."
-        )
-
-    if discounts:
-        lines = [f"{name} ({ric}) looks relatively inexpensive on the retrieved multiples, not definitively undervalued."]
-        lines.extend(discounts[:3])
-    else:
-        lines = [f"The retrieved evidence does not support calling {name} ({ric}) undervalued."]
-        lines.append(
-            "The retrieved evidence does not show a clear discount on the available valuation measures, "
-            "so calling it undervalued would overstate the data."
-        )
-    lines.extend(supporting_evidence[:1])
-    lines.append(
-        "The discount could reflect real risks, so the valuation case should be weighed against the reported "
-        "earnings revisions, leverage, volatility, news, and filing evidence."
-    )
-    return "\n".join(lines)
-
-
-def _deterministic_risk_follow_up(result: ResearchResult) -> str:
-    selected = _selected_resolved(result)
-    if selected is None:
-        return "The prior research did not select a company, so there is no company-specific risk case to explain."
-    name = _company_name(result, selected)
-    risks = _candidate_risks(result, selected)
-    if not risks:
-        return (
-            f"The retrieved evidence for {name} ({selected.ric}) did not identify a dominant quantitative risk. "
-            "That means risk evidence is incomplete—not that the company is risk-free. Review the retrieved Reuters headlines and filings."
-        )
-    return f"The main retrieved risks for {name} ({selected.ric}) are:\n" + "\n".join(
-        f"• {item}" for item in risks
-    )
-
-
-def _deterministic_business_follow_up(result: ResearchResult) -> str:
-    selected = _selected_resolved(result)
-    if selected is None:
-        return "The prior research did not select a company to describe."
-    name = _company_name(result, selected)
-    summary = _first_value(result, "profile", "TR.BusinessSummary", selected.ric)
-    if not _missing(summary):
-        cleaned = re.sub(r"\s+", " ", str(summary)).strip()
-        if len(cleaned) > 1_200:
-            cleaned = cleaned[:1_200].rsplit(" ", 1)[0].rstrip(".,;:") + "."
-        return f"{name} ({selected.ric}) operates as follows: {cleaned}"
-
-    descriptors = []
-    for field_name, label in (
-        ("TR.TRBCEconomicSector", "sector"),
-        ("TR.TRBCBusinessSector", "business sector"),
-        ("TR.TRBCIndustry", "industry"),
-    ):
-        value = _first_value(result, "profile", field_name, selected.ric)
-        if not _missing(value):
-            descriptors.append(f"{label}: {value}")
-    if descriptors:
-        return (
-            f"The retrieved profile for {name} ({selected.ric}) did not include a usable "
-            "business summary. Available classification: " + "; ".join(descriptors) + "."
-        )
-    return (
-        f"The prior LSEG profile for {name} ({selected.ric}) did not provide a usable "
-        "business summary or industry classification."
-    )
-
-
-def _deterministic_catalyst_follow_up(result: ResearchResult) -> str:
-    selected = _selected_resolved(result)
-    if selected is None:
-        return "The prior research did not select a company, so there is no company-specific catalyst to explain."
-    titles = _latest_company_developments(result.tables.get(f"news:{selected.ric}", pd.DataFrame()), 2)
-    if not titles:
-        return (
-            f"No specific catalyst for {_company_name(result, selected)} ({selected.ric}) was supported by the "
-            "retrieved Reuters/LSEG evidence. The ranking should not be interpreted as catalyst-driven."
-        )
-    return f"The retrieved developments for {_company_name(result, selected)} ({selected.ric}) are:\n" + "\n".join(
-        f"• {title}" for title in titles
-    )
-
-
-def _deterministic_selection_follow_up(result: ResearchResult) -> str:
-    selected = _selected_resolved(result)
-    if selected is None:
-        return "The prior research did not select a company."
-    row = _screen_row(result, selected.ric)
-    families = result.metrics.get(f"{selected.ric}:evidence_families", [])
-    parts = [
-        f"{_company_name(result, selected)} ({selected.ric}) was selected only after passing the requested "
-        "country/TRBC postconditions and the minimum screen and deep-evidence thresholds."
-    ]
-    if row is not None:
-        discount_count = int(row.get("Value Discount Count", 0) or 0)
-        macro_fit = str(row.get("Macro Fit", "Not assessed"))
-        parts.append(
-            f"It had {discount_count} peer-relative valuation discount(s); macro fit was {macro_fit.lower()}."
-        )
-    parts.append(f"The deep dive retained {len(families)} evidence families.")
-    alternatives = [item for item in result.resolved if item.ric != selected.ric][:2]
-    if alternatives:
-        parts.append(
-            "Other adequately covered finalists were "
-            + "; ".join(f"{_company_name(result, item)} ({item.ric})" for item in alternatives)
-            + "."
-        )
-    return " ".join(parts)
-
-
-def _deterministic_metric_follow_up(result: ResearchResult, question: str) -> str | None:
-    selected = _selected_resolved(result)
-    if selected is None:
-        return None
-    lower = question.casefold()
-    metric_specs = (
-        (
-            r"\b(?:forward|fwd)\s+p\s*/?\s*e\b|\bp\s*/?\s*e\s+(?:forward|fy1)\b",
-            "forward P/E",
-            "TR.PtoEPSMeanEst(Period=FY1)",
-            ("valuation",),
-            "multiple",
-        ),
-        (r"\b(?:trailing\s+)?p\s*/?\s*e\b", "trailing P/E", "TR.PE", ("valuation",), "multiple"),
-        (r"\bev\s*/?\s*ebitda\b", "EV/EBITDA", "TR.EVToEBITDA", ("valuation",), "multiple"),
-        (
-            r"\b(?:price\s*(?:to|/)\s*book|p\s*/?\s*b)\b",
-            "price/book",
-            "TR.PriceToBVPerShare",
-            ("valuation",),
-            "multiple",
-        ),
-        (
-            r"\b(?:price\s*(?:to|/)\s*sales|p\s*/?\s*s)\b",
-            "price/sales",
-            "TR.PriceToSalesPerShare",
-            ("valuation",),
-            "multiple",
-        ),
-        (
-            r"\b(?:return\s+on\s+equity|roe)\b",
-            "ROE",
-            "TR.ReturnonAvgTotEqtyPctNetIncomeBeforeExtraItemsTTM",
-            ("profitability",),
-            "percent",
-        ),
-        (
-            r"\b(?:return\s+on\s+assets?|roa)\b",
-            "ROA",
-            "TR.ROAPercentTrailing12M",
-            ("profitability",),
-            "percent",
-        ),
-        (
-            r"\b(?:market\s+cap(?:italization)?)\b",
-            "market capitalization",
-            "TR.CompanyMarketCap",
-            ("profile",),
-            "number",
-        ),
-        (
-            r"\b(?:mean\s+)?price\s+target\b",
-            "mean analyst price target",
-            "TR.PriceTargetMean",
-            ("recommendations",),
-            "number",
-        ),
-        (
-            r"\b(?:dividend\s+yield|yield)\b",
-            "dividend yield",
-            "TR.DividendYield",
-            ("valuation",),
-            "percent",
-        ),
-    )
-    matched = next((spec for spec in metric_specs if re.search(spec[0], lower)), None)
-    if matched is None:
-        return None
-    _pattern, label, field_name, table_names, value_kind = matched
-    value: float | None = None
-    for table_name in table_names:
-        value = _numeric(_first_value(result, table_name, field_name, selected.ric))
-        if value is not None:
-            break
-    if value is None:
-        row = _screen_row(result, selected.ric)
-        value = _numeric(row.get(field_name)) if row is not None else None
-
-    name = _company_name(result, selected)
-    if value is None or (value_kind == "multiple" and value <= 0):
-        qualifier = (
-            " as a meaningful positive multiple"
-            if value_kind == "multiple"
-            else ""
-        )
-        return (
-            f"The prior LSEG evidence does not provide a usable {label}{qualifier} for "
-            f"{name} ({selected.ric})."
-        )
-    formatted = _format_number(value) + ("%" if value_kind == "percent" else "")
-    return f"The retrieved {label} for {name} ({selected.ric}) is {formatted}."
-
-
-def _deterministic_request_diagnostics_follow_up(result: ResearchResult) -> str:
-    records = result.call_records
-    unsuccessful = [
-        record for record in records if str(record.get("status", "")).casefold() != "succeeded"
-    ]
-    succeeded = sum(
-        str(record.get("status", "")).casefold() == "succeeded" for record in records
-    )
-    if not records:
-        return (
-            "The prior result does not contain per-request trace records, so I cannot identify "
-            "which LSEG request was unsuccessful."
-        )
-    if not unsuccessful:
-        return f"All {len(records)} recorded LSEG requests succeeded."
-
-    details: list[str] = []
-    for record in unsuccessful:
-        number = record.get("request_number", "?")
-        label = str(record.get("label") or "unlabeled request")
-        status = str(record.get("status") or "unsuccessful").replace("_", " ")
-        error_type = record.get("error_type")
-        error_message = str(record.get("error_message") or "").strip()
-        if not error_message:
-            warning_prefix = f"{label}:"
-            matching_warning = next(
-                (
-                    warning[len(warning_prefix):].strip()
-                    for warning in result.warnings
-                    if warning.startswith(warning_prefix)
-                    and "disabling further" not in warning.casefold()
-                ),
-                "",
-            )
-            error_message = matching_warning
-        if error_type and error_message.casefold().startswith(f"{str(error_type).casefold()}:"):
-            error_message = error_message.split(":", 1)[1].strip()
-        cause = ""
-        if error_type and error_message:
-            cause = f" ({error_type}: {error_message})"
-        elif error_type:
-            cause = f" ({error_type})"
-        elif error_message:
-            cause = f" ({error_message})"
-        details.append(f"request #{number}, {label}: {status}{cause}")
-    return (
-        f"{succeeded} of {len(records)} recorded LSEG requests succeeded. "
-        f"The unsuccessful {'request was' if len(details) == 1 else 'requests were'} "
-        + "; ".join(details)
-        + "."
-    )
-
-
-def is_request_diagnostics_follow_up(
-    question: str,
-    result: ResearchResult | None = None,
-) -> bool:
-    """Recognize questions about the immediately prior LSEG request trace."""
-    lower = question.casefold()
-    if result is not None:
-        total = len(result.call_records) or int(result.metrics.get("lseg_request_count", 0) or 0)
-        succeeded = sum(
-            str(record.get("status", "")).casefold() == "succeeded"
-            for record in result.call_records
-        )
-        if not result.call_records:
-            succeeded = int(result.metrics.get("lseg_request_succeeded", 0) or 0)
-        referenced_counts = {int(value) for value in re.findall(r"\b\d+\b", lower)}
-        asks_about_gap = bool(
-            re.search(
-                r"\b(?:why|what|which|only|missing|fail\w*|unsuccessful|"
-                r"time(?:d)?\s*out|did(?:n't|\s+not)|not\s+run)\b",
-                lower,
-            )
-        )
-        if total > succeeded and {total, succeeded}.issubset(referenced_counts) and asks_about_gap:
-            return True
-    contrasts_success_and_failure = bool(
-        re.search(r"\b(?:succeed\w*|complete\w*)\b", lower)
-        and re.search(
-            r"\b(?:fail\w*|unsuccessful|time(?:d)?\s*out|did(?:n't|\s+not)|"
-            r"which|what)\b",
-            lower,
-        )
-    )
-    return bool(
-        contrasts_success_and_failure
-        or re.search(
-            r"\b(?:lseg|api)\s+(?:requests?|calls?)\b|"
-            r"\b(?:requests?|calls?)\b.{0,60}\b(?:succeed\w*|fail\w*|"
-            r"time(?:d)?\s*out|complete\w*|did(?:n't|\s+not))\b",
-            lower,
-        )
-        or re.fullmatch(
-            r"\s*(?:which|what)\s+(?:one|request|call)(?:\s+(?:was|is))?\s+"
-            r"(?:not\s+successful|unsuccessful|failed|time(?:d)?\s*out|did(?:n't|\s+not))\??\s*",
-            lower,
-        )
-    )
-
-
-_FOLLOW_UP_STRATEGIES = {
-    "valuation_summary",
-    "risk_summary",
-    "business_description",
-    "catalyst_summary",
-    "selection_rationale",
-    "evidence_answer",
-}
-
-
-def _local_follow_up_strategy(question: str) -> str | None:
-    """Resolve only unambiguous topic requests without interpreting whole sentences."""
-    topics = set(extract_requested_topics(question))
-    strategy_topics = {
-        "valuation": "valuation_summary",
-        "risk": "risk_summary",
-        "profile": "business_description",
-        "news": "catalyst_summary",
-        "events": "catalyst_summary",
-    }
-    strategies = {strategy_topics[topic] for topic in topics if topic in strategy_topics}
-    if len(strategies) == 1:
-        return strategies.pop()
-
-    return None
-
-
-def _semantic_follow_up_strategy(question: str, result: ResearchResult, settings: Settings) -> str | None:
-    """Choose a bounded answer strategy; model output never selects tools or fields."""
-    if not settings.groq_api_key:
-        return None
-    selected = _selected_resolved(result)
-    if selected is None:
-        return None
-    schema = {
-        "title": "ResearchFollowUpStrategy",
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "strategy": {"type": "string", "enum": sorted(_FOLLOW_UP_STRATEGIES)},
-            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-        },
-        "required": ["strategy", "confidence"],
-    }
-    try:
-        from langchain_groq import ChatGroq
-
-        llm = ChatGroq(
-            model=settings.groq_model,
-            temperature=0,
-            max_retries=0,
-            api_key=settings.groq_api_key,
-        )
-        structured = llm.with_structured_output(schema, method="json_mode", include_raw=False)
-        payload = structured.invoke(
-            [
-                (
-                    "system",
-                    "Choose how to answer a question about the supplied prior company. Use a summary "
-                    "strategy only for a broad request for that category. Use evidence_answer for a "
-                    "specific, nuanced, combined, or otherwise different question. This is routing only: "
-                    "do not answer, choose data fields, or request tools. Return only the exact schema.",
-                ),
-                (
-                    "human",
-                    json.dumps(
-                        {
-                            "question": question[:2_000],
-                            "prior_company": {
-                                "name": _company_name(result, selected),
-                                "ticker": selected.ticker,
-                                "ric": selected.ric,
-                            },
-                        },
-                        sort_keys=True,
-                    ),
-                ),
-            ]
-        )
-        if not isinstance(payload, dict) or set(payload) != {"strategy", "confidence"}:
-            return None
-        strategy = payload.get("strategy")
-        confidence = payload.get("confidence")
-        if (
-            strategy in _FOLLOW_UP_STRATEGIES
-            and isinstance(confidence, (int, float))
-            and not isinstance(confidence, bool)
-            and 0.8 <= float(confidence) <= 1
-        ):
-            return str(strategy)
-    except Exception:
-        pass
-    return None
-
-
-def can_answer_follow_up_deterministically(result: ResearchResult, question: str) -> bool:
-    """Report whether existing evidence has a bounded local answer path."""
-    return bool(
-        is_request_diagnostics_follow_up(question, result)
-        or _deterministic_metric_follow_up(result, question) is not None
-        or _local_follow_up_strategy(question) is not None
-    )
-
-
-def answer_follow_up(result: ResearchResult, question: str, settings: Settings) -> str:
-    """Answer a contextual question using only the immediately prior research result."""
-    if is_request_diagnostics_follow_up(question, result):
-        return _deterministic_request_diagnostics_follow_up(result)
-    metric_answer = _deterministic_metric_follow_up(result, question)
-    if metric_answer is not None:
-        return metric_answer
-    strategy = _local_follow_up_strategy(question)
-    if strategy is None:
-        strategy = _semantic_follow_up_strategy(question, result, settings)
-    if strategy == "valuation_summary":
-        return _deterministic_valuation_follow_up(result)
-    if strategy == "risk_summary":
-        return _deterministic_risk_follow_up(result)
-    if strategy == "business_description":
-        return _deterministic_business_follow_up(result)
-    if strategy == "catalyst_summary":
-        return _deterministic_catalyst_follow_up(result)
-    if strategy == "selection_rationale":
-        return _deterministic_selection_follow_up(result)
-    fallback = (
-        "I could not answer that specific follow-up from the validated prior evidence. "
-        "Try asking for a retrieved metric, valuation, risk, catalyst, selection rationale, "
-        "or request diagnostic."
-    )
-    if not settings.groq_api_key:
-        return fallback
-    try:
-        from langchain_groq import ChatGroq
-
-        llm = ChatGroq(model=settings.groq_model, temperature=0, max_retries=0, api_key=settings.groq_api_key)
-        evidence = json.dumps(
-            research_context_payload(result, question, max_characters=10_000),
-            default=str,
-        )
-        response = llm.invoke(
-            [
-                (
-                    "system",
-                    "Answer the follow-up using only the supplied prior LSEG research evidence. "
-                    "Refer to the selected company by name. Distinguish relative cheapness from proven intrinsic undervaluation, "
-                    "quantify relevant comparisons, mention contrary evidence or missing data, and do not add outside knowledge. "
-                    "Return concise plain text with no Markdown heading.",
-                ),
-                ("human", f"FOLLOW-UP: {question}\n\nPRIOR EVIDENCE:\n{evidence}"),
-            ]
-        )
-        draft = _plain_text_report(str(getattr(response, "content", response)).strip())
-        if not draft:
-            return fallback
-        verification = llm.invoke(
-            [
-                (
-                    "system",
-                    "Check the answer against the evidence. Remove unsupported claims and preserve a concise direct answer. "
-                    "Return only corrected plain text.",
-                ),
-                ("human", f"EVIDENCE:\n{evidence}\n\nANSWER:\n{draft}"),
-            ]
-        )
-        return _plain_text_report(str(getattr(verification, "content", verification)).strip()) or draft
-    except Exception:
-        return fallback
 
 
 def _extract_values(frame: Any, requested_fields: tuple[str, ...]) -> dict[str, Any]:

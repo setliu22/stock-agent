@@ -139,7 +139,8 @@ modules = [
     "portfolio.controller",
     "portfolio.company_resolver",
     "portfolio.lseg_research",
-    "portfolio.research_planner",
+    "portfolio.research_lab",
+    "portfolio.research_plan",
     "portfolio.research_workflows",
     "portfolio.lseg_capabilities",
 ]

@@ -113,7 +113,7 @@ PortfolioEventRiskReview = PortfolioPositionRiskReview
 
 def build_portfolio_review_plan(tickers: Iterable[str]) -> Any:
     """Create a fixed, validated research plan without LLM routing."""
-    from .research_planner import ResearchPlan
+    from .research_plan import ResearchPlan
 
     clean = list(
         dict.fromkeys(ticker.strip().upper() for ticker in tickers if ticker.strip())

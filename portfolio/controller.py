@@ -7,12 +7,18 @@ import json
 from pathlib import Path
 from typing import Callable, Iterable
 
-from .agent import StockAgent
 from .company_resolver import company_name_to_ticker, extract_security_reference, is_explicit_ticker
 from .config import Settings, get_settings
 from .cloud_portfolios import AuthResult, CloudPurchase, SupabasePortfolioClient
 from .database import PortfolioDatabase
 from .event_risk import run_portfolio_position_risk_review
+from .lseg_research import (
+    LSEGNoMatches,
+    LSEGResearchError,
+    ResearchCancelled,
+    concise_report,
+    run_research,
+)
 from .market_data import current_price, recent_closes
 from .market_regime import (
     MacroResearchPolicy,
@@ -22,12 +28,19 @@ from .market_regime import (
 )
 from .models import Holding, HoldingSnapshot, PortfolioHistoryPoint, Purchase
 from .portfolio_import import PortfolioImport, PortfolioImportError, parse_portfolio_json_message
-from .research_planner import (
-    build_research_plan,
+from .research_plan import (
+    ResearchPlan,
+    ScreenFilters,
     canonicalize_industry,
     canonicalize_sector,
-    detect_industry,
-    detect_sector,
+    supported_research_taxonomy_options,
+)
+from .research_lab import (
+    ApprovedResearchPlan,
+    ResearchLabResult,
+    ResearchProposal,
+    execute_research,
+    propose_research,
 )
 
 
@@ -35,23 +48,9 @@ class StockAgentController:
     def __init__(self, settings: Settings | None = None, database_path: Path | None = None) -> None:
         self.settings = settings or get_settings(database_path)
         self.database = PortfolioDatabase(self.settings.database_path)
-        self.agent = StockAgent(self.settings, self.database)
         self.cloud_client: SupabasePortfolioClient | None = None
         self._market_snapshot: MarketRegimeSnapshot | None = None
         self._research_policy = macro_default_policy("Regime incomplete")
-        self.agent.set_research_policy(self._research_policy)
-
-    def handle_message(
-        self,
-        message: str,
-        progress_callback: Callable[[int | None, str, str], None] | None = None,
-        cancel_event: object | None = None,
-    ) -> str:
-        response = self.agent.handle(
-            message, progress_callback=progress_callback, cancel_event=cancel_event
-        )
-        self.sync_local_portfolio()
-        return response
 
     def record_purchase(
         self,
@@ -253,18 +252,33 @@ class StockAgentController:
         snapshot = build_market_regime()
         self._market_snapshot = snapshot
         self._research_policy = snapshot.research_policy
-        self.agent.set_research_policy(self._research_policy)
-        self.agent.set_market_snapshot(snapshot)
         return snapshot
 
     def research_policy(self) -> MacroResearchPolicy:
         return self._research_policy
 
-    def holdings_text(self) -> str:
-        return self.agent.show_holdings()
+    def propose_custom_research(self, question: str) -> ResearchProposal:
+        """Return a non-executable capability proposal for user approval."""
+        return propose_research(
+            question,
+            self.settings,
+        )
 
-    def return_text(self) -> str:
-        return self.agent.calculate_return()
+    def run_custom_research(
+        self,
+        approved: ApprovedResearchPlan,
+        progress_callback: Callable[[int | None, str, str], None] | None = None,
+        cancel_event: object | None = None,
+    ) -> ResearchLabResult:
+        """Execute one validated, explicitly approved Research Lab plan."""
+        snapshot = self._market_snapshot or self.market_regime()
+        return execute_research(
+            approved,
+            self.settings,
+            snapshot,
+            progress_callback=progress_callback,
+            cancel_event=cancel_event,
+        )
 
     def review_position_risk(
         self,
@@ -294,37 +308,65 @@ class StockAgentController:
         )
         return review.to_text()
 
-    def build_industry_research_request(self, value: str, count: int) -> str:
-        """Resolve user wording to validated LSEG taxonomy and a bounded screen request."""
+    def research_industry(
+        self,
+        value: str,
+        count: int,
+        progress_callback: Callable[[int | None, str, str], None] | None = None,
+        cancel_event: object | None = None,
+    ) -> str:
+        """Run the fixed industry-opportunity workflow without conversational routing."""
         if not 1 <= count <= 20:
             raise ValueError("Choose between 1 and 20 stocks.")
-        wording = value.strip()
-        classification = (
-            canonicalize_industry(wording)
-            or canonicalize_sector(wording)
-            or detect_industry(wording)
-            or detect_sector(wording)
-        )
+        classification = canonicalize_industry(value) or canonicalize_sector(value)
         if classification is None:
-            try:
-                plan = build_research_plan(
-                    f"Find undervalued stocks in the {wording} industry. Return {count} stocks.",
-                    self.settings,
-                )
-            except Exception as exc:
-                raise ValueError(
-                    "Could not match that wording to an LSEG sector or industry. Try again with a recognized industry."
-                ) from exc
-            if plan.mode != "screen":
-                classification = None
-            else:
-                classification = plan.screen.industry or plan.screen.sector
-        if classification is None:
-            raise ValueError(
-                "Could not match that wording to an LSEG sector or industry. Try again with a recognized industry."
+            raise ValueError("Select a supported LSEG sector or industry.")
+        is_sector = canonicalize_sector(classification) is not None
+        plan = ResearchPlan(
+            mode="screen",
+            workflow="sector_opportunity",
+            topics=["profile", "valuation"],
+            selection_objectives=["relative_value"],
+            screen=ScreenFilters(
+                sector=classification if is_sector else None,
+                industry=None if is_sector else classification,
+                limit=count,
+                limit_explicit=True,
+                sort_by="quality_value",
+                candidate_search=True,
+            ),
+            raw_request=f"Industry research: {classification}; {count} results",
+            macro_regime=self._research_policy.regime,
+        ).normalized()
+        if progress_callback:
+            progress_callback(4, "Research plan ready", f"Researching {classification}.")
+        try:
+            result = run_research(
+                plan,
+                self.settings,
+                progress_callback=progress_callback,
+                cancel_event=cancel_event,
             )
-        taxonomy_level = "sector" if canonicalize_sector(classification) else "industry"
-        return f"Find undervalued stocks in the {classification} {taxonomy_level}. Return {count} stocks."
+            report = concise_report(result, self.settings, cancel_event=cancel_event)
+            if progress_callback:
+                request_count = result.metrics.get("lseg_request_count", 0)
+                succeeded = result.metrics.get("lseg_request_succeeded", 0)
+                progress_callback(
+                    100,
+                    "Research complete",
+                    f"Finished with {request_count} LSEG requests; {succeeded} succeeded.",
+                )
+            return report
+        except ResearchCancelled:
+            return "Research stopped. Partial results were discarded."
+        except LSEGNoMatches as exc:
+            return f"No adequately supported company matched this industry screen: {exc}"
+        except LSEGResearchError as exc:
+            return f"LSEG research could not run: {type(exc).__name__}: {exc}"
+
+    @staticmethod
+    def industry_research_options() -> tuple[tuple[str, str], ...]:
+        return supported_research_taxonomy_options()
 
     def account_sign_up(self, email: str, password: str) -> AuthResult:
         client = SupabasePortfolioClient.from_project(self.settings.project_root)

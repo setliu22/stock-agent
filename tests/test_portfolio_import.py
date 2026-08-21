@@ -3,7 +3,6 @@ from datetime import date
 import pytest
 
 from portfolio.database import PortfolioDatabase
-from portfolio.agent import StockAgent
 from portfolio.config import Settings
 from portfolio.portfolio_import import PortfolioImportError, parse_portfolio_json_message, parse_portfolio_update_json_message
 
@@ -51,29 +50,6 @@ def test_import_is_atomic(tmp_path):
     assert [(item.ticker, item.quantity) for item in database.holdings()] == [("AAPL", 2), ("MSFT", 3)]
 
 
-def test_agent_import_route_does_not_enter_research(tmp_path, monkeypatch):
-    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
-    agent = StockAgent(settings, PortfolioDatabase(settings.database_path))
-    monkeypatch.setattr(agent, "research", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("JSON must not be researched")))
-
-    response = agent.handle('{"positions": [{"ticker": "AAPL", "shares": 2, "averageCost": 150}]}')
-
-    assert "Imported 1 portfolio position" in response
-    assert agent.database.holdings()[0].ticker == "AAPL"
-
-
-def test_agent_remembers_pending_portfolio_import(tmp_path):
-    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
-    agent = StockAgent(settings, PortfolioDatabase(settings.database_path))
-
-    prompt = agent.handle("I want to add my portfolio")
-    response = agent.handle('{"positions": [{"ticker": "AAPL", "shares": 2, "averageCost": 150}]}')
-
-    assert "Paste the portfolio JSON" in prompt
-    assert "Imported 1 portfolio position" in response
-    assert agent.database.holdings()[0].ticker == "AAPL"
-
-
 def test_update_parser_preserves_omitted_fields():
     updates = parse_portfolio_update_json_message(
         '{"stocks": [{"ticker": "AAPL", "purchase_date": "2026-08-01"}, '
@@ -83,22 +59,6 @@ def test_update_parser_preserves_omitted_fields():
     assert updates is not None
     assert updates[0].fields == frozenset({"purchased_at"})
     assert updates[1].fields == frozenset({"quantity", "price"})
-
-
-def test_agent_update_mode_updates_existing_and_adds_new(tmp_path):
-    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
-    database = PortfolioDatabase(settings.database_path)
-    database.record_purchases([__import__("portfolio.models", fromlist=["Purchase"]).Purchase("AAPL", 2, 100, date(2026, 1, 1))])
-    agent = StockAgent(settings, database)
-
-    assert "Paste the portfolio update JSON" in agent.handle("Update my portfolio")
-    response = agent.handle('{"stocks": [{"ticker": "AAPL", "purchase_date": "2026-08-01"}, {"ticker": "MSFT", "quantity": 1, "average_cost": 200}]}')
-
-    assert "Updated 1 existing" in response
-    assert "added 1 new" in response
-    purchases = database.list_purchases()
-    assert purchases[0].purchased_at == date(2026, 8, 1)
-    assert database.holdings()[-1].ticker == "MSFT"
 
 
 def test_update_mode_can_apply_a_field_to_all_holdings(tmp_path):
@@ -114,27 +74,6 @@ def test_update_mode_can_apply_a_field_to_all_holdings(tmp_path):
     assert database.apply_portfolio_updates(updates) == (2, 0)
     assert {item.purchased_at for item in database.list_purchases()} == {date(2026, 8, 12)}
 
-
-def test_update_mode_accepts_grouped_corrected_purchase_data(tmp_path):
-    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
-    database = PortfolioDatabase(settings.database_path)
-    database.record_purchases([
-        __import__("portfolio.models", fromlist=["Purchase"]).Purchase("AZTA", 1.4, 25.1071, date(2026, 1, 1)),
-    ])
-    agent = StockAgent(settings, database)
-    agent.handle("Update my portfolio")
-    response = agent.handle(
-        '{"corrected_purchase_data": {"AZTA": ['
-        '{"purchase_date": "2026-07-09", "quantity": 0.40, "purchase_price_per_share": 25.13}, '
-        '{"purchase_date": "2026-07-09", "quantity": 1.00, "purchase_price_per_share": 25.10}]}}'
-    )
-
-    assert "Updated 1 existing" in response
-    lots = database.list_purchases()
-    assert [(lot.quantity, lot.price, lot.purchased_at) for lot in lots] == [
-        (0.4, 25.13, date(2026, 7, 9)),
-        (1.0, 25.1, date(2026, 7, 9)),
-    ]
 
 
 def test_key_normalization_handles_close_typos_but_not_current_price():

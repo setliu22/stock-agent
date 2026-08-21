@@ -1,161 +1,142 @@
 # Stock Agent
 
-## Root-cause research-pipeline correction
+A local desktop application for human-approved LSEG research, deterministic
+industry screening, portfolio tracking, position-risk review, and macro context.
 
-The executor now distinguishes three different outcomes correctly: a successful response with rows, a successful response with no rows, and an LSEG error. A valid empty response is no longer recursively split into smaller field requests. Field isolation is used only when LSEG explicitly reports invalid field syntax.
+## Main workflows
 
-Row-expanding content is also sequenced correctly. Sector research first completes the broad screen, core finalist data, histories, Reuters evidence, peer context, metrics, and finalist ranking. Events, ownership, and insider tables are requested for the winner only when the user explicitly asks for them. Generic guidance expansion is rejected because the available fields do not expose a stable shared record key and can create a Cartesian response. Fund ownership uses a narrow daily snapshot window rather than an unconstrained holder table. These optional datasets can enrich the report, but they cannot block the core investment research workflow.
+### Research Lab
 
-## Request timeout and stop control
+Enter a custom equity-research question in the Research Lab. Groq may propose
+only capability and analysis IDs from the application's typed registry. Security
+and benchmark references must come from the current question; prior chat context
+is not silently reused.
 
-Each LSEG HTTP request now uses `LSEG_REQUEST_TIMEOUT`, defaulting to 20 seconds. Slow optional evidence such as ownership is skipped after one timeout rather than recursively generating more requests. When explicitly requested, ownership is retrieved as a bounded current snapshot for the top finalist, and insider activity is limited to a one-year quarterly window.
+The proposal is non-executable. Before any data request, an approval dialog shows
+the securities, timeframe, benchmark, data sources, and Python analyses. The user
+can edit those inputs and select or remove optional capabilities. The current
+macro regime is always attached as standardized context.
 
-During research, the Send button remains active. Hovering over `Researching...` changes it to `Stop research`; clicking it requests cancellation. The workflow stops at the next safe checkpoint, or when the current LSEG request returns or reaches its timeout. The progress footer shows the active request elapsed time against that timeout.
+After approval, deterministic code resolves instruments and constructs the exact
+read-only requests. Python calculates returns, benchmark excess returns,
+drawdowns, volatility, estimate changes, daily rate-change correlations, and
+falling-rate monthly comparisons with observation counts. Groq receives only the
+compact verified finding packet and may select which finding IDs to highlight;
+Python renders every factual and numerical statement. If that final model call
+fails, the verified deterministic report is still returned.
 
-## Sector-screen reliability fix
+### Industry research
 
-Natural-language sector wording is now canonicalized before any LSEG request. For example, `industrial`, `industrials`, and `industrial sector` all become the TRBC sector `Industrials`, which is screened with `TR.TRBCEconSectorCode` value `52`. The executor follows LSEG's documented `discovery.Screener` pattern first and retains the full `SCREEN(...)` expression only as a compatibility fallback.
+Open the Market tab and select **Start research**. Choose one supported LSEG
+sector or industry and a result count from 1 to 20. The application constructs a
+validated `sector_opportunity` plan directly from those controls. No language
+model interprets the request or chooses LSEG calls.
 
-A request such as `Can you do some research on a potential bargain buy in the industrial sector?` now selects the `sector_opportunity` workflow rather than a company deep dive.
+The workflow:
 
-Research verbs such as `study`, `examine`, and `assess` also enter the LSEG workflow rather than generic chat. Short, immediately adjacent screen refinements inherit only omitted constraints from the last successful screen: after `study biotech stocks`, `study us stocks` retains the exact biotech TRBC industry and adds U.S. headquarters, while an explicitly named new sector or country replaces the corresponding prior constraint. `all`, `global`, `new screen`, and `start over` requests begin fresh, and unrelated chat closes the refinement context. The normalized trace records the current request, parent request, effective request, and fully compiled screen.
+1. Screens the selected TRBC peer group.
+2. Retrieves comparable growth, profitability, valuation, cash flow, debt,
+   estimates, price history, Reuters news, peers, and filings where entitled.
+3. Applies deterministic coverage-aware ranking.
+4. Deeply researches the finalists.
+5. Renders a deterministic evidence report in the Research Lab output.
 
-Screen enrichment is authoritative for overlapping value fields because it explicitly requests `Curn=USD`. This prevents a foreign listing's local-currency market capitalization returned by the initial Screener display from overriding the normalized USD value used for filtering, sorting, and reporting.
+### Position-risk review
 
-## Live deep-research progress
+Open the Portfolio tab and select **Review position risk**. Review the full
+portfolio or selected holdings. The workflow retrieves consistent company,
+valuation, estimate, price, event, and Reuters evidence, then combines it with
+the current macro regime.
 
-Deep LSEG research now reports its actual workflow while it runs. The interface shows a 0 to 100 percent progress bar, the current stage, elapsed time, the active LSEG API request, screened-universe counts, shortlist creation, and finalist-by-finalist deep dives. The chat transcript contains one live status block that is updated in place rather than flooding the conversation with duplicate messages.
+Quantitative risk signals and ratings are calculated in Python. A bounded Groq
+call may classify whether retrieved company-specific news is material and how it
+relates to a price move. The model cannot discover instruments, select LSEG
+operations, alter scores, or add outside facts.
 
-A local macOS stock-research application using LSEG Workspace, the LSEG Data Library for Python, and an optional Groq model.
+### Portfolio entry
 
-## Macro-aware research policy
+**Record purchase** supports one manual purchase or a bulk JSON import. Known
+JSON structures are parsed deterministically. Groq is used only as a
+schema-constrained fallback for unfamiliar key layouts; all required ticker,
+quantity, price, and date values are validated before anything is saved.
 
-The Market tab retrieves the effective federal funds rate, Federal Reserve
-assets, CPI, the U.S. high-yield option-adjusted spread, and VIX without using
-an LLM. It classifies the rate and balance-sheet directions into a liquidity
-regime and maps that regime to four explicit research weights: growth,
-profitability, valuation, and balance-sheet resilience.
+## Macro data
 
-Candidate screens apply those weights locally to validated LSEG fields. Growth
-uses forward revenue and EPS consensus plus long-term growth; profitability
-uses margins, ROE, and ROA; valuation uses positive forward and enterprise
-multiples; balance-sheet resilience uses forecast free cash flow and cash
-relative to debt. Missing factors reduce reported coverage and are never filled
-with generated values. Banks and insurers are not scored on corporate leverage
-or EV/EBITDA ratios that are not economically comparable for those businesses.
+The Market tab retrieves five indicators without an LLM:
 
-The active weights and generated research instructions are visible in the
-Market tab. Sliders allow a session-only override when the four values total
-100%, and **Use macro defaults** restores the current regime policy. The same
-bounded policy is attached to research traces and Groq context, but Groq cannot
-change the weights, LSEG fields, filters, or score calculation. The resulting
-score prioritizes a research shortlist; it is not a return forecast or trading
-recommendation.
+- Effective federal funds rate
+- Federal Reserve total assets
+- CPI inflation
+- U.S. high-yield option-adjusted spread
+- VIX
 
-## Supabase account
+Each row shows the current value, measured change, and a standardized macro tilt:
+safer/profitable/low-leverage, neutral, or more tolerant of
+high-growth/high-leverage companies. Classification uses historical
+distributions and direction, not a manually fixed value copied into the UI.
 
-The Account tab supports Supabase email signup, sign-in, and sign-out. Enter the
-Project URL and publishable key from Supabase Project Settings, then choose
-**Save connection**. The settings are stored in the local `.env` file; account
-passwords are never saved by Stock Agent.
+## Data and security
 
-Email authentication and new-user signup must be enabled in the Supabase
-project. When email confirmation is enabled, follow the confirmation link
-before signing in. Portfolio purchases are synchronized only while signed in;
-research prompts and results are not uploaded to Supabase.
+Portfolio data is stored in local SQLite. When Supabase is configured and the
+user is signed in, purchases are synchronized to that user's portfolio. Signing
+out clears the disposable local portfolio cache; signing back in restores the
+cloud snapshot.
 
-The installer adds a current trusted certificate bundle and configures the
-packaged application to use it. If the Account tab reports a certificate error,
-rerun `Install Stock Agent.command`. Do not disable certificate verification.
+Keep secrets only in `.env`. The repository ignores that file. Account
+passwords are never stored by the application.
 
 Run `supabase/schema.sql` once in the Supabase SQL Editor before using cloud
 portfolios. Row Level Security limits each signed-in user to their own data.
-Signing out clears the disposable local portfolio cache; signing back in restores
-the account's cloud snapshot.
 
-After the first Git checkout or manual update, double-click:
+## Install and update
+
+After the first checkout, run:
+
+```text
+Install Stock Agent.command
+```
+
+For later updates, run:
 
 ```text
 Update Stock Agent.command
 ```
 
-The updater refuses to overwrite local source edits, downloads a safe
-fast-forward of the current branch, reuses a compatible virtual environment,
-refreshes dependencies, runs the test suite, and rebuilds `Stock Agent.app`.
-Existing `.env` settings and portfolio data are preserved.
-
-## Research architecture
-
-Request interpretation is hybrid. A constrained Groq intent pass can resolve wording such as `stateside`, `stands out`, or `underappreciated`, classify a grounded company/universe mention, and recognize requested evidence topics. It returns a strict JSON schema with verbatim current-request evidence for every semantic value. It cannot choose LSEG functions, fields, RICs, screen syntax, API operations, numeric filters, limits, or lookback windows.
-
-The deterministic compiler remains authoritative for explicit country, TRBC sector/industry, company, numeric, horizon, and reset/inheritance constraints, and it derives the executable workflow after reconciliation. Listing-versus-headquarters ambiguity, exclusions, unsupported thresholds, multiple geographies, malformed model output, invented entities, and ungrounded model fields are stopped or discarded before LSEG runs. If the model is unavailable, a fully compiled deterministic request still runs; if neither path can resolve material wording safely, the agent asks a clarification question and makes zero LSEG requests. The normalized trace records accepted semantic fields, rejected generated fields, deterministic conflicts, and the final compiled screen.
-
-Sector screens, stock screens, comparisons, market news summaries, and contextual valuation/risk/catalyst answers are rendered deterministically from validated evidence. The optional model may also help phrase a named-company deep dive, but malformed or misbound report output is discarded.
-
-The deterministic workflow compiler supports:
-
-- `company_deep_dive`
-- `company_compare`
-- `sector_opportunity`
-- `stock_screen`
-- `market_news`
-
-For a request such as `research a promising industrials stock`, the application:
-
-1. Builds a broad LSEG industrials universe.
-2. Retrieves forward growth, profitability, valuation, cash, debt, and cash-flow fields.
-3. Uses a coverage-aware ranking with the visible macro or custom category weights.
-4. Deeply researches five finalists using comparable core data, histories, Reuters evidence, peers, and filings.
-5. Re-ranks finalists using deep-dive evidence coverage.
-6. Optionally enriches only the selected leader with explicitly requested, bounded event, ownership, or insider context.
-7. Produces a selected-RIC-bound deterministic report and follow-up answers from the validated evidence.
-8. Persists a sanitized JSONL trace with the normalized plan, exact screen, postcondition counts, request status/duration/rows, RICs, fields, parameters, currency, date windows, and adjustment policy.
-
-The report remains available when Groq is unavailable.
-
-## LSEG capability awareness
-
-Installation generates:
-
-```text
-data/lseg_capabilities.json
-```
-
-It contains:
-
-- 17 explicitly executable, read-only operations used by the workflows.
-- 111 curated LSEG capability families.
-- The five workflow definitions and their stages.
-- An inventory of all non-private functions and classes found in the installed `lseg-data` package, including signatures and docstrings.
-
-Specialized operations such as custom-instrument writes, derivative pricing, curves, surfaces, low-level endpoints, real-time streams, Tradefeedr, and bulk delivery are catalogued but are never invoked from casual natural language.
-
-## Install or replace the project
-
-Keep the `.env` file in your existing `stock-agent` folder, then run the rebuild package supplied with this release. The rebuild preserves `.env`, `.git`, and `data/portfolio.db`, reuses a compatible `.venv` when available, installs dependencies, exports the capability inventory, runs tests, and rebuilds `Stock Agent.app`.
+The updater fast-forwards the current Git branch, refreshes dependencies, runs
+the test suite, and rebuilds the app while preserving `.env` and portfolio
+data.
 
 Keep LSEG Workspace open and signed in while running research.
 
-## Test
+## LSEG diagnostic
 
-Double-click:
+Run:
 
 ```text
 Test LSEG.command
 ```
 
-The diagnostic prints the selected workflow, screen expression, API-call trace, and final concise report.
+The diagnostic executes the fixed Industrials research workflow and prints the
+screen expression, API-call trace, and deterministic report.
 
-## Examples
+## Tests
+
+Run:
 
 ```text
-research a promising industrials stock
-analyze Palantir
-compare Nvidia and AMD
-screen the top 12 US technology companies above $10B with forward P/E below 40
-show Apple's suppliers, filings, ownership, and news
-what LSEG functions are available for volatility surfaces?
+Run Tests.command
 ```
+
+or:
+
+```bash
+pytest -q
+```
+
+The retained suite covers portfolio calculations and storage, cloud
+synchronization, market data and regime classification, exact LSEG plan
+validation, request execution, ranking, news relevance, position-risk scoring,
+cancellation, and GUI navigation.
 
 ## Logs
 
