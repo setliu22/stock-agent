@@ -30,7 +30,9 @@ from portfolio.research_lab import (
     ApprovedResearchPlan,
     ResearchLabError,
     ResearchProposal,
+    research_discovery_scope_options,
 )
+from portfolio.research_plan import supported_research_taxonomy_options
 
 
 def tab_drag_target(
@@ -302,7 +304,11 @@ class ResearchApprovalDialog(tk.Toplevel):
         self.configure(background=StockAgentApp.BG)
         self.result: ApprovedResearchPlan | None = None
         self.proposal = proposal
+        self.discovery_mode = proposal.mode == "discovery"
+        self.market_news_mode = proposal.mode == "market_news"
         self.securities = tk.StringVar(value="; ".join(proposal.securities))
+        self.discovery_scope = tk.StringVar(value=proposal.discovery_scope or "")
+        self.result_count = tk.IntVar(value=proposal.result_count)
         self.benchmark = tk.StringVar(value=proposal.benchmark or "")
         timeframe_label = next(
             (
@@ -315,9 +321,29 @@ class ResearchApprovalDialog(tk.Toplevel):
         self.timeframe = tk.StringVar(value=timeframe_label)
         selected_capabilities = {item.item_id for item in proposal.capabilities}
         selected_analyses = {item.item_id for item in proposal.analyses}
+        self.required_capabilities = {
+            item.capability_id
+            for item in CAPABILITIES
+            if item.required
+            or (
+                self.discovery_mode
+                and item.capability_id in {"candidate_discovery", "company_profile"}
+            )
+            or (self.market_news_mode and item.capability_id == "market_news")
+        }
+        self.visible_capabilities = tuple(
+            item for item in CAPABILITIES if proposal.mode in item.modes
+        )
+        visible_capability_ids = {item.capability_id for item in self.visible_capabilities}
+        self.visible_analyses = tuple(
+            item
+            for item in ANALYSES
+            if set(item.required_capabilities) <= visible_capability_ids
+        )
         self.capability_vars = {
             item.capability_id: tk.BooleanVar(
-                value=item.required or item.capability_id in selected_capabilities
+                value=item.capability_id in self.required_capabilities
+                or item.capability_id in selected_capabilities
             )
             for item in CAPABILITIES
         }
@@ -341,18 +367,47 @@ class ResearchApprovalDialog(tk.Toplevel):
 
         controls = ttk.Frame(outer)
         controls.pack(fill="x", pady=(0, 14))
-        ttk.Label(controls, text="Securities (separate with ;)", style="DialogMuted.TLabel").grid(
-            row=0, column=0, sticky="w"
-        )
+        if self.discovery_mode:
+            ttk.Label(controls, text="Discovery universe", style="DialogMuted.TLabel").grid(
+                row=0, column=0, sticky="w"
+            )
+            ttk.Label(controls, text="Results", style="DialogMuted.TLabel").grid(
+                row=0, column=1, sticky="w", padx=(12, 0)
+            )
+            ttk.Combobox(
+                controls,
+                textvariable=self.discovery_scope,
+                values=[value for _label, value in research_discovery_scope_options()],
+                state="readonly",
+            ).grid(row=1, column=0, sticky="ew", pady=(5, 0))
+            ttk.Spinbox(
+                controls,
+                from_=1,
+                to=8,
+                textvariable=self.result_count,
+                width=8,
+            ).grid(row=1, column=1, sticky="ew", padx=(12, 0), pady=(5, 0))
+            timeframe_column = 2
+            benchmark_column = 3
+        elif not self.market_news_mode:
+            ttk.Label(controls, text="Securities (separate with ;)", style="DialogMuted.TLabel").grid(
+                row=0, column=0, sticky="w"
+            )
+            ttk.Entry(controls, textvariable=self.securities).grid(
+                row=1, column=0, sticky="ew", pady=(5, 0)
+            )
+            timeframe_column = 1
+            benchmark_column = 2
+        else:
+            timeframe_column = 0
+            benchmark_column = None
         ttk.Label(controls, text="Timeframe", style="DialogMuted.TLabel").grid(
-            row=0, column=1, sticky="w", padx=(12, 0)
+            row=0, column=timeframe_column, sticky="w", padx=(12, 0)
         )
-        ttk.Label(controls, text="Benchmark", style="DialogMuted.TLabel").grid(
-            row=0, column=2, sticky="w", padx=(12, 0)
-        )
-        ttk.Entry(controls, textvariable=self.securities).grid(
-            row=1, column=0, sticky="ew", pady=(5, 0)
-        )
+        if benchmark_column is not None:
+            ttk.Label(controls, text="Benchmark", style="DialogMuted.TLabel").grid(
+                row=0, column=benchmark_column, sticky="w", padx=(12, 0)
+            )
         timeframe_values = list(self.TIMEFRAMES)
         if timeframe_label not in timeframe_values:
             timeframe_values.append(timeframe_label)
@@ -362,10 +417,11 @@ class ResearchApprovalDialog(tk.Toplevel):
             values=timeframe_values,
             state="readonly",
             width=14,
-        ).grid(row=1, column=1, sticky="ew", padx=(12, 0), pady=(5, 0))
-        ttk.Entry(controls, textvariable=self.benchmark, width=18).grid(
-            row=1, column=2, sticky="ew", padx=(12, 0), pady=(5, 0)
-        )
+        ).grid(row=1, column=timeframe_column, sticky="ew", padx=(12, 0), pady=(5, 0))
+        if benchmark_column is not None:
+            ttk.Entry(controls, textvariable=self.benchmark, width=18).grid(
+                row=1, column=benchmark_column, sticky="ew", padx=(12, 0), pady=(5, 0)
+            )
         controls.columnconfigure(0, weight=1)
 
         body = ttk.Frame(outer)
@@ -381,8 +437,8 @@ class ResearchApprovalDialog(tk.Toplevel):
             row=0, column=0, columnspan=2, sticky="w"
         )
         reasons = {item.item_id: item.reason for item in proposal.capabilities}
-        split = (len(CAPABILITIES) + 1) // 2
-        for index, capability in enumerate(CAPABILITIES):
+        split = (len(self.visible_capabilities) + 1) // 2
+        for index, capability in enumerate(self.visible_capabilities):
             row = ttk.Frame(data_frame)
             row.grid(
                 row=index % split + 1,
@@ -397,7 +453,7 @@ class ResearchApprovalDialog(tk.Toplevel):
                 variable=self.capability_vars[capability.capability_id],
             )
             check.pack(anchor="w")
-            if capability.required:
+            if capability.capability_id in self.required_capabilities:
                 check.configure(state="disabled")
             reason = reasons.get(capability.capability_id)
             if reason:
@@ -411,7 +467,7 @@ class ResearchApprovalDialog(tk.Toplevel):
 
         ttk.Label(analysis_frame, text="Python analyses", style="Section.TLabel").pack(anchor="w")
         analysis_reasons = {item.item_id: item.reason for item in proposal.analyses}
-        for analysis in ANALYSES:
+        for analysis in self.visible_analyses:
             row = ttk.Frame(analysis_frame)
             row.pack(fill="x", pady=(7, 0))
             ttk.Checkbutton(
@@ -455,9 +511,18 @@ class ResearchApprovalDialog(tk.Toplevel):
         else:
             match = re.fullmatch(r"(\d+)\s+days", timeframe_text)
             lookback_days = int(match.group(1)) if match else 0
+        try:
+            result_count = int(self.result_count.get()) if self.discovery_mode else 5
+        except (TypeError, ValueError, tk.TclError):
+            messagebox.showerror(
+                "Invalid result count",
+                "Choose between one and eight discovery results.",
+                parent=self,
+            )
+            return
         approved = ApprovedResearchPlan(
             question=self.proposal.question,
-            securities=securities,
+            securities=() if self.discovery_mode else securities,
             lookback_days=lookback_days,
             benchmark=self.benchmark.get().strip() or None,
             capability_ids=tuple(
@@ -470,6 +535,10 @@ class ResearchApprovalDialog(tk.Toplevel):
                 for item in ANALYSES
                 if self.analysis_vars[item.analysis_id].get()
             ),
+            mode=self.proposal.mode,
+            discovery_scope=self.discovery_scope.get().strip() or None,
+            discovery_theme=self.proposal.discovery_theme,
+            result_count=result_count,
         )
         try:
             self.result = approved.validated()

@@ -223,6 +223,7 @@ class ResearchPlan:
     raw_request: str = ""
     macro_regime: str | None = None
     benchmark: str | None = None
+    discovery_theme: str | None = None
 
     def normalized(self) -> "ResearchPlan":
         self.mode = self.mode if self.mode in {"company", "compare", "screen", "market_news"} else "company"
@@ -243,6 +244,12 @@ class ResearchPlan:
             self.macro_regime = str(self.macro_regime).strip()[:120] or None
         if self.benchmark is not None:
             self.benchmark = str(self.benchmark).strip()[:120] or None
+        if self.discovery_theme is not None:
+            self.discovery_theme = str(self.discovery_theme).strip()[:240] or None
+        if self.discovery_theme and self.mode != "screen":
+            raise UnsupportedResearchConstraint(
+                "A profile-relevance query can only be attached to a stock screen."
+            )
         self.topics = [topic for topic in dict.fromkeys(self.topics) if topic in VALID_TOPICS]
         if not self.topics and self.mode not in {"screen", "market_news"}:
             self.topics = list(DEFAULT_TOPICS)

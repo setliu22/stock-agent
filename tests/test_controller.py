@@ -353,6 +353,47 @@ def test_controller_returns_non_executable_research_proposal(tmp_path, monkeypat
     assert captured == [("Compare AAPL and MSFT", settings)]
 
 
+def test_controller_carries_only_pending_clarification_context(tmp_path, monkeypatch) -> None:
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
+    controller = StockAgentController(settings=settings)
+    received = []
+
+    def fake_proposal(question, _settings):
+        received.append(question)
+        if len(received) == 1:
+            return ResearchProposal(
+                question=question,
+                securities=(),
+                lookback_days=365,
+                benchmark=None,
+                capabilities=(),
+                analyses=(),
+                clarification="Which theme should be researched?",
+            )
+        return ResearchProposal(
+            question=question,
+            securities=(),
+            lookback_days=365,
+            benchmark=None,
+            capabilities=(),
+            analyses=(),
+            mode="discovery",
+            discovery_scope="Technology",
+            discovery_theme="AI",
+        )
+
+    monkeypatch.setattr("portfolio.controller.propose_research", fake_proposal)
+
+    controller.propose_custom_research("Find promising stocks")
+    ready = controller.propose_custom_research("AI companies")
+    controller.propose_custom_research("Compare AAPL and MSFT")
+
+    assert "Original pending request:\nFind promising stocks" in received[1]
+    assert "User clarification:\nAI companies" in received[1]
+    assert received[2] == "Compare AAPL and MSFT"
+    assert ready.ready
+
+
 def test_controller_executes_only_approved_research_plan(tmp_path, monkeypatch) -> None:
     settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
     controller = StockAgentController(settings=settings)

@@ -17,6 +17,22 @@ the securities, timeframe, benchmark, data sources, and Python analyses. The use
 can edit those inputs and select or remove optional capabilities. The current
 macro regime is always attached as standardized context.
 
+The planner supports named-company research, open-ended candidate discovery, and
+market-wide Reuters questions. Its visible registry covers company profiles,
+financials, profitability, valuation, estimates, analyst opinion, price and
+estimate histories, risk, Reuters news, events, ownership, insiders, filings,
+peers, suppliers, customers, benchmarks, and rate histories where the backend
+has a bounded implementation. It selects capability IDs, never raw LSEG syntax.
+
+For discovery, Groq chooses a visible LSEG sector, industry, or a bounded public-
+equity universe; it cannot invent candidate companies. LSEG returns the screen.
+When the question contains a business-exposure criterion, Groq may classify that
+criterion only against retrieved LSEG business descriptions. Financial, price,
+rate, and risk criteria instead use approved LSEG fields and Python analyses.
+The approval dialog exposes the universe, result count, retrieval operations,
+and calculations. Only a pending clarification is carried into the next request;
+completed plans and ordinary transcript text are not hidden model context.
+
 After approval, deterministic code resolves instruments and constructs the exact
 read-only requests. Python calculates returns, benchmark excess returns,
 drawdowns, volatility, estimate changes, daily rate-change correlations, and

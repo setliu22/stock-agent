@@ -8,11 +8,16 @@ from portfolio.config import Settings
 from portfolio.lseg_research import ResearchResult
 from portfolio.market_regime import MarketRegimeSnapshot, Observation
 from portfolio.research_lab import (
+    CAPABILITIES,
     ApprovedResearchPlan,
     ResearchLabError,
+    ThemeCandidate,
     VerifiedFinding,
+    _select_theme_candidates,
     derive_findings,
     execute_research,
+    propose_research,
+    proposal_catalog,
     summarize_findings,
     validate_proposal_payload,
 )
@@ -23,7 +28,11 @@ def _payload(**overrides):
     payload = {
         "status": "ready",
         "clarification": None,
+        "mode": "named",
         "securities": ["AAPL", "MSFT"],
+        "discovery_scope": None,
+        "discovery_theme": None,
+        "result_count": 5,
         "lookback_days": 365,
         "benchmark": None,
         "capabilities": [
@@ -77,6 +86,237 @@ def test_proposal_rejects_unknown_capability() -> None:
         )
 
 
+def test_lseg_capability_catalog_exposes_backend_operations() -> None:
+    lseg_capabilities = [item for item in CAPABILITIES if item.source.startswith("LSEG")]
+
+    assert lseg_capabilities
+    assert all(item.backend_operations for item in lseg_capabilities)
+    catalog = proposal_catalog()
+    assert all("backend_operations" in item for item in catalog["capabilities"])
+
+
+def test_capability_dependencies_are_added_to_proposal() -> None:
+    proposal = validate_proposal_payload(
+        "Review AAPL regulatory filings",
+        _payload(
+            securities=["AAPL"],
+            capabilities=[
+                {"id": "regulatory_filings", "reason": "Review recent filings."}
+            ],
+            analyses=[],
+        ),
+    )
+
+    assert {item.item_id for item in proposal.capabilities} >= {
+        "macro_context",
+        "regulatory_filings",
+        "company_profile",
+    }
+
+
+def test_discovery_proposal_uses_supported_scope_without_inventing_stocks() -> None:
+    proposal = validate_proposal_payload(
+        "Which stocks are best poised to take advantage of the AI revolution?",
+        _payload(
+            mode="discovery",
+            securities=[],
+            discovery_scope="Technology",
+            discovery_theme="AI revolution",
+            result_count=5,
+            capabilities=[
+                {"id": "company_profile", "reason": "Validate business exposure."},
+                {"id": "valuation_snapshot", "reason": "Compare valuations."},
+            ],
+            analyses=[],
+        ),
+    )
+
+    assert proposal.ready
+    assert proposal.mode == "discovery"
+    assert proposal.securities == ()
+    assert proposal.discovery_scope == "Technology"
+    assert proposal.discovery_theme == "AI revolution"
+    assert {item.item_id for item in proposal.capabilities} >= {
+        "macro_context",
+        "company_profile",
+        "valuation_snapshot",
+    }
+
+
+def test_exact_open_ended_question_can_propose_discovery(tmp_path, monkeypatch) -> None:
+    question = "which stocks are best poised to take advantage of the AI revolution?"
+
+    def fake_invoke(_settings, _schema, _messages, **_kwargs):
+        return _payload(
+            mode="discovery",
+            securities=[],
+            discovery_scope="Technology",
+            discovery_theme="AI revolution",
+            result_count=5,
+            capabilities=[
+                {"id": "candidate_discovery", "reason": "Discover supported matches."},
+                {"id": "company_profile", "reason": "Validate thematic exposure."},
+                {"id": "valuation_snapshot", "reason": "Compare valuations."},
+            ],
+            analyses=[],
+        )
+
+    monkeypatch.setattr("portfolio.research_lab.invoke_structured_groq", fake_invoke)
+    settings = Settings(tmp_path, tmp_path / "db.sqlite", "key", "test-model", "desktop.workspace")
+
+    proposal = propose_research(question, settings)
+
+    assert proposal.mode == "discovery"
+    assert proposal.discovery_scope == "Technology"
+    assert proposal.securities == ()
+
+
+def test_discovery_proposal_rejects_theme_not_grounded_in_question() -> None:
+    with pytest.raises(ResearchLabError, match="copied from the current question"):
+        validate_proposal_payload(
+            "Find cybersecurity stocks",
+            _payload(
+                mode="discovery",
+                securities=[],
+                discovery_scope="Technology",
+                discovery_theme="artificial intelligence",
+                capabilities=[{"id": "company_profile", "reason": "Validate exposure."}],
+                analyses=[],
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    ("question", "theme", "scope"),
+    [
+        ("Find cybersecurity companies", "cybersecurity", "Technology"),
+        ("Find companies exposed to gene editing", "gene editing", "Healthcare"),
+        ("Find stocks positioned for clean energy", "clean energy", "Energy"),
+    ],
+)
+def test_discovery_contract_is_theme_agnostic(question, theme, scope) -> None:
+    proposal = validate_proposal_payload(
+        question,
+        _payload(
+            mode="discovery",
+            securities=[],
+            discovery_scope=scope,
+            discovery_theme=theme,
+            capabilities=[
+                {"id": "candidate_discovery", "reason": "Discover candidates."},
+                {"id": "company_profile", "reason": "Validate exposure."},
+            ],
+            analyses=[],
+        ),
+    )
+
+    assert proposal.discovery_theme == theme
+    assert proposal.discovery_scope == scope
+
+
+def test_financial_discovery_does_not_require_a_profile_relevance_phrase() -> None:
+    proposal = validate_proposal_payload(
+        "Find undervalued software stocks with improving earnings estimates",
+        _payload(
+            mode="discovery",
+            securities=[],
+            discovery_scope="Software",
+            discovery_theme=None,
+            capabilities=[
+                {"id": "candidate_discovery", "reason": "Build the candidate universe."},
+                {"id": "company_profile", "reason": "Identify the candidates."},
+                {"id": "valuation_snapshot", "reason": "Compare valuation evidence."},
+                {"id": "estimate_revisions", "reason": "Retrieve estimate history."},
+            ],
+            analyses=[
+                {"id": "estimate_revision_change", "reason": "Calculate comparable changes."}
+            ],
+        ),
+    )
+
+    assert proposal.mode == "discovery"
+    assert proposal.discovery_theme is None
+    assert {item.item_id for item in proposal.capabilities} >= {
+        "candidate_discovery",
+        "valuation_snapshot",
+        "estimate_revisions",
+    }
+
+
+def test_market_news_question_uses_market_news_mode() -> None:
+    proposal = validate_proposal_payload(
+        "What market developments are moving semiconductor stocks today?",
+        _payload(
+            mode="market_news",
+            securities=[],
+            discovery_scope=None,
+            discovery_theme=None,
+            capabilities=[
+                {"id": "market_news", "reason": "Retrieve relevant Reuters headlines."}
+            ],
+            analyses=[],
+        ),
+    )
+
+    assert proposal.mode == "market_news"
+    assert {item.item_id for item in proposal.capabilities} == {
+        "macro_context",
+        "market_news",
+    }
+
+
+def test_cross_sector_discovery_can_use_all_public_equities() -> None:
+    proposal = validate_proposal_payload(
+        "Find companies across the market that benefit when rates fall",
+        _payload(
+            mode="discovery",
+            securities=[],
+            discovery_scope="All public equities",
+            discovery_theme=None,
+            capabilities=[
+                {"id": "candidate_discovery", "reason": "Build a broad equity universe."},
+                {"id": "company_profile", "reason": "Identify the candidates."},
+                {"id": "price_history", "reason": "Retrieve returns."},
+                {"id": "fed_funds_history", "reason": "Retrieve rate history."},
+            ],
+            analyses=[
+                {"id": "falling_rate_comparison", "reason": "Compare falling-rate periods."}
+            ],
+        ),
+    )
+
+    assert proposal.discovery_scope == "All public equities"
+
+
+def test_market_news_execution_uses_market_news_workflow(tmp_path, monkeypatch) -> None:
+    approved = ApprovedResearchPlan(
+        question="What is moving semiconductor stocks today?",
+        securities=(),
+        lookback_days=90,
+        benchmark=None,
+        capability_ids=("macro_context", "market_news"),
+        analysis_ids=(),
+        mode="market_news",
+    ).validated()
+    captured = []
+
+    def fake_run(plan, *_args, **_kwargs):
+        captured.append(plan)
+        result = ResearchResult(plan=plan)
+        result.tables["market_news"] = pd.DataFrame(
+            {"headline": ["Semiconductor shares rise after an industry update"]}
+        )
+        return result
+
+    monkeypatch.setattr("portfolio.research_lab.run_research", fake_run)
+    settings = Settings(tmp_path, tmp_path / "db.sqlite", None, "test-model", "desktop.workspace")
+
+    output = execute_research(approved, settings, _macro())
+
+    assert captured[0].workflow == "market_news"
+    assert any(item.finding_id == "MARKET_NEWS_1" for item in output.findings)
+
+
 def test_approval_requires_analysis_dependencies_and_one_rate_series() -> None:
     plan = ApprovedResearchPlan(
         question="Compare AAPL and MSFT when rates fall",
@@ -88,6 +328,41 @@ def test_approval_requires_analysis_dependencies_and_one_rate_series() -> None:
     )
     with pytest.raises(ResearchLabError, match="exactly one"):
         plan.validated()
+
+
+def test_discovery_approval_requires_profile_and_no_preselected_security() -> None:
+    plan = ApprovedResearchPlan(
+        question="Find AI stocks",
+        securities=(),
+        lookback_days=365,
+        benchmark=None,
+        capability_ids=(
+            "macro_context",
+            "candidate_discovery",
+            "company_profile",
+            "valuation_snapshot",
+        ),
+        analysis_ids=(),
+        mode="discovery",
+        discovery_scope="Technology",
+        discovery_theme="AI",
+        result_count=5,
+    )
+
+    assert plan.validated().discovery_scope == "Technology"
+
+    with pytest.raises(ResearchLabError, match="preselected securities"):
+        ApprovedResearchPlan(
+            question=plan.question,
+            securities=("NVDA",),
+            lookback_days=plan.lookback_days,
+            benchmark=None,
+            capability_ids=plan.capability_ids,
+            analysis_ids=(),
+            mode="discovery",
+            discovery_scope=plan.discovery_scope,
+            discovery_theme=plan.discovery_theme,
+        ).validated()
 
 
 def test_research_lab_plan_accepts_one_explicit_security() -> None:
@@ -227,6 +502,147 @@ def test_news_capability_exposes_company_relevant_story_excerpt() -> None:
 
     story = next(item for item in findings if item.finding_id == "STORY_AAPL_1")
     assert "raised its outlook" in story.text
+
+
+def test_theme_selection_uses_retrieved_profiles_and_preserves_python_order(
+    tmp_path, monkeypatch
+) -> None:
+    approved = ApprovedResearchPlan(
+        question="Find AI stocks",
+        securities=(),
+        lookback_days=365,
+        benchmark=None,
+        capability_ids=("macro_context", "candidate_discovery", "company_profile"),
+        analysis_ids=(),
+        mode="discovery",
+        discovery_scope="Technology",
+        discovery_theme="AI",
+        result_count=2,
+    ).validated()
+    screen_result = ResearchResult(
+        plan=ResearchPlan(mode="screen", workflow="stock_screen")
+    )
+    screen_result.tables["screen"] = pd.DataFrame(
+        [
+            {
+                "Instrument": "AAA.O",
+                "TR.TickerSymbol": "AAA",
+                "TR.CommonName": "Alpha",
+                "TR.TRBCEconomicSector": "Technology",
+                "TR.TRBCIndustry": "Software",
+                "TR.BusinessSummary": "Alpha develops artificial intelligence software.",
+            },
+            {
+                "Instrument": "BBB.O",
+                "TR.TickerSymbol": "BBB",
+                "TR.CommonName": "Beta",
+                "TR.TRBCEconomicSector": "Technology",
+                "TR.TRBCIndustry": "Software",
+                "TR.BusinessSummary": "Beta sells accounting software.",
+            },
+            {
+                "Instrument": "CCC.O",
+                "TR.TickerSymbol": "CCC",
+                "TR.CommonName": "Gamma",
+                "TR.TRBCEconomicSector": "Technology",
+                "TR.TRBCIndustry": "Semiconductors",
+                "TR.BusinessSummary": "Gamma supplies processors used for AI workloads.",
+            },
+        ]
+    )
+
+    def fake_invoke(_settings, _schema, _messages, **_kwargs):
+        return {
+            "matches": [
+                {"candidate_id": "C3", "relevance": "meaningful", "reason": "Explicit AI workloads."},
+                {"candidate_id": "C1", "relevance": "direct", "reason": "AI is a core product."},
+                {"candidate_id": "C2", "relevance": "unsupported", "reason": "No AI exposure stated."},
+            ]
+        }
+
+    monkeypatch.setattr("portfolio.research_lab.invoke_structured_groq", fake_invoke)
+    settings = Settings(tmp_path, tmp_path / "db.sqlite", "key", "test-model", "desktop.workspace")
+
+    selected, missing = _select_theme_candidates(screen_result, approved, settings)
+
+    assert [item.ticker for item in selected] == ["AAA", "CCC"]
+    assert not missing
+
+
+def test_discovery_without_profile_filter_skips_semantic_model(tmp_path, monkeypatch) -> None:
+    approved = ApprovedResearchPlan(
+        question="Find undervalued software stocks",
+        securities=(),
+        lookback_days=365,
+        benchmark=None,
+        capability_ids=("macro_context", "candidate_discovery", "company_profile"),
+        analysis_ids=(),
+        mode="discovery",
+        discovery_scope="Software",
+        discovery_theme=None,
+        result_count=2,
+    ).validated()
+    result = ResearchResult(plan=ResearchPlan(mode="screen", workflow="stock_screen"))
+    result.tables["screen"] = pd.DataFrame(
+        [
+            {"Instrument": "AAA.O", "TR.TickerSymbol": "AAA", "TR.CommonName": "Alpha"},
+            {"Instrument": "BBB.O", "TR.TickerSymbol": "BBB", "TR.CommonName": "Beta"},
+        ]
+    )
+    monkeypatch.setattr(
+        "portfolio.research_lab.invoke_structured_groq",
+        lambda *_args, **_kwargs: pytest.fail("semantic classification should not run"),
+    )
+    settings = Settings(tmp_path, tmp_path / "db.sqlite", "key", "test-model", "desktop.workspace")
+
+    selected, missing = _select_theme_candidates(result, approved, settings)
+
+    assert [item.ticker for item in selected] == ["AAA", "BBB"]
+    assert not missing
+
+
+def test_discovery_execution_researches_only_semantically_selected_rics(
+    tmp_path, monkeypatch
+) -> None:
+    approved = ApprovedResearchPlan(
+        question="Find AI stocks",
+        securities=(),
+        lookback_days=365,
+        benchmark=None,
+        capability_ids=("macro_context", "candidate_discovery", "company_profile"),
+        analysis_ids=(),
+        mode="discovery",
+        discovery_scope="Technology",
+        discovery_theme="AI",
+        result_count=1,
+    ).validated()
+    settings = Settings(tmp_path, tmp_path / "db.sqlite", None, "test-model", "desktop.workspace")
+    screen_result = ResearchResult(plan=ResearchPlan(mode="screen", workflow="stock_screen"))
+    monkeypatch.setattr("portfolio.research_lab._run_discovery_screen", lambda *_args, **_kwargs: screen_result)
+    monkeypatch.setattr(
+        "portfolio.research_lab._select_theme_candidates",
+        lambda *_args, **_kwargs: (
+            [ThemeCandidate("NVDA.O", "NVDA", "NVIDIA", "direct", "AI is core.", "Summary")],
+            [],
+        ),
+    )
+    captured = []
+
+    def fake_run(plan, *_args, **_kwargs):
+        captured.append(plan)
+        resolved = ResolvedInstrument("NVDA.O", "NVDA.O", "NVDA", "NVDA.O", "NVIDIA")
+        result = ResearchResult(plan=plan, resolved=[resolved])
+        result.tables["profile"] = pd.DataFrame(
+            {"Instrument": ["NVDA.O"], "TR.BusinessSummary": ["NVIDIA develops computing platforms."]}
+        )
+        return result
+
+    monkeypatch.setattr("portfolio.research_lab.run_research", fake_run)
+
+    output = execute_research(approved, settings, _macro())
+
+    assert captured[0].entities == ["NVDA.O"]
+    assert any(item.finding_id == "DISCOVERY_NVDA" for item in output.findings)
 
 
 def test_deterministic_summary_prioritizes_approved_analysis(tmp_path) -> None:

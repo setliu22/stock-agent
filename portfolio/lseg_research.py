@@ -1369,11 +1369,14 @@ def _retrieve_screen(ld: Any, client: _LSEGClient, result: ResearchResult) -> No
         "after the compiled country/TRBC constraints."
     )
 
+    enrichment_fields = SCREEN_FIELDS
+    if result.plan.discovery_theme:
+        enrichment_fields = (*SCREEN_FIELDS, "TR.BusinessSummary")
     enrichment = _safe_get_data(
         ld,
         client,
         rics,
-        SCREEN_FIELDS,
+        enrichment_fields,
         parameters={"Curn": "USD"},
         label="Stock-screen enrichment",
     )
@@ -2503,10 +2506,12 @@ def run_research(
             _derive_metrics(result)
             _derive_evidence_coverage(result)
 
-            # Only a single-company deep dive receives row-expanding ownership
-            # and insider enrichment. Comparisons stay on a consistent evidence
-            # bundle rather than blocking on optional holder tables.
-            if workflow.workflow_id == "company_deep_dive":
+            # Row-expanding ownership and insider tables remain bounded to one
+            # company. Research Lab reaches them only after explicit approval.
+            if workflow.workflow_id == "company_deep_dive" or (
+                workflow.workflow_id == "research_lab"
+                and set(plan.topics) & {"ownership", "insiders"}
+            ):
                 _retrieve_winner_optional_context(ld, client, result, progress_callback)
                 _derive_evidence_coverage(result)
 
