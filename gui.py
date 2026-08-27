@@ -349,10 +349,10 @@ class ResearchApprovalDialog(tk.Toplevel):
         self.geometry("1040x720")
         self.minsize(940, 640)
         self.transient(parent)
-        self.grab_set()
         self.configure(background=StockAgentApp.BG)
         self.result: ApprovedResearchPlan | None = None
         self.proposal = proposal
+        self.ui_font = getattr(parent, "ui_font", "TkDefaultFont")
         self.discovery_mode = proposal.mode == "discovery"
         self.market_news_mode = proposal.mode == "market_news"
         self.securities = tk.StringVar(value="; ".join(proposal.securities))
@@ -443,13 +443,13 @@ class ResearchApprovalDialog(tk.Toplevel):
                 selectmode="multiple",
                 exportselection=False,
                 height=4,
-                background=self.SURFACE_ALT,
-                foreground=self.TEXT,
+                background=StockAgentApp.SURFACE_ALT,
+                foreground=StockAgentApp.TEXT,
                 selectbackground="#285665",
-                selectforeground=self.TEXT,
+                selectforeground=StockAgentApp.TEXT,
                 relief="flat",
                 highlightthickness=1,
-                highlightbackground=self.BORDER,
+                highlightbackground=StockAgentApp.BORDER,
                 font=(self.ui_font, 10),
             )
             for index, value in enumerate(self.discovery_scope_values):
@@ -595,6 +595,7 @@ class ResearchApprovalDialog(tk.Toplevel):
             side="right", padx=(0, 8)
         )
         self.bind("<Escape>", lambda _event: self.destroy())
+        self.grab_set()
         self.after_idle(lambda: _center_dialog(self, parent))
 
     def _enforce_exclusive_capability(self, selected_id: str) -> None:
