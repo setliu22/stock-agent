@@ -356,7 +356,9 @@ class ResearchApprovalDialog(tk.Toplevel):
         self.discovery_mode = proposal.mode == "discovery"
         self.market_news_mode = proposal.mode == "market_news"
         self.securities = tk.StringVar(value="; ".join(proposal.securities))
-        self.discovery_scope = tk.StringVar(value=proposal.discovery_scope or "")
+        self.proposed_discovery_scopes = proposal.discovery_scopes or (
+            (proposal.discovery_scope,) if proposal.discovery_scope else ()
+        )
         self.exchange_geography = tk.StringVar(
             value=proposal.exchange_geography or "All exchanges"
         )
@@ -420,7 +422,7 @@ class ResearchApprovalDialog(tk.Toplevel):
         controls = ttk.Frame(outer)
         controls.pack(fill="x", pady=(0, 14))
         if self.discovery_mode:
-            ttk.Label(controls, text="Discovery universe", style="DialogMuted.TLabel").grid(
+            ttk.Label(controls, text="Discovery universes", style="DialogMuted.TLabel").grid(
                 row=0, column=0, sticky="w"
             )
             ttk.Label(controls, text="Results", style="DialogMuted.TLabel").grid(
@@ -433,12 +435,33 @@ class ResearchApprovalDialog(tk.Toplevel):
             ).grid(
                 row=0, column=1, sticky="w", padx=(12, 0)
             )
-            ttk.Combobox(
+            self.discovery_scope_values = [
+                value for _label, value in research_discovery_scope_options()
+            ]
+            self.discovery_scope_list = tk.Listbox(
                 controls,
-                textvariable=self.discovery_scope,
-                values=[value for _label, value in research_discovery_scope_options()],
-                state="readonly",
-            ).grid(row=1, column=0, sticky="ew", pady=(5, 0))
+                selectmode="multiple",
+                exportselection=False,
+                height=4,
+                background=self.SURFACE_ALT,
+                foreground=self.TEXT,
+                selectbackground="#285665",
+                selectforeground=self.TEXT,
+                relief="flat",
+                highlightthickness=1,
+                highlightbackground=self.BORDER,
+                font=(self.ui_font, 10),
+            )
+            for index, value in enumerate(self.discovery_scope_values):
+                self.discovery_scope_list.insert("end", value)
+                if value in self.proposed_discovery_scopes:
+                    self.discovery_scope_list.selection_set(index)
+            if self.proposed_discovery_scopes:
+                first_selected = self.discovery_scope_values.index(
+                    self.proposed_discovery_scopes[0]
+                )
+                self.discovery_scope_list.see(first_selected)
+            self.discovery_scope_list.grid(row=1, column=0, sticky="ew", pady=(5, 0))
             ttk.Combobox(
                 controls,
                 textvariable=self.exchange_geography,
@@ -536,7 +559,11 @@ class ResearchApprovalDialog(tk.Toplevel):
                     justify="left",
                 ).pack(anchor="w", padx=(24, 0))
 
-        ttk.Label(analysis_frame, text="Python analyses", style="Section.TLabel").pack(anchor="w")
+        ttk.Label(
+            analysis_frame,
+            text="Optional Python analyses",
+            style="Section.TLabel",
+        ).pack(anchor="w")
         analysis_reasons = {item.item_id: item.reason for item in proposal.analyses}
         for analysis in self.visible_analyses:
             row = ttk.Frame(analysis_frame)
@@ -601,6 +628,14 @@ class ResearchApprovalDialog(tk.Toplevel):
                 parent=self,
             )
             return
+        selected_scopes = (
+            tuple(
+                self.discovery_scope_values[index]
+                for index in self.discovery_scope_list.curselection()
+            )
+            if self.discovery_mode
+            else ()
+        )
         approved = ApprovedResearchPlan(
             question=self.proposal.question,
             securities=() if self.discovery_mode else securities,
@@ -617,7 +652,8 @@ class ResearchApprovalDialog(tk.Toplevel):
                 if self.analysis_vars[item.analysis_id].get()
             ),
             mode=self.proposal.mode,
-            discovery_scope=self.discovery_scope.get().strip() or None,
+            discovery_scope=(selected_scopes[0] if selected_scopes else None),
+            discovery_scopes=selected_scopes,
             exchange_geography=(
                 self.exchange_geography.get().strip()
                 if self.exchange_geography.get().strip() != "All exchanges"
@@ -1014,7 +1050,7 @@ class StockAgentApp(tk.Tk):
 
         composer = ttk.Frame(self.chat_tab, style="Panel.TFrame", padding=12)
         composer.pack(fill="x", pady=(0, 12))
-        ttk.Label(composer, text="Research question", style="SurfaceSection.TLabel").pack(
+        ttk.Label(composer, text="Research idea", style="SurfaceSection.TLabel").pack(
             anchor="w", pady=(0, 7)
         )
         input_row = ttk.Frame(composer, style="Surface.TFrame")
@@ -1038,7 +1074,7 @@ class StockAgentApp(tk.Tk):
         self.research_question.pack(side="left", fill="x", expand=True)
         self.propose_research_button = ttk.Button(
             input_row,
-            text="Propose plan",
+            text="Build plan",
             style="Accent.TButton",
             command=self.start_research_proposal,
         )
@@ -1084,7 +1120,7 @@ class StockAgentApp(tk.Tk):
             spacing3=3,
         )
         self.transcript.pack(fill="both", expand=True)
-        self.transcript.insert("end", "Agent:\nApproved research results will appear here.\n\n")
+        self.transcript.insert("end", "Results:\nApproved research results will appear here.\n\n")
         self.transcript.configure(state="disabled")
 
         self.progress_frame = ttk.Frame(
@@ -1547,7 +1583,7 @@ class StockAgentApp(tk.Tk):
         self.notebook.select(self.chat_tab)
         portfolio_tickers = {holding.ticker for holding in self.controller.holdings()}
         label = "entire portfolio" if set(tickers) == portfolio_tickers else ", ".join(tickers)
-        self._append("You", f"Review position risk for {label}.")
+        self._append("Research request", f"Review position risk for {label}.")
         cancel_event = threading.Event()
         self.cancel_event = cancel_event
         self._set_busy(True, cancellable=True)
@@ -1584,7 +1620,7 @@ class StockAgentApp(tk.Tk):
                 "Question required", "Enter a research question.", parent=self
             )
             return
-        self._append("You", question)
+        self._append("Research idea", question)
         self._set_busy(True, cancellable=False)
         self._update_progress(10, "Proposing research plan", "Matching the question to registered capabilities.")
 
@@ -1612,10 +1648,21 @@ class StockAgentApp(tk.Tk):
         analysis_labels = [
             item.label for item in ANALYSES if item.analysis_id in approved.analysis_ids
         ]
-        summary = "Approved data: " + ", ".join(capability_labels)
+        summary_parts = []
+        if approved.mode == "discovery":
+            scopes = approved.discovery_scopes or (
+                (approved.discovery_scope,) if approved.discovery_scope else ()
+            )
+            summary_parts.append("Universes: " + ", ".join(scopes))
+            summary_parts.append(
+                "Exchange market: " + (approved.exchange_geography or "All exchanges")
+            )
+            if approved.discovery_theme:
+                summary_parts.append("Business theme: " + approved.discovery_theme)
+        summary_parts.append("Data: " + ", ".join(capability_labels))
         if analysis_labels:
-            summary += ". Analyses: " + ", ".join(analysis_labels)
-        self._append("You", summary + ".")
+            summary_parts.append("Optional analyses: " + ", ".join(analysis_labels))
+        self._append("Approved plan", ". ".join(summary_parts) + ".")
         cancel_event = threading.Event()
         self.cancel_event = cancel_event
         self._set_busy(True, cancellable=True)
@@ -1653,7 +1700,7 @@ class StockAgentApp(tk.Tk):
             )
             return
         self.notebook.select(self.chat_tab)
-        self._append("You", f"Research {industry}; return {count} stocks.")
+        self._append("Research request", f"Research {industry}; return {count} stocks.")
         cancel_event = threading.Event()
         self.cancel_event = cancel_event
         self._set_busy(True, cancellable=True)
@@ -1714,7 +1761,7 @@ class StockAgentApp(tk.Tk):
                     self._set_busy(False)
                     proposal = payload
                     if not isinstance(proposal, ResearchProposal):
-                        self._append("Agent", "The proposal model returned an invalid result.")
+                        self._append("Results", "The proposal model returned an invalid result.")
                         continue
                     dialog = ResearchApprovalDialog(self, proposal)
                     self.wait_window(dialog)
@@ -1724,7 +1771,7 @@ class StockAgentApp(tk.Tk):
                 if kind == "research_proposal_error":
                     response = str(payload)
                     self._finish_progress(response, failed=True)
-                    self._append("Agent", response)
+                    self._append("Results", response)
                     self._set_busy(False)
                     continue
                 if kind == "auth":
@@ -1770,7 +1817,7 @@ class StockAgentApp(tk.Tk):
                     continue
                 response = str(payload)
                 self._finish_progress(response, failed=kind == "research_error")
-                self._append("Agent", response)
+                self._append("Results", response)
                 self._set_busy(False)
                 self.refresh_holdings(refresh_prices=False)
         except queue.Empty:
@@ -1847,7 +1894,7 @@ class StockAgentApp(tk.Tk):
         elapsed = self._elapsed_text()
         progress_kind = "Research" if self.research_progress_seen else "Response"
         block = (
-            "Agent:\n"
+            "Status:\n"
             f"{progress_kind} progress: {self.current_progress}%\n"
             f"Stage: {self.current_stage}\n"
             f"Current task: {self.current_detail or 'Working...'}\n"
@@ -1942,7 +1989,7 @@ class StockAgentApp(tk.Tk):
             messagebox.showerror("Could not save purchase", f"{type(exc).__name__}: {exc}", parent=self)
             return
         self._append(
-            "Agent",
+            "Portfolio",
             f"Recorded {purchase.quantity:g} shares of {purchase.ticker} at ${purchase.price:,.2f}.",
         )
         self._invalidate_portfolio_refresh()

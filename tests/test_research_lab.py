@@ -15,6 +15,7 @@ from portfolio.research_lab import (
     ThemeCandidate,
     VerifiedFinding,
     _run_discovery_screen,
+    _run_discovery_screens,
     _select_theme_candidates,
     derive_findings,
     execute_research,
@@ -30,7 +31,7 @@ def _payload(**overrides):
     payload = {
         "mode": "named",
         "securities": ["AAPL", "MSFT"],
-        "discovery_scope": None,
+        "discovery_scopes": [],
         "exchange_geography": None,
         "discovery_theme": None,
         "result_count": 5,
@@ -44,7 +45,10 @@ def _payload(**overrides):
             {"id": "falling_rate_comparison", "reason": "Compare falling-rate periods."}
         ],
     }
+    legacy_scope = overrides.pop("discovery_scope", None) if "discovery_scope" in overrides else None
     payload.update(overrides)
+    if legacy_scope is not None:
+        payload["discovery_scopes"] = [legacy_scope]
     return payload
 
 
@@ -151,6 +155,49 @@ def test_discovery_proposal_uses_supported_scope_without_inventing_stocks() -> N
     }
 
 
+def test_cross_industry_theme_can_propose_multiple_validated_universes() -> None:
+    proposal = validate_proposal_payload(
+        "Which companies are undervalued and related to data centers?",
+        _payload(
+            mode="discovery",
+            securities=[],
+            discovery_scopes=["Technology", "Industrials", "Utilities", "Real Estate"],
+            discovery_theme="data centers",
+            capabilities=[
+                {"id": "candidate_discovery", "reason": "Discover candidates."},
+                {"id": "company_profile", "reason": "Validate exposure."},
+                {"id": "valuation_snapshot", "reason": "Compare valuations."},
+            ],
+            analyses=[],
+        ),
+    )
+
+    assert proposal.discovery_scopes == (
+        "Technology",
+        "Industrials",
+        "Utilities",
+        "Real Estate",
+    )
+
+
+def test_all_public_equities_cannot_be_mixed_with_narrower_universes() -> None:
+    with pytest.raises(ResearchLabError, match="cannot be combined"):
+        validate_proposal_payload(
+            "Find companies related to data centers across the market",
+            _payload(
+                mode="discovery",
+                securities=[],
+                discovery_scopes=["All public equities", "Technology"],
+                discovery_theme="data centers",
+                capabilities=[
+                    {"id": "candidate_discovery", "reason": "Discover candidates."},
+                    {"id": "company_profile", "reason": "Validate exposure."},
+                ],
+                analyses=[],
+            ),
+        )
+
+
 @pytest.mark.parametrize(
     ("question", "geography"),
     [
@@ -245,6 +292,60 @@ def test_discovery_screen_expands_europe_to_exchange_country_codes(
         captured[0].screen.exchange_country_codes
     )
     assert "US" not in captured[0].screen.exchange_country_codes
+
+
+def test_multiple_discovery_screens_are_interleaved_and_deduplicated(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    approved = ApprovedResearchPlan(
+        question="Find companies related to data centers",
+        securities=(),
+        lookback_days=365,
+        benchmark=None,
+        capability_ids=("macro_context", "candidate_discovery", "company_profile"),
+        analysis_ids=(),
+        mode="discovery",
+        discovery_scopes=("Technology", "Industrials"),
+        discovery_theme="data centers",
+        result_count=3,
+    ).validated()
+
+    def fake_screen(_approved, *_args, scope=None, **_kwargs):
+        rows = {
+            "Technology": ["TECH1.O", "SHARED.O", "TECH2.O"],
+            "Industrials": ["IND1.N", "SHARED.O", "IND2.N"],
+        }[scope]
+        result = ResearchResult(plan=ResearchPlan(mode="screen", workflow="stock_screen"))
+        result.tables["screen"] = pd.DataFrame(
+            {"Instrument": rows, "TR.CommonName": rows}
+        )
+        return result
+
+    monkeypatch.setattr("portfolio.research_lab._run_discovery_screen", fake_screen)
+    settings = Settings(
+        tmp_path,
+        tmp_path / "db.sqlite",
+        None,
+        "test-model",
+        "desktop.workspace",
+    )
+
+    result = _run_discovery_screens(
+        approved,
+        settings,
+        _macro(),
+        progress_callback=None,
+        cancel_event=None,
+    )
+
+    assert result.tables["screen"]["Instrument"].tolist() == [
+        "TECH1.O",
+        "IND1.N",
+        "SHARED.O",
+        "TECH2.O",
+        "IND2.N",
+    ]
 
 
 def test_exact_open_ended_question_can_propose_discovery(tmp_path, monkeypatch) -> None:
@@ -753,6 +854,131 @@ def test_theme_selection_uses_retrieved_profiles_and_preserves_python_order(
     assert not missing
 
 
+def test_theme_selection_batches_candidates_without_losing_earlier_results(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    approved = ApprovedResearchPlan(
+        question="Find companies related to data centers",
+        securities=(),
+        lookback_days=365,
+        benchmark=None,
+        capability_ids=("macro_context", "candidate_discovery", "company_profile"),
+        analysis_ids=(),
+        mode="discovery",
+        discovery_scopes=("Technology", "Industrials"),
+        discovery_theme="data centers",
+        result_count=8,
+    ).validated()
+    result = ResearchResult(plan=ResearchPlan(mode="screen", workflow="stock_screen"))
+    result.tables["screen"] = pd.DataFrame(
+        [
+            {
+                "Instrument": f"RIC{index}.N",
+                "TR.TickerSymbol": f"T{index}",
+                "TR.CommonName": f"Company {index}",
+                "TR.BusinessSummary": "Provides infrastructure used by data centers.",
+                "Discovery scope": "Technology" if index % 2 else "Industrials",
+            }
+            for index in range(12)
+        ]
+    )
+    requests = []
+
+    def fake_invoke(_settings, _schema, messages, **_kwargs):
+        request = json.loads(messages[-1][1])
+        requests.append(request)
+        return {
+            "matches": [
+                {
+                    "candidate_id": item["candidate_id"],
+                    "relevance": "direct",
+                    "reason": "The retrieved profile explicitly supports the theme.",
+                }
+                for item in request["candidates"]
+            ]
+        }
+
+    monkeypatch.setattr("portfolio.research_lab.invoke_structured_groq", fake_invoke)
+    settings = Settings(
+        tmp_path,
+        tmp_path / "db.sqlite",
+        "key",
+        "test-model",
+        "desktop.workspace",
+    )
+
+    selected, _missing = _select_theme_candidates(result, approved, settings)
+
+    assert len(requests) == 2
+    assert [item.ticker for item in selected] == [f"T{index}" for index in range(8)]
+
+
+def test_theme_selection_rejects_incomplete_classifier_output(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    approved = ApprovedResearchPlan(
+        question="Find companies related to wind turbines",
+        securities=(),
+        lookback_days=365,
+        benchmark=None,
+        capability_ids=("macro_context", "candidate_discovery", "company_profile"),
+        analysis_ids=(),
+        mode="discovery",
+        discovery_scopes=("Industrials",),
+        discovery_theme="wind turbines",
+        result_count=2,
+    ).validated()
+    result = ResearchResult(plan=ResearchPlan(mode="screen", workflow="stock_screen"))
+    result.tables["screen"] = pd.DataFrame(
+        [
+            {
+                "Instrument": "AAA.N",
+                "TR.TickerSymbol": "AAA",
+                "TR.CommonName": "Alpha",
+                "TR.BusinessSummary": "Alpha manufactures wind turbine components.",
+                "Discovery scope": "Industrials",
+            },
+            {
+                "Instrument": "BBB.N",
+                "TR.TickerSymbol": "BBB",
+                "TR.CommonName": "Beta",
+                "TR.BusinessSummary": "Beta maintains renewable power equipment.",
+                "Discovery scope": "Industrials",
+            },
+        ]
+    )
+
+    def incomplete_response(_settings, _schema, messages, **_kwargs):
+        request = json.loads(messages[-1][1])
+        assert "screen_evidence" not in request["candidates"][0]
+        return {
+            "matches": [
+                {
+                    "candidate_id": "C1",
+                    "relevance": "direct",
+                    "reason": "The retrieved profile explicitly names turbine components.",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(
+        "portfolio.research_lab.invoke_structured_groq",
+        incomplete_response,
+    )
+    settings = Settings(
+        tmp_path,
+        tmp_path / "db.sqlite",
+        "key",
+        "test-model",
+        "desktop.workspace",
+    )
+
+    with pytest.raises(ResearchLabError, match="did not classify every supplied candidate"):
+        _select_theme_candidates(result, approved, settings)
+
+
 def test_discovery_without_profile_filter_skips_semantic_model(tmp_path, monkeypatch) -> None:
     approved = ApprovedResearchPlan(
         question="Find undervalued software stocks",
@@ -785,6 +1011,54 @@ def test_discovery_without_profile_filter_skips_semantic_model(tmp_path, monkeyp
     assert not missing
 
 
+def test_discovery_candidate_keeps_peer_relative_valuation_evidence(
+    tmp_path,
+) -> None:
+    approved = ApprovedResearchPlan(
+        question="Find undervalued industrial stocks",
+        securities=(),
+        lookback_days=365,
+        benchmark=None,
+        capability_ids=("macro_context", "candidate_discovery", "company_profile"),
+        analysis_ids=(),
+        mode="discovery",
+        discovery_scopes=("Industrials",),
+        result_count=1,
+    ).validated()
+    result = ResearchResult(plan=ResearchPlan(mode="screen", workflow="stock_screen"))
+    result.tables["screen"] = pd.DataFrame(
+        [
+            {
+                "Instrument": "AAA.N",
+                "TR.TickerSymbol": "AAA",
+                "TR.CommonName": "Alpha",
+                "Discovery scope": "Industrials",
+                "TR.PtoEPSMeanEst(Period=FY1)": 12.0,
+                "TR.EVToEBITDA": 8.0,
+                "Evidence Family Count": 5,
+            }
+        ]
+    )
+    result.metrics["cohort_statistics_by_scope"] = {
+        "Industrials": {
+            "TR.PtoEPSMeanEst(Period=FY1)": {"median": 18.0},
+            "TR.EVToEBITDA": {"median": 11.0},
+        }
+    }
+    settings = Settings(
+        tmp_path,
+        tmp_path / "db.sqlite",
+        None,
+        "test-model",
+        "desktop.workspace",
+    )
+
+    selected, _missing = _select_theme_candidates(result, approved, settings)
+
+    assert "forward P/E 12" in selected[0].screen_evidence
+    assert "Industrials median 18" in selected[0].screen_evidence
+
+
 def test_discovery_execution_researches_only_semantically_selected_rics(
     tmp_path, monkeypatch
 ) -> None:
@@ -802,7 +1076,7 @@ def test_discovery_execution_researches_only_semantically_selected_rics(
     ).validated()
     settings = Settings(tmp_path, tmp_path / "db.sqlite", None, "test-model", "desktop.workspace")
     screen_result = ResearchResult(plan=ResearchPlan(mode="screen", workflow="stock_screen"))
-    monkeypatch.setattr("portfolio.research_lab._run_discovery_screen", lambda *_args, **_kwargs: screen_result)
+    monkeypatch.setattr("portfolio.research_lab._run_discovery_screens", lambda *_args, **_kwargs: screen_result)
     monkeypatch.setattr(
         "portfolio.research_lab._select_theme_candidates",
         lambda *_args, **_kwargs: (
