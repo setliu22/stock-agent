@@ -14,6 +14,7 @@ from portfolio.research_lab import (
     ResearchLabError,
     ThemeCandidate,
     VerifiedFinding,
+    _proposal_schema,
     _run_discovery_screen,
     _run_discovery_screens,
     _select_theme_candidates,
@@ -178,6 +179,34 @@ def test_cross_industry_theme_can_propose_multiple_validated_universes() -> None
         "Utilities",
         "Real Estate",
     )
+
+
+def test_proposal_schema_uses_only_supported_array_constraints() -> None:
+    scopes_schema = _proposal_schema()["properties"]["discovery_scopes"]
+
+    assert "uniqueItems" not in scopes_schema
+    assert scopes_schema["maxItems"] == 4
+
+
+def test_supported_industry_name_uses_normal_screen_without_theme_filter() -> None:
+    proposal = validate_proposal_payload(
+        "What semiconductor companies are undervalued?",
+        _payload(
+            mode="discovery",
+            securities=[],
+            discovery_scope="Semiconductors",
+            discovery_theme="semiconductor",
+            capabilities=[
+                {"id": "candidate_discovery", "reason": "Discover candidates."},
+                {"id": "company_profile", "reason": "Identify companies."},
+                {"id": "valuation_snapshot", "reason": "Compare valuations."},
+            ],
+            analyses=[],
+        ),
+    )
+
+    assert proposal.discovery_scopes == ("Semiconductors",)
+    assert proposal.discovery_theme is None
 
 
 def test_all_public_equities_cannot_be_mixed_with_narrower_universes() -> None:
