@@ -105,23 +105,17 @@ passwords are never stored by the application.
 Run `supabase/schema.sql` once in the Supabase SQL Editor before using cloud
 portfolios. Row Level Security limits each signed-in user to their own data.
 
-## Install and update
+## Update and open
 
-After the first checkout, run:
-
-```text
-Install Stock Agent.command
-```
-
-For later updates, run:
+After the first checkout and for every later update, run:
 
 ```text
 Update Stock Agent.command
 ```
 
-The updater fast-forwards the current Git branch, refreshes dependencies, runs
-the test suite, and rebuilds the app while preserving `.env` and portfolio
-data.
+This is the only setup command. It fast-forwards the current Git branch,
+refreshes dependencies, runs the test suite, rebuilds the app, and opens it
+while preserving `.env` and portfolio data.
 
 Keep LSEG Workspace open and signed in while running research.
 

@@ -88,7 +88,7 @@ def friendly_auth_error(error: BaseException) -> str:
     if is_certificate_error(error):
         return (
             "Python could not verify Supabase's security certificate. "
-            "Run \u201cInstall Stock Agent.command\u201d again so the trusted certificate "
+            "Run \u201cUpdate Stock Agent.command\u201d again so the trusted certificate "
             "bundle is installed, then retry. Do not disable SSL verification."
         )
     return f"Supabase request failed: {friendly_cloud_error(error)}"

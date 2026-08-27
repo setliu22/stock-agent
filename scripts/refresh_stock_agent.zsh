@@ -3,15 +3,15 @@
 set -u
 set -o pipefail
 
-PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_ROOT" || exit 1
 APP_PATH="$PROJECT_ROOT/Stock Agent.app"
 LOG_DIR="$PROJECT_ROOT/data"
 LOG_FILE="$LOG_DIR/stock_agent_gui.log"
-INSTALL_LOG="$LOG_DIR/stock_agent_install.log"
+UPDATE_LOG="$LOG_DIR/stock_agent_update.log"
 
 mkdir -p "$LOG_DIR"
-: > "$INSTALL_LOG"
+: > "$UPDATE_LOG"
 
 BLUE=$'\033[1;34m'
 GREEN=$'\033[1;32m'
@@ -32,7 +32,7 @@ warning() { print "${YELLOW}! $1${RESET}"; }
 fail() {
     print
     print "${RED}✗ $1${RESET}"
-    print "${RED}See: $INSTALL_LOG${RESET}"
+    print "${RED}See: $UPDATE_LOG${RESET}"
     print
     read -k 1 "?Press any key to close."
     print
@@ -55,13 +55,13 @@ find_system_python() {
 }
 
 clear
-print "${BLUE}Stock Agent Installer${RESET}"
+print "${BLUE}Stock Agent Update${RESET}"
 print
 print "Project folder:"
 print "  $PROJECT_ROOT"
 print
 print "Every step is shown here and copied to:"
-print "  $INSTALL_LOG"
+print "  $UPDATE_LOG"
 
 step "[1/10] Checking project files"
 for required in gui.py requirements.txt pyproject.toml pytest.ini stock_agent_launcher.py; do
@@ -72,7 +72,7 @@ done
 success "Project files found"
 
 if [[ ! -f "$PROJECT_ROOT/.env" ]]; then
-    warning ".env was not found. The application will still install, but Groq chat will be disabled."
+    warning ".env was not found. The application will still open, but Groq features will be disabled."
     cp "$PROJECT_ROOT/.env.example" "$PROJECT_ROOT/.env"
     warning "Created .env from .env.example. Add your GROQ_API_KEY later."
 else
@@ -84,7 +84,7 @@ SYSTEM_PYTHON="$(find_system_python)"
 [[ -n "${SYSTEM_PYTHON:-}" ]] || fail "Python 3.11 or newer was not found. Install Python 3 from python.org and rerun."
 print "Using system Python:"
 print "  $SYSTEM_PYTHON"
-"$SYSTEM_PYTHON" --version 2>&1 | tee -a "$INSTALL_LOG"
+"$SYSTEM_PYTHON" --version 2>&1 | tee -a "$UPDATE_LOG"
 success "Compatible Python selected"
 
 PYTHON="$PROJECT_ROOT/.venv/bin/python"
@@ -93,7 +93,7 @@ if [[ -x "$PYTHON" ]] && "$PYTHON" -c 'import sys; raise SystemExit(0 if sys.ver
     success "Existing .venv is compatible and will be reused"
 else
     rm -rf "$PROJECT_ROOT/.venv"
-    "$SYSTEM_PYTHON" -m venv "$PROJECT_ROOT/.venv" 2>&1 | tee -a "$INSTALL_LOG"
+    "$SYSTEM_PYTHON" -m venv "$PROJECT_ROOT/.venv" 2>&1 | tee -a "$UPDATE_LOG"
     if [[ ${pipestatus[1]} -ne 0 ]]; then
         fail "The virtual environment could not be created."
     fi
@@ -104,28 +104,28 @@ fi
 export PYTHONPATH="$PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
 step "[4/10] Updating packaging tools"
-"$PYTHON" -m pip install --upgrade pip setuptools wheel 2>&1 | tee -a "$INSTALL_LOG"
+"$PYTHON" -m pip install --upgrade pip setuptools wheel 2>&1 | tee -a "$UPDATE_LOG"
 if [[ ${pipestatus[1]} -ne 0 ]]; then
     fail "pip, setuptools, or wheel could not be updated."
 fi
 success "Packaging tools updated"
 
 step "[5/10] Installing requirements"
-"$PYTHON" -m pip install -r "$PROJECT_ROOT/requirements.txt" 2>&1 | tee -a "$INSTALL_LOG"
+"$PYTHON" -m pip install -r "$PROJECT_ROOT/requirements.txt" 2>&1 | tee -a "$UPDATE_LOG"
 if [[ ${pipestatus[1]} -ne 0 ]]; then
     fail "Dependency installation failed."
 fi
 success "Requirements installed"
 
 step "[6/10] Installing the local package"
-"$PYTHON" -m pip install -e "$PROJECT_ROOT" 2>&1 | tee -a "$INSTALL_LOG"
+"$PYTHON" -m pip install -e "$PROJECT_ROOT" 2>&1 | tee -a "$UPDATE_LOG"
 if [[ ${pipestatus[1]} -ne 0 ]]; then
     fail "The local stock-agent package could not be installed."
 fi
 success "Local package installed"
 
 step "[7/10] Verifying imports"
-"$PYTHON" - <<'PYTHON_CHECK' 2>&1 | tee -a "$INSTALL_LOG"
+"$PYTHON" - <<'PYTHON_CHECK' 2>&1 | tee -a "$UPDATE_LOG"
 modules = [
     "certifi",
     "tkinter",
@@ -157,7 +157,7 @@ fi
 success "Imports verified"
 
 step "[8/10] Cataloguing the installed LSEG API"
-"$PYTHON" -m portfolio.lseg_capabilities --output "$PROJECT_ROOT/data/lseg_capabilities.json" 2>&1 | tee -a "$INSTALL_LOG"
+"$PYTHON" -m portfolio.lseg_capabilities --output "$PROJECT_ROOT/data/lseg_capabilities.json" 2>&1 | tee -a "$UPDATE_LOG"
 if [[ ${pipestatus[1]} -ne 0 ]]; then
     fail "The LSEG capability catalog could not be generated."
 fi
@@ -167,7 +167,7 @@ step "[9/10] Running automated tests"
 print "Running only this project's tests:"
 print "  .venv/bin/python -m pytest -c pytest.ini tests"
 print
-"$PYTHON" -m pytest -c "$PROJECT_ROOT/pytest.ini" "$PROJECT_ROOT/tests" 2>&1 | tee -a "$INSTALL_LOG"
+"$PYTHON" -m pytest -c "$PROJECT_ROOT/pytest.ini" "$PROJECT_ROOT/tests" 2>&1 | tee -a "$UPDATE_LOG"
 if [[ ${pipestatus[1]} -ne 0 ]]; then
     fail "The automated tests failed."
 fi
@@ -196,7 +196,7 @@ end run
 APPLESCRIPT
 
 rm -rf "$APP_PATH"
-/usr/bin/osacompile -o "$APP_PATH" "$TEMP_SCRIPT" 2>&1 | tee -a "$INSTALL_LOG"
+/usr/bin/osacompile -o "$APP_PATH" "$TEMP_SCRIPT" 2>&1 | tee -a "$UPDATE_LOG"
 COMPILE_STATUS=${pipestatus[1]}
 rm -f "$TEMP_SCRIPT"
 if [[ $COMPILE_STATUS -ne 0 ]] || [[ ! -d "$APP_PATH" ]]; then
@@ -207,7 +207,7 @@ success "Stock Agent.app created"
 
 print
 print "${GREEN}============================================================${RESET}"
-print "${GREEN}INSTALLATION COMPLETE${RESET}"
+print "${GREEN}UPDATE COMPLETE${RESET}"
 print "${GREEN}============================================================${RESET}"
 print
 print "Created:"
@@ -220,5 +220,5 @@ print
 print "Runtime log:"
 print "  $LOG_FILE"
 print
-read -k 1 "?Press any key to close this installer window."
+read -k 1 "?Press any key to close this update window."
 print

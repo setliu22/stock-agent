@@ -1,1 +1,1 @@
-git pull --ff-only origin market-framework
+./'Update Stock Agent.command'

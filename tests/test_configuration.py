@@ -71,4 +71,4 @@ def test_certificate_error_is_recognized_through_wrapper() -> None:
             raise RuntimeError("connection failed") from error
     except RuntimeError as wrapped:
         assert is_certificate_error(wrapped)
-        assert "Install Stock Agent.command" in friendly_auth_error(wrapped)
+        assert "Update Stock Agent.command" in friendly_auth_error(wrapped)

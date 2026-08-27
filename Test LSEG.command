@@ -5,7 +5,7 @@ cd "$PROJECT_ROOT" || exit 1
 PYTHON="$PROJECT_ROOT/.venv/bin/python"
 
 if [[ ! -x "$PYTHON" ]]; then
-    echo "The virtual environment is missing. Run Install Stock Agent.command first."
+    echo "The virtual environment is missing. Run Update Stock Agent.command first."
     echo
     read -k 1 "?Press any key to close."
     exit 1

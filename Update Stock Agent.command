@@ -5,7 +5,7 @@ set -o pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$PROJECT_ROOT" || exit 1
-INSTALLER="$PROJECT_ROOT/Install Stock Agent.command"
+REFRESHER="$PROJECT_ROOT/scripts/refresh_stock_agent.zsh"
 
 BLUE=$'\033[1;34m'
 GREEN=$'\033[1;32m'
@@ -37,8 +37,8 @@ if [[ ! -d "$PROJECT_ROOT/.git" ]]; then
     print "Download or clone the repository before using the updater."
     pause_and_exit 1
 fi
-if [[ ! -x "$INSTALLER" ]]; then
-    print "${RED}Install Stock Agent.command is missing or is not executable.${RESET}"
+if [[ ! -f "$REFRESHER" ]]; then
+    print "${RED}The Stock Agent update helper is missing.${RESET}"
     pause_and_exit 1
 fi
 
@@ -48,7 +48,7 @@ if [[ -z "$BRANCH" ]]; then
     pause_and_exit 1
 fi
 
-# The installer regenerates Stock Agent.app locally. Ignore that generated app
+# The update helper regenerates Stock Agent.app locally. Ignore that generated app
 # when checking whether source edits would be overwritten by an update.
 SOURCE_CHANGES="$(git status --porcelain --untracked-files=no -- . ':(exclude)Stock Agent.app')"
 if [[ -n "$SOURCE_CHANGES" ]]; then
@@ -82,6 +82,6 @@ fi
 
 print
 print "${GREEN}Source update complete.${RESET}"
-print "The installer will now refresh Python packages, run tests, and rebuild the app."
+print "Refreshing Python packages, running tests, rebuilding, and opening the app."
 print
-exec "$INSTALLER"
+exec /bin/zsh "$REFRESHER"
