@@ -1,4 +1,5 @@
 from datetime import date, datetime, timezone
+import json
 
 import pandas as pd
 import pytest
@@ -26,8 +27,6 @@ from portfolio.research_plan import ResearchPlan
 
 def _payload(**overrides):
     payload = {
-        "status": "ready",
-        "clarification": None,
         "mode": "named",
         "securities": ["AAPL", "MSFT"],
         "discovery_scope": None,
@@ -66,7 +65,6 @@ def test_proposal_adds_required_macro_and_analysis_dependencies() -> None:
     )
 
     capabilities = {item.item_id for item in proposal.capabilities}
-    assert proposal.ready
     assert capabilities >= {"macro_context", "price_history", "treasury_yield_history"}
 
 
@@ -93,6 +91,11 @@ def test_lseg_capability_catalog_exposes_backend_operations() -> None:
     assert all(item.backend_operations for item in lseg_capabilities)
     catalog = proposal_catalog()
     assert all("backend_operations" in item for item in catalog["capabilities"])
+    assert {item["entity_source"] for item in catalog["modes"]} == {
+        "user_question",
+        "lseg_screen",
+        "none",
+    }
 
 
 def test_capability_dependencies_are_added_to_proposal() -> None:
@@ -131,7 +134,6 @@ def test_discovery_proposal_uses_supported_scope_without_inventing_stocks() -> N
         ),
     )
 
-    assert proposal.ready
     assert proposal.mode == "discovery"
     assert proposal.securities == ()
     assert proposal.discovery_scope == "Technology"
@@ -169,6 +171,39 @@ def test_exact_open_ended_question_can_propose_discovery(tmp_path, monkeypatch) 
     assert proposal.mode == "discovery"
     assert proposal.discovery_scope == "Technology"
     assert proposal.securities == ()
+
+
+def test_invalid_entity_source_is_replanned_from_compiler_error(tmp_path, monkeypatch) -> None:
+    question = "what semiconducctor companies are still undervalued?"
+    payloads = [
+        _payload(securities=[]),
+        _payload(
+            mode="discovery",
+            securities=[],
+            discovery_scope="Semiconductors",
+            discovery_theme=None,
+            capabilities=[
+                {"id": "candidate_discovery", "reason": "Retrieve candidates."},
+                {"id": "company_profile", "reason": "Identify candidates."},
+                {"id": "valuation_snapshot", "reason": "Compare valuation evidence."},
+            ],
+            analyses=[],
+        ),
+    ]
+    requests = []
+
+    def fake_invoke(_settings, _schema, messages, **_kwargs):
+        requests.append(json.loads(messages[-1][1]))
+        return payloads.pop(0)
+
+    monkeypatch.setattr("portfolio.research_lab.invoke_structured_groq", fake_invoke)
+    settings = Settings(tmp_path, tmp_path / "db.sqlite", "key", "test-model", "desktop.workspace")
+
+    proposal = propose_research(question, settings)
+
+    assert proposal.mode == "discovery"
+    assert proposal.discovery_scope == "Semiconductors"
+    assert "previous_plan_compiler_error" in requests[1]
 
 
 def test_discovery_proposal_rejects_theme_not_grounded_in_question() -> None:

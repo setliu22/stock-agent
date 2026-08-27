@@ -50,6 +50,37 @@ def tab_drag_target(
     return target if target != current_index else None
 
 
+NUMERIC_PORTFOLIO_COLUMNS = frozenset(
+    {
+        "quantity",
+        "average_cost",
+        "total_cost",
+        "current_price",
+        "market_value",
+        "gain_loss",
+        "return_percent",
+    }
+)
+
+
+def sort_portfolio_rows(
+    rows: list[dict[str, Any]],
+    column: str,
+    *,
+    descending: bool,
+) -> list[dict[str, Any]]:
+    """Sort portfolio rows by raw values while keeping missing values last."""
+    if column not in NUMERIC_PORTFOLIO_COLUMNS and column != "ticker":
+        return list(rows)
+    present = [row for row in rows if row.get(column) is not None]
+    missing = [row for row in rows if row.get(column) is None]
+    if column in NUMERIC_PORTFOLIO_COLUMNS:
+        present.sort(key=lambda row: float(row[column]), reverse=descending)
+    else:
+        present.sort(key=lambda row: str(row[column]).casefold(), reverse=descending)
+    return present + missing
+
+
 def _center_dialog(dialog: tk.Toplevel, parent: tk.Misc) -> None:
     dialog.update_idletasks()
     width = dialog.winfo_width()
@@ -674,6 +705,8 @@ class StockAgentApp(tk.Tk):
         self.portfolio_refresh_generation = 0
         self.current_holdings: list[Any] = []
         self.delete_buttons: dict[str, ttk.Button] = {}
+        self.holdings_sort_column: str | None = None
+        self.holdings_sort_descending = False
         self._tab_drag_anchor_x: int | None = None
         families = set(tkfont.families(self))
         self.ui_font = next(
@@ -1101,11 +1134,13 @@ class StockAgentApp(tk.Tk):
         segment.pack(side="right")
         self.period_buttons: dict[int, ttk.Button] = {}
         for sessions, label in (
+            (1, "1 day"),
             (3, "3 days"),
             (5, "1 week"),
             (10, "2 weeks"),
             (15, "3 weeks"),
             (20, "4 weeks"),
+            (0, "All time"),
         ):
             button = ttk.Button(segment, text=label, style="Segment.TButton", command=lambda value=sessions: self._set_performance_period(value))
             button.pack(side="left", padx=(6, 0))
@@ -1132,7 +1167,7 @@ class StockAgentApp(tk.Tk):
             "delete",
         )
         self.holdings_tree = ttk.Treeview(self.holdings_tab, columns=columns, show="headings")
-        headings = {
+        self.holdings_headings = {
             "ticker": "Ticker",
             "quantity": "Shares",
             "average_cost": "Avg. purchase price",
@@ -1155,7 +1190,12 @@ class StockAgentApp(tk.Tk):
             "delete": 44,
         }
         for column in columns:
-            self.holdings_tree.heading(column, text=headings[column])
+            heading_options: dict[str, Any] = {"text": self.holdings_headings[column]}
+            if column != "delete":
+                heading_options["command"] = (
+                    lambda selected_column=column: self._sort_holdings(selected_column)
+                )
+            self.holdings_tree.heading(column, **heading_options)
             self.holdings_tree.column(column, width=widths[column], anchor="center")
         self.holdings_scrollbar = ttk.Scrollbar(
             self.holdings_tab,
@@ -1612,9 +1652,6 @@ class StockAgentApp(tk.Tk):
                     proposal = payload
                     if not isinstance(proposal, ResearchProposal):
                         self._append("Agent", "The proposal model returned an invalid result.")
-                        continue
-                    if not proposal.ready:
-                        self._append("Agent", proposal.clarification or "Clarification is required.")
                         continue
                     dialog = ResearchApprovalDialog(self, proposal)
                     self.wait_window(dialog)
@@ -2179,6 +2216,8 @@ class StockAgentApp(tk.Tk):
 
     def _period_label(self) -> str:
         return {
+            0: "all time",
+            1: "1 day",
             3: "3 days",
             5: "1 week",
             10: "2 weeks",
@@ -2195,14 +2234,47 @@ class StockAgentApp(tk.Tk):
         for item in self.holdings_tree.get_children():
             self.holdings_tree.delete(item)
         period = self._period_label()
-        self.holdings_tree.heading("gain_loss", text=f"Gain/loss ({period})")
-        self.holdings_tree.heading("return_percent", text=f"Return ({period})")
+        self.holdings_headings["gain_loss"] = f"Gain/loss ({period})"
+        self.holdings_headings["return_percent"] = f"Return ({period})"
+        self._render_holding_headings()
+        rows: list[dict[str, Any]] = []
         for holding in self.current_holdings:
-            performance = period_performance(
-                self.performance_position_histories.get(holding.ticker, []),
-                self.performance_sessions,
-            )
+            if self.performance_sessions == 0:
+                performance = (
+                    (holding.gain_loss, holding.return_percent)
+                    if getattr(holding, "gain_loss", None) is not None
+                    and getattr(holding, "return_percent", None) is not None
+                    else None
+                )
+            else:
+                performance = period_performance(
+                    self.performance_position_histories.get(holding.ticker, []),
+                    self.performance_sessions,
+                )
             gain_loss, return_percent = performance if performance is not None else (None, None)
+            rows.append(
+                {
+                    "holding": holding,
+                    "ticker": holding.ticker,
+                    "quantity": holding.quantity,
+                    "average_cost": holding.average_cost,
+                    "total_cost": holding.total_cost,
+                    "current_price": getattr(holding, "current_price", None),
+                    "market_value": getattr(holding, "market_value", None),
+                    "gain_loss": gain_loss,
+                    "return_percent": return_percent,
+                }
+            )
+        if self.holdings_sort_column:
+            rows = sort_portfolio_rows(
+                rows,
+                self.holdings_sort_column,
+                descending=self.holdings_sort_descending,
+            )
+        for row in rows:
+            holding = row["holding"]
+            gain_loss = row["gain_loss"]
+            return_percent = row["return_percent"]
             row_tag = ""
             if gain_loss is not None:
                 row_tag = "positive" if gain_loss >= 0 else "negative"
@@ -2230,7 +2302,26 @@ class StockAgentApp(tk.Tk):
                 command=lambda ticker=holding.ticker: self.delete_position(ticker),
                 takefocus=False,
             )
+        if self.selected_performance_ticker in self.holdings_tree.get_children():
+            self.holdings_tree.selection_set(self.selected_performance_ticker)
         self.after_idle(self._position_delete_buttons)
+
+    def _sort_holdings(self, column: str) -> None:
+        if column not in NUMERIC_PORTFOLIO_COLUMNS and column != "ticker":
+            return
+        if self.holdings_sort_column == column:
+            self.holdings_sort_descending = not self.holdings_sort_descending
+        else:
+            self.holdings_sort_column = column
+            self.holdings_sort_descending = False
+        self._render_holding_rows()
+
+    def _render_holding_headings(self) -> None:
+        for column, label in self.holdings_headings.items():
+            indicator = ""
+            if column == self.holdings_sort_column:
+                indicator = " ▼" if self.holdings_sort_descending else " ▲"
+            self.holdings_tree.heading(column, text=f"{label}{indicator}")
 
     def _scroll_holdings(self, *args: str) -> None:
         self.holdings_tree.yview(*args)
@@ -2300,10 +2391,29 @@ class StockAgentApp(tk.Tk):
             return
         canvas = self.performance_canvas
         canvas.delete("all")
-        points = self.performance_history[-(self.performance_sessions + 1):]
         width = max(canvas.winfo_width(), 640)
         height = max(canvas.winfo_height(), 118)
-        if len(points) < 2:
+        if self.performance_sessions == 0:
+            holdings = [
+                holding
+                for holding in self.current_holdings
+                if (
+                    self.selected_performance_ticker is None
+                    or holding.ticker == self.selected_performance_ticker
+                )
+                and getattr(holding, "market_value", None) is not None
+            ]
+            values = [
+                sum(holding.total_cost for holding in holdings),
+                sum(holding.market_value for holding in holdings),
+            ]
+            start_label, end_label = "Cost basis", "Current"
+        else:
+            points = self.performance_history[-(self.performance_sessions + 1):]
+            values = [point.market_value for point in points]
+            start_label = points[0].as_of.strftime("%b %-d") if points else ""
+            end_label = points[-1].as_of.strftime("%b %-d") if points else ""
+        if len(values) < 2 or values[0] == 0:
             self.period_change.set("History unavailable")
             self.period_change_label.configure(style="MetricValue.TLabel")
             canvas.create_text(
@@ -2320,8 +2430,8 @@ class StockAgentApp(tk.Tk):
             )
             return
 
-        start_value = points[0].market_value
-        end_value = points[-1].market_value
+        start_value = values[0]
+        end_value = values[-1]
         change = end_value - start_value
         percent = change / start_value * 100 if start_value else 0.0
         color = self.POSITIVE if change >= 0 else self.NEGATIVE
@@ -2331,21 +2441,20 @@ class StockAgentApp(tk.Tk):
         )
 
         left, right, top, bottom = 18, width - 18, 10, height - 24
-        values = [point.market_value for point in points]
         low, high = min(values), max(values)
         span = high - low or 1.0
         for fraction in (0.0, 0.5, 1.0):
             y = top + (bottom - top) * fraction
             canvas.create_line(left, y, right, y, fill=self.BORDER, width=1)
         coordinates: list[float] = []
-        for index, point in enumerate(points):
-            x = left + (right - left) * index / max(1, len(points) - 1)
-            y = bottom - (point.market_value - low) / span * (bottom - top)
+        for index, value in enumerate(values):
+            x = left + (right - left) * index / max(1, len(values) - 1)
+            y = bottom - (value - low) / span * (bottom - top)
             coordinates.extend((x, y))
         canvas.create_line(*coordinates, fill=color, width=2, smooth=True)
         canvas.create_oval(coordinates[-2] - 3, coordinates[-1] - 3, coordinates[-2] + 3, coordinates[-1] + 3, fill=color, outline=color)
-        canvas.create_text(left, height - 8, anchor="w", text=points[0].as_of.strftime("%b %-d"), fill=self.MUTED, font=(self.ui_font, 8))
-        canvas.create_text(right, height - 8, anchor="e", text=points[-1].as_of.strftime("%b %-d"), fill=self.MUTED, font=(self.ui_font, 8))
+        canvas.create_text(left, height - 8, anchor="w", text=start_label, fill=self.MUTED, font=(self.ui_font, 8))
+        canvas.create_text(right, height - 8, anchor="e", text=end_label, fill=self.MUTED, font=(self.ui_font, 8))
 
 
 def main() -> None:

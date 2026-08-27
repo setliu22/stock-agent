@@ -30,8 +30,9 @@ When the question contains a business-exposure criterion, Groq may classify that
 criterion only against retrieved LSEG business descriptions. Financial, price,
 rate, and risk criteria instead use approved LSEG fields and Python analyses.
 The approval dialog exposes the universe, result count, retrieval operations,
-and calculations. Only a pending clarification is carried into the next request;
-completed plans and ordinary transcript text are not hidden model context.
+and calculations. Every question is compiled independently. An invalid model
+plan is rejected and retried once with the compiler error; transcript text is
+not reused as hidden model context.
 
 After approval, deterministic code resolves instruments and constructs the exact
 read-only requests. Python calculates returns, benchmark excess returns,

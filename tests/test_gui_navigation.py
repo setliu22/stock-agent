@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 from datetime import date
 
-from gui import StockAgentApp, period_performance, tab_drag_target
+from gui import StockAgentApp, period_performance, sort_portfolio_rows, tab_drag_target
 from portfolio.models import PortfolioHistoryPoint
 
 
@@ -53,6 +53,59 @@ def test_period_performance_uses_selected_session_window() -> None:
     ]
 
     assert period_performance(history, 3) == (10, 10.0)
+
+
+def test_portfolio_rows_sort_numbers_by_raw_value_and_keep_missing_last() -> None:
+    rows = [
+        {"ticker": "HIGH", "market_value": 100.0},
+        {"ticker": "MISSING", "market_value": None},
+        {"ticker": "LOW", "market_value": 20.0},
+    ]
+
+    ascending = sort_portfolio_rows(rows, "market_value", descending=False)
+    descending = sort_portfolio_rows(rows, "market_value", descending=True)
+
+    assert [row["ticker"] for row in ascending] == ["LOW", "HIGH", "MISSING"]
+    assert [row["ticker"] for row in descending] == ["HIGH", "LOW", "MISSING"]
+
+
+def test_portfolio_rows_sort_tickers_alphabetically_without_case_bias() -> None:
+    rows = [
+        {"ticker": "zbra"},
+        {"ticker": "AAPL"},
+        {"ticker": "msft"},
+    ]
+
+    result = sort_portfolio_rows(rows, "ticker", descending=False)
+
+    assert [row["ticker"] for row in result] == ["AAPL", "msft", "zbra"]
+
+
+def test_portfolio_period_labels_include_one_day_and_all_time() -> None:
+    assert StockAgentApp._period_label(SimpleNamespace(performance_sessions=1)) == "1 day"
+    assert StockAgentApp._period_label(SimpleNamespace(performance_sessions=0)) == "all time"
+
+
+def test_clicking_a_portfolio_heading_toggles_sort_direction() -> None:
+    renders: list[bool] = []
+    app = SimpleNamespace(
+        holdings_sort_column=None,
+        holdings_sort_descending=False,
+        _render_holding_rows=lambda: renders.append(True),
+    )
+
+    StockAgentApp._sort_holdings(app, "market_value")
+    assert (app.holdings_sort_column, app.holdings_sort_descending) == (
+        "market_value",
+        False,
+    )
+
+    StockAgentApp._sort_holdings(app, "market_value")
+    assert (app.holdings_sort_column, app.holdings_sort_descending) == (
+        "market_value",
+        True,
+    )
+    assert len(renders) == 2
 
 
 def test_clicking_same_holding_twice_returns_to_portfolio_chart() -> None:

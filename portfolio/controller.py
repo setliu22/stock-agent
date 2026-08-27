@@ -52,7 +52,6 @@ class StockAgentController:
         self.cloud_client: SupabasePortfolioClient | None = None
         self._market_snapshot: MarketRegimeSnapshot | None = None
         self._research_policy = macro_default_policy("Regime incomplete")
-        self._pending_research_question: str | None = None
 
     def record_purchase(
         self,
@@ -254,16 +253,7 @@ class StockAgentController:
 
     def propose_custom_research(self, question: str) -> ResearchProposal:
         """Return a non-executable capability proposal for user approval."""
-        current = question.strip()
-        combined = current
-        if self._pending_research_question:
-            combined = (
-                f"Original pending request:\n{self._pending_research_question}\n\n"
-                f"User clarification:\n{current}"
-            )
-        proposal = propose_research(combined, self.settings)
-        self._pending_research_question = None if proposal.ready else combined[:4_000]
-        return proposal
+        return propose_research(question, self.settings)
 
     def run_custom_research(
         self,
