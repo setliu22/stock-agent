@@ -6,6 +6,7 @@ from portfolio.company_resolver import ResolvedInstrument
 from portfolio.config import Settings
 from portfolio.lseg_research import (
     ResearchResult,
+    _canonicalize,
     _extract_values,
     _open_lseg_session,
     apply_screen_filters,
@@ -53,6 +54,41 @@ def test_screen_expression_and_local_filters() -> None:
     )
     output = apply_screen_filters(frame, filters)
     assert output["TR.CommonName"].tolist() == ["A"]
+
+
+def test_exchange_geography_compiles_and_is_validated_locally() -> None:
+    filters = ScreenFilters(
+        exchange_country_codes=("US", "CA"),
+        sector="Industrials",
+        limit=5,
+    )
+
+    expression = build_screen_expression(filters)
+    assert 'IN(TR.ExchangeCountryCode,"US","CA")' in expression
+
+    frame = pd.DataFrame(
+        {
+            "TR.CommonName": ["US listing", "Canadian listing", "European listing"],
+            "TR.ExchangeCountryCode": ["US", "CA", "DE"],
+            "TR.TRBCEconSectorCode": ["52", "52", "52"],
+        }
+    )
+    output = apply_screen_filters(frame, filters)
+
+    assert output["TR.CommonName"].tolist() == ["US listing", "Canadian listing"]
+
+
+def test_exchange_country_display_header_is_canonicalized() -> None:
+    frame = pd.DataFrame(
+        {
+            "Instrument": ["AAPL.O"],
+            "Exchange Country ISO Code": ["US"],
+        }
+    )
+
+    output = _canonicalize(frame, ("TR.ExchangeCountryCode",))
+
+    assert output.loc[0, "TR.ExchangeCountryCode"] == "US"
 
 
 def test_concise_company_report_uses_derived_evidence(tmp_path) -> None:

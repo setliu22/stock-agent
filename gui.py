@@ -33,7 +33,10 @@ from portfolio.research_lab import (
     ResearchProposal,
     research_discovery_scope_options,
 )
-from portfolio.research_plan import supported_research_taxonomy_options
+from portfolio.research_plan import (
+    exchange_geography_options,
+    supported_research_taxonomy_options,
+)
 
 
 EXPECTED_RESEARCH_ERRORS = (
@@ -354,6 +357,9 @@ class ResearchApprovalDialog(tk.Toplevel):
         self.market_news_mode = proposal.mode == "market_news"
         self.securities = tk.StringVar(value="; ".join(proposal.securities))
         self.discovery_scope = tk.StringVar(value=proposal.discovery_scope or "")
+        self.exchange_geography = tk.StringVar(
+            value=proposal.exchange_geography or "All exchanges"
+        )
         self.result_count = tk.IntVar(value=proposal.result_count)
         self.benchmark = tk.StringVar(value=proposal.benchmark or "")
         timeframe_label = next(
@@ -418,6 +424,13 @@ class ResearchApprovalDialog(tk.Toplevel):
                 row=0, column=0, sticky="w"
             )
             ttk.Label(controls, text="Results", style="DialogMuted.TLabel").grid(
+                row=0, column=2, sticky="w", padx=(12, 0)
+            )
+            ttk.Label(
+                controls,
+                text="Exchange market",
+                style="DialogMuted.TLabel",
+            ).grid(
                 row=0, column=1, sticky="w", padx=(12, 0)
             )
             ttk.Combobox(
@@ -426,15 +439,24 @@ class ResearchApprovalDialog(tk.Toplevel):
                 values=[value for _label, value in research_discovery_scope_options()],
                 state="readonly",
             ).grid(row=1, column=0, sticky="ew", pady=(5, 0))
+            ttk.Combobox(
+                controls,
+                textvariable=self.exchange_geography,
+                values=[
+                    "All exchanges",
+                    *[label for label, _value in exchange_geography_options()],
+                ],
+                state="readonly",
+            ).grid(row=1, column=1, sticky="ew", padx=(12, 0), pady=(5, 0))
             ttk.Spinbox(
                 controls,
                 from_=1,
                 to=8,
                 textvariable=self.result_count,
                 width=8,
-            ).grid(row=1, column=1, sticky="ew", padx=(12, 0), pady=(5, 0))
-            timeframe_column = 2
-            benchmark_column = 3
+            ).grid(row=1, column=2, sticky="ew", padx=(12, 0), pady=(5, 0))
+            timeframe_column = 3
+            benchmark_column = 4
         elif not self.market_news_mode:
             ttk.Label(controls, text="Securities (separate with ;)", style="DialogMuted.TLabel").grid(
                 row=0, column=0, sticky="w"
@@ -596,6 +618,11 @@ class ResearchApprovalDialog(tk.Toplevel):
             ),
             mode=self.proposal.mode,
             discovery_scope=self.discovery_scope.get().strip() or None,
+            exchange_geography=(
+                self.exchange_geography.get().strip()
+                if self.exchange_geography.get().strip() != "All exchanges"
+                else None
+            ),
             discovery_theme=self.proposal.discovery_theme,
             result_count=result_count,
         )

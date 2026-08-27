@@ -42,6 +42,12 @@ def test_malformed_normalized_plans_fail_closed() -> None:
     with pytest.raises(UnsupportedResearchConstraint):
         ResearchPlan(mode="screen", workflow="stock_screen", screen=ScreenFilters(limit=3.5)).normalized()
     with pytest.raises(UnsupportedResearchConstraint):
+        ResearchPlan(
+            mode="screen",
+            workflow="stock_screen",
+            screen=ScreenFilters(exchange_country_codes=("USA",)),
+        ).normalized()
+    with pytest.raises(UnsupportedResearchConstraint):
         ResearchPlan(mode="screen", workflow="stock_screen", entities=[{"bad": "entity"}]).normalized()
     with pytest.raises(UnsupportedResearchConstraint):
         ResearchPlan(

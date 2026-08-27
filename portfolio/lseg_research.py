@@ -126,7 +126,7 @@ FIELD_LABELS: dict[str, str] = {
 }
 
 SCREEN_FIELDS: tuple[str, ...] = (
-    "TR.CommonName", "TR.TickerSymbol", "TR.HQCountryCode",
+    "TR.CommonName", "TR.TickerSymbol", "TR.HQCountryCode", "TR.ExchangeCountryCode",
     "TR.TRBCEconomicSector", "TR.TRBCEconSectorCode",
     "TR.TRBCBusinessSector", "TR.TRBCBusinessSectorCode",
     "TR.TRBCIndustryGroup", "TR.TRBCIndustryGroupCode",
@@ -156,7 +156,7 @@ TRBC_SECTOR_CODES: dict[str, str] = {
 }
 
 SCREEN_CORE_FIELDS: tuple[str, ...] = (
-    "TR.CommonName", "TR.TickerSymbol", "TR.HQCountryCode",
+    "TR.CommonName", "TR.TickerSymbol", "TR.HQCountryCode", "TR.ExchangeCountryCode",
     "TR.TRBCEconomicSector", "TR.TRBCEconSectorCode",
     "TR.TRBCBusinessSector", "TR.TRBCBusinessSectorCode",
     "TR.TRBCIndustryGroup", "TR.TRBCIndustryGroupCode",
@@ -532,6 +532,10 @@ def _canonicalize(frame: Any, requested_fields: Iterable[str]) -> pd.DataFrame:
         normalized("Country of Headquarters"): "TR.HeadquartersCountry",
         normalized("Country ISO Code"): "TR.HQCountryCode",
         normalized("Country ISO Code of Headquarters"): "TR.HQCountryCode",
+        normalized("Exchange Country Code"): "TR.ExchangeCountryCode",
+        normalized("Exchange Country ISO Code"): "TR.ExchangeCountryCode",
+        normalized("Country ISO Code of Exchange"): "TR.ExchangeCountryCode",
+        normalized("Country of Exchange ISO Code"): "TR.ExchangeCountryCode",
         normalized("TRBC Economic Sector Name"): "TR.TRBCEconomicSector",
         normalized("TRBC Economic Sector Code"): "TR.TRBCEconSectorCode",
         normalized("TRBC Business Sector Name"): "TR.TRBCBusinessSector",
@@ -586,7 +590,7 @@ def _combine_columns(frames: list[pd.DataFrame]) -> pd.DataFrame:
             output = output.merge(frame, on=join_columns, how="outer", validate="one_to_one")
             for column, right_column in right_names.items():
                 if column in {
-                    "TR.HQCountryCode", "TR.TRBCEconSectorCode", "TR.TRBCBusinessSectorCode",
+                    "TR.HQCountryCode", "TR.ExchangeCountryCode", "TR.TRBCEconSectorCode", "TR.TRBCBusinessSectorCode",
                     "TR.TRBCIndustryGroupCode", "TR.TRBCIndustryCode", "TR.TickerSymbol",
                     "TR.OrganizationID",
                 }:
@@ -872,6 +876,12 @@ def build_screen_body(filters: ScreenFilters) -> str:
         if country not in {"US", "GB", "CA", "DE", "FR", "JP", "CN", "IN"}:
             raise LSEGResearchError(f"Unsupported headquarters-country code: {country}.")
         clauses.append(f'IN(TR.HQCountryCode,"{country}")')
+    if filters.exchange_country_codes:
+        codes = tuple(str(code).strip().upper() for code in filters.exchange_country_codes)
+        if len(codes) > 50 or any(not re.fullmatch(r"[A-Z]{2}", code) for code in codes):
+            raise LSEGResearchError("Exchange-country codes must be valid two-letter codes.")
+        quoted_codes = ",".join(f'"{code}"' for code in codes)
+        clauses.append(f"IN(TR.ExchangeCountryCode,{quoted_codes})")
     if filters.sector:
         canonical_sector = canonicalize_sector(filters.sector)
         if canonical_sector is None:
@@ -1183,6 +1193,23 @@ def apply_screen_filters(
                 output["TR.HQCountryCode"].map(_normalized_code).str.upper()
                 == filters.country_code.upper()
             ]
+    if filters.exchange_country_codes:
+        if "TR.ExchangeCountryCode" not in output.columns:
+            if strict:
+                raise LSEGResearchError(
+                    "The exchange-geography constraint could not be validated because "
+                    "LSEG did not return TR.ExchangeCountryCode."
+                )
+        else:
+            allowed_exchange_codes = {
+                code.upper() for code in filters.exchange_country_codes
+            }
+            output = output[
+                output["TR.ExchangeCountryCode"]
+                .map(_normalized_code)
+                .str.upper()
+                .isin(allowed_exchange_codes)
+            ]
     if filters.sector:
         canonical_sector = canonicalize_sector(filters.sector)
         sector_code = TRBC_SECTOR_CODES.get((canonical_sector or "").casefold())
@@ -1265,6 +1292,8 @@ def _retrieve_screen(ld: Any, client: _LSEGClient, result: ResearchResult) -> No
         discovery_fields_list = ["TR.CommonName", "TR.CompanyMarketCap"]
         if filters.country_code:
             discovery_fields_list.append("TR.HQCountryCode")
+        if filters.exchange_country_codes:
+            discovery_fields_list.append("TR.ExchangeCountryCode")
         if filters.sector:
             discovery_fields_list.extend(("TR.TRBCEconomicSector", "TR.TRBCEconSectorCode"))
         if filters.industry:
@@ -1337,6 +1366,7 @@ def _retrieve_screen(ld: Any, client: _LSEGClient, result: ResearchResult) -> No
     raw_screen_count = len(core)
     identity_filters = ScreenFilters(
         country_code=filters.country_code,
+        exchange_country_codes=filters.exchange_country_codes,
         sector=filters.sector,
         industry=filters.industry,
         limit=max(len(core), 3),
@@ -1357,6 +1387,7 @@ def _retrieve_screen(ld: Any, client: _LSEGClient, result: ResearchResult) -> No
         )
     result.metrics["constraint_validation"] = {
         "requested_country": filters.country_code,
+        "requested_exchange_countries": list(filters.exchange_country_codes),
         "requested_sector": filters.sector,
         "requested_industry": filters.industry,
         "returned_rows": raw_screen_count,
@@ -1365,7 +1396,7 @@ def _retrieve_screen(ld: Any, client: _LSEGClient, result: ResearchResult) -> No
     }
     if core.empty:
         raise LSEGNoMatches(
-            "LSEG returned rows for the compiled screen, but none passed local country/TRBC postcondition checks."
+            "LSEG returned rows for the compiled screen, but none passed local exchange-geography/TRBC postcondition checks."
         )
 
     rics = list(dict.fromkeys(str(value).strip() for value in core["Instrument"].dropna().tolist() if str(value).strip()))
@@ -1378,7 +1409,7 @@ def _retrieve_screen(ld: Any, client: _LSEGClient, result: ResearchResult) -> No
     result.metrics["screen_requested_top"] = requested_screen_top
     result.metrics["screen_universe_scope"] = (
         f"Top {effective_screen_cap} active public primary equities by USD market capitalization "
-        "after the compiled country/TRBC constraints."
+        "after the compiled exchange-geography/TRBC constraints."
     )
 
     enrichment_fields = SCREEN_FIELDS

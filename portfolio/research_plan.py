@@ -71,6 +71,86 @@ class UnsupportedResearchConstraint(ValueError):
 
 
 @dataclass(frozen=True)
+class ExchangeGeography:
+    """A user-facing exchange market or region and its LSEG country codes."""
+
+    label: str
+    country_codes: tuple[str, ...]
+    aliases: tuple[str, ...]
+
+
+EXCHANGE_GEOGRAPHIES: tuple[ExchangeGeography, ...] = (
+    ExchangeGeography(
+        "United States",
+        ("US",),
+        ("us", "u.s.", "u.s", "united states", "american"),
+    ),
+    ExchangeGeography(
+        "Europe",
+        (
+            "AL", "AT", "BA", "BE", "BG", "CH", "CY", "CZ", "DE", "DK",
+            "EE", "ES", "FI", "FR", "GB", "GR", "HR", "HU", "IE", "IS",
+            "IT", "LI", "LT", "LU", "LV", "ME", "MK", "MT", "NL", "NO",
+            "PL", "PT", "RO", "RS", "SE", "SI", "SK",
+        ),
+        ("europe", "european"),
+    ),
+    ExchangeGeography(
+        "Canada",
+        ("CA",),
+        ("canada", "canadian"),
+    ),
+    ExchangeGeography(
+        "United Kingdom",
+        ("GB",),
+        ("uk", "u.k.", "u.k", "united kingdom", "british"),
+    ),
+    ExchangeGeography("Australia", ("AU",), ("australia", "australian")),
+    ExchangeGeography("China", ("CN",), ("china", "chinese")),
+    ExchangeGeography("Hong Kong", ("HK",), ("hong kong",)),
+    ExchangeGeography("India", ("IN",), ("india", "indian")),
+    ExchangeGeography("Japan", ("JP",), ("japan", "japanese")),
+    ExchangeGeography("South Korea", ("KR",), ("south korea", "korean")),
+    ExchangeGeography("Singapore", ("SG",), ("singapore", "singaporean")),
+    ExchangeGeography("Taiwan", ("TW",), ("taiwan", "taiwanese")),
+    ExchangeGeography("Brazil", ("BR",), ("brazil", "brazilian")),
+    ExchangeGeography("Mexico", ("MX",), ("mexico", "mexican")),
+    ExchangeGeography("South Africa", ("ZA",), ("south africa", "south african")),
+)
+
+_EXCHANGE_GEOGRAPHY_ALIASES = {
+    alias.casefold(): geography
+    for geography in EXCHANGE_GEOGRAPHIES
+    for alias in (geography.label, *geography.aliases)
+}
+
+
+def canonicalize_exchange_geography(value: str | None) -> ExchangeGeography | None:
+    if value is None:
+        return None
+    cleaned = re.sub(r"\s+", " ", str(value).strip().casefold())
+    return _EXCHANGE_GEOGRAPHY_ALIASES.get(cleaned)
+
+
+def exchange_geography_options() -> tuple[tuple[str, str], ...]:
+    return tuple((item.label, item.label) for item in EXCHANGE_GEOGRAPHIES)
+
+
+def exchange_geography_is_grounded(value: str, question: str) -> bool:
+    geography = canonicalize_exchange_geography(value)
+    if geography is None:
+        return False
+    normalized_question = " " + re.sub(
+        r"[^a-z0-9]+", " ", question.casefold()
+    ).strip() + " "
+    return any(
+        " " + re.sub(r"[^a-z0-9]+", " ", alias.casefold()).strip() + " "
+        in normalized_question
+        for alias in (geography.label, *geography.aliases)
+    )
+
+
+@dataclass(frozen=True)
 class TRBCClassification:
     """One exact TRBC hierarchy node and its accepted input aliases."""
 
@@ -199,6 +279,7 @@ class ScreenFilters:
     dividend_yield_min: float | None = None
     total_return_3m_min: float | None = None
     country_code: str | None = None
+    exchange_country_codes: tuple[str, ...] = ()
     sector: str | None = None
     industry: str | None = None
     universe: str | None = None
@@ -311,6 +392,24 @@ class ResearchPlan:
                     f"Headquarters country {country!r} is not in the deterministic country catalog."
                 )
             self.screen.country_code = country
+        if not isinstance(self.screen.exchange_country_codes, (tuple, list)):
+            raise UnsupportedResearchConstraint(
+                "Exchange-country codes must be a list or tuple."
+            )
+        exchange_codes = tuple(
+            dict.fromkeys(
+                str(code).strip().upper()
+                for code in self.screen.exchange_country_codes
+                if str(code).strip()
+            )
+        )
+        if len(exchange_codes) > 50 or any(
+            not re.fullmatch(r"[A-Z]{2}", code) for code in exchange_codes
+        ):
+            raise UnsupportedResearchConstraint(
+                "Exchange-country codes must be valid two-letter codes."
+            )
+        self.screen.exchange_country_codes = exchange_codes
         if self.screen.market_cap_min is not None and self.screen.market_cap_min < 0:
             raise UnsupportedResearchConstraint("Minimum market capitalization cannot be negative.")
         if self.screen.market_cap_max is not None and self.screen.market_cap_max < 0:

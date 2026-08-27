@@ -14,6 +14,7 @@ from portfolio.research_lab import (
     ResearchLabError,
     ThemeCandidate,
     VerifiedFinding,
+    _run_discovery_screen,
     _select_theme_candidates,
     derive_findings,
     execute_research,
@@ -30,6 +31,7 @@ def _payload(**overrides):
         "mode": "named",
         "securities": ["AAPL", "MSFT"],
         "discovery_scope": None,
+        "exchange_geography": None,
         "discovery_theme": None,
         "result_count": 5,
         "lookback_days": 365,
@@ -96,6 +98,10 @@ def test_lseg_capability_catalog_exposes_backend_operations() -> None:
         "lseg_screen",
         "none",
     }
+    assert {item["value"] for item in catalog["exchange_geographies"]} >= {
+        "United States",
+        "Europe",
+    }
 
 
 def test_capability_dependencies_are_added_to_proposal() -> None:
@@ -143,6 +149,102 @@ def test_discovery_proposal_uses_supported_scope_without_inventing_stocks() -> N
         "company_profile",
         "valuation_snapshot",
     }
+
+
+@pytest.mark.parametrize(
+    ("question", "geography"),
+    [
+        ("What US stock is undervalued in industrials?", "United States"),
+        ("What European stock is undervalued in industrials?", "Europe"),
+    ],
+)
+def test_discovery_proposal_preserves_grounded_exchange_geography(
+    question: str,
+    geography: str,
+) -> None:
+    proposal = validate_proposal_payload(
+        question,
+        _payload(
+            mode="discovery",
+            securities=[],
+            discovery_scope="Industrials",
+            exchange_geography=geography,
+            discovery_theme=None,
+            result_count=1,
+            capabilities=[
+                {"id": "candidate_discovery", "reason": "Discover candidates."},
+                {"id": "company_profile", "reason": "Identify candidates."},
+                {"id": "valuation_snapshot", "reason": "Compare valuations."},
+            ],
+            analyses=[],
+        ),
+    )
+
+    assert proposal.exchange_geography == geography
+
+
+def test_discovery_proposal_rejects_invented_exchange_geography() -> None:
+    with pytest.raises(ResearchLabError, match="explicitly present"):
+        validate_proposal_payload(
+            "What stock is undervalued in industrials?",
+            _payload(
+                mode="discovery",
+                securities=[],
+                discovery_scope="Industrials",
+                exchange_geography="United States",
+                discovery_theme=None,
+                capabilities=[
+                    {"id": "candidate_discovery", "reason": "Discover candidates."},
+                    {"id": "company_profile", "reason": "Identify candidates."},
+                ],
+                analyses=[],
+            ),
+        )
+
+
+def test_discovery_screen_expands_europe_to_exchange_country_codes(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    approved = ApprovedResearchPlan(
+        question="What European stock is undervalued in industrials?",
+        securities=(),
+        lookback_days=365,
+        benchmark=None,
+        capability_ids=(
+            "macro_context",
+            "candidate_discovery",
+            "company_profile",
+            "valuation_snapshot",
+        ),
+        analysis_ids=(),
+        mode="discovery",
+        discovery_scope="Industrials",
+        exchange_geography="Europe",
+        result_count=1,
+    ).validated()
+    captured: list[ResearchPlan] = []
+
+    def fake_run(plan, *_args, **_kwargs):
+        captured.append(plan)
+        return ResearchResult(plan=plan)
+
+    monkeypatch.setattr("portfolio.research_lab.run_research", fake_run)
+    settings = Settings(
+        tmp_path,
+        tmp_path / "db.sqlite",
+        None,
+        "test-model",
+        "desktop.workspace",
+    )
+
+    _run_discovery_screen(approved, settings, _macro(), progress_callback=None, cancel_event=None)
+
+    assert captured[0].screen.sector == "Industrials"
+    assert {"DE", "FR", "GB", "IT", "NL"} <= set(
+        captured[0].screen.exchange_country_codes
+    )
+    assert "US" not in captured[0].screen.exchange_country_codes
 
 
 def test_exact_open_ended_question_can_propose_discovery(tmp_path, monkeypatch) -> None:

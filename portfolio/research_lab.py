@@ -29,6 +29,9 @@ from .research_plan import (
     ScreenFilters,
     canonicalize_industry,
     canonicalize_sector,
+    canonicalize_exchange_geography,
+    exchange_geography_is_grounded,
+    exchange_geography_options,
     supported_research_taxonomy_options,
 )
 
@@ -397,6 +400,7 @@ class ResearchProposal:
     analyses: tuple[ProposedItem, ...]
     mode: str = "named"
     discovery_scope: str | None = None
+    exchange_geography: str | None = None
     discovery_theme: str | None = None
     result_count: int = 5
 
@@ -410,6 +414,7 @@ class ApprovedResearchPlan:
     analysis_ids: tuple[str, ...]
     mode: str = "named"
     discovery_scope: str | None = None
+    exchange_geography: str | None = None
     discovery_theme: str | None = None
     result_count: int = 5
 
@@ -426,6 +431,10 @@ class ApprovedResearchPlan:
         if mode not in {"named", "discovery", "market_news"}:
             raise ResearchLabError("The approved research mode is invalid.")
         discovery_scope = _canonical_discovery_scope(self.discovery_scope)
+        geography = canonicalize_exchange_geography(self.exchange_geography)
+        exchange_geography = geography.label if geography is not None else None
+        if self.exchange_geography and geography is None:
+            raise ResearchLabError("Select a supported exchange geography.")
         discovery_theme = (self.discovery_theme or "").strip() or None
         if mode == "discovery":
             if not discovery_scope:
@@ -438,10 +447,20 @@ class ApprovedResearchPlan:
                 raise ResearchLabError("The profile-relevance query is too long.")
             if not 1 <= int(self.result_count) <= 8:
                 raise ResearchLabError("Choose between one and eight discovery results.")
-        elif mode == "named" and not 1 <= len(securities) <= 8:
-            raise ResearchLabError("Choose between one and eight securities.")
-        elif mode == "market_news" and securities:
-            raise ResearchLabError("A market-news plan cannot contain named securities.")
+        elif mode == "named":
+            if exchange_geography:
+                raise ResearchLabError(
+                    "Exchange geography is only available for discovery research."
+                )
+            if not 1 <= len(securities) <= 8:
+                raise ResearchLabError("Choose between one and eight securities.")
+        elif mode == "market_news":
+            if securities:
+                raise ResearchLabError("A market-news plan cannot contain named securities.")
+            if exchange_geography:
+                raise ResearchLabError(
+                    "Exchange geography is only available for discovery research."
+                )
         if not 30 <= int(self.lookback_days) <= 1_825:
             raise ResearchLabError("Choose a timeframe between 30 days and five years.")
         capability_ids = tuple(dict.fromkeys(self.capability_ids))
@@ -519,6 +538,7 @@ class ApprovedResearchPlan:
             analysis_ids=analysis_ids,
             mode=mode,
             discovery_scope=discovery_scope,
+            exchange_geography=exchange_geography,
             discovery_theme=discovery_theme,
             result_count=int(self.result_count),
         )
@@ -589,6 +609,10 @@ def proposal_catalog() -> dict[str, list[dict[str, Any]]]:
             {"label": label, "value": value}
             for label, value in research_discovery_scope_options()
         ],
+        "exchange_geographies": [
+            {"label": label, "value": value}
+            for label, value in exchange_geography_options()
+        ],
     }
 
 
@@ -611,12 +635,35 @@ def _proposal_schema() -> dict[str, Any]:
             "securities": {"type": "array", "items": {"type": "string"}},
             "discovery_scope": {
                 "type": ["string", "null"],
+                "description": (
+                    "For discovery mode, the approved LSEG sector/industry universe. "
+                    "Use All public equities only when no narrower supported scope answers the question."
+                ),
                 "enum": [
                     None,
                     *[value for _label, value in research_discovery_scope_options()],
                 ],
             },
-            "discovery_theme": {"type": ["string", "null"]},
+            "exchange_geography": {
+                "type": ["string", "null"],
+                "description": (
+                    "Optional country or region of the stock's primary exchange. Select it only "
+                    "when the user explicitly requests that exchange geography. This is not the "
+                    "company's headquarters or domicile."
+                ),
+                "enum": [
+                    None,
+                    *[value for _label, value in exchange_geography_options()],
+                ],
+            },
+            "discovery_theme": {
+                "type": ["string", "null"],
+                "description": (
+                    "Optional business-exposure phrase copied from the question, such as AI or "
+                    "gene editing. Do not put financial criteria such as undervalued, profitable, "
+                    "or growing here; represent those with capabilities and analyses."
+                ),
+            },
             "result_count": {"type": "integer", "minimum": 1, "maximum": 8},
             "lookback_days": {"type": "integer", "minimum": 30, "maximum": 1825},
             "benchmark": {"type": ["string", "null"]},
@@ -630,7 +677,7 @@ def _proposal_schema() -> dict[str, Any]:
             },
         },
         "required": [
-            "mode", "securities", "discovery_scope",
+            "mode", "securities", "discovery_scope", "exchange_geography",
             "discovery_theme", "result_count", "lookback_days", "benchmark",
             "capabilities", "analyses",
         ],
@@ -714,7 +761,7 @@ def validate_proposal_payload(
     payload: Any,
 ) -> ResearchProposal:
     expected = {
-        "mode", "securities", "discovery_scope",
+        "mode", "securities", "discovery_scope", "exchange_geography",
         "discovery_theme", "result_count", "lookback_days", "benchmark",
         "capabilities", "analyses",
     }
@@ -729,6 +776,13 @@ def validate_proposal_payload(
         raise ResearchLabError("The proposal securities must be a list of text references.")
     securities = tuple(dict.fromkeys(item.strip() for item in securities_raw if item.strip()))
     discovery_scope = _canonical_discovery_scope(payload.get("discovery_scope"))
+    geography_value = payload.get("exchange_geography")
+    geography = canonicalize_exchange_geography(
+        str(geography_value) if geography_value else None
+    )
+    if geography_value and geography is None:
+        raise ResearchLabError("The proposal selected an unsupported exchange geography.")
+    exchange_geography = geography.label if geography is not None else None
     discovery_theme_value = payload.get("discovery_theme")
     discovery_theme = str(discovery_theme_value).strip() if discovery_theme_value else None
     try:
@@ -738,7 +792,7 @@ def validate_proposal_payload(
     if not 1 <= result_count <= 8:
         raise ResearchLabError("The proposed result count must be between one and eight.")
     if mode == "named":
-        if discovery_scope or discovery_theme:
+        if discovery_scope or discovery_theme or exchange_geography:
             raise ResearchLabError("A named-security proposal cannot include discovery inputs.")
         if not 1 <= len(securities) <= 8:
             raise ResearchLabError("The proposal must contain between one and eight securities.")
@@ -752,12 +806,18 @@ def validate_proposal_payload(
             raise ResearchLabError("A discovery proposal cannot preselect securities.")
         if not discovery_scope:
             raise ResearchLabError("The discovery proposal requires a supported LSEG scope.")
+        if exchange_geography and not exchange_geography_is_grounded(
+            exchange_geography, question
+        ):
+            raise ResearchLabError(
+                "The exchange geography must be explicitly present in the current question."
+            )
         if discovery_theme and not _reference_is_grounded(discovery_theme, question):
             raise ResearchLabError(
                 "The profile-relevance query must be copied from the current question."
             )
     else:
-        if securities or discovery_scope or discovery_theme:
+        if securities or discovery_scope or discovery_theme or exchange_geography:
             raise ResearchLabError(
                 "A market-news proposal cannot contain securities or discovery inputs."
             )
@@ -835,6 +895,7 @@ def validate_proposal_payload(
         analyses=proposed_analyses,
         mode=mode,
         discovery_scope=discovery_scope,
+        exchange_geography=exchange_geography,
         discovery_theme=discovery_theme,
         result_count=result_count,
     )
@@ -891,6 +952,7 @@ def _run_discovery_screen(
 ) -> ResearchResult:
     scope = approved.discovery_scope
     theme = approved.discovery_theme
+    geography = canonicalize_exchange_geography(approved.exchange_geography)
     assert scope
     industry = None if scope == ALL_PUBLIC_EQUITIES else canonicalize_industry(scope)
     sector = None if scope == ALL_PUBLIC_EQUITIES else canonicalize_sector(scope)
@@ -898,6 +960,7 @@ def _run_discovery_screen(
         mode="screen",
         workflow="stock_screen",
         screen=ScreenFilters(
+            exchange_country_codes=geography.country_codes if geography else (),
             sector=sector if industry is None else None,
             industry=industry,
             limit=20,
@@ -909,10 +972,11 @@ def _run_discovery_screen(
         discovery_theme=theme,
     ).normalized()
     if progress_callback:
+        geography_text = f" on {geography.label} exchanges" if geography else ""
         progress_callback(
             8,
             "Screening discovery universe",
-            f"Retrieving a validated {scope} candidate set before candidate evaluation.",
+            f"Retrieving a validated {scope} candidate set{geography_text} before candidate evaluation.",
         )
 
     def screen_progress(percent: int | None, stage: str, detail: str = "") -> None:
@@ -1121,9 +1185,15 @@ def execute_research(
             settings,
         )
         research_securities = [item.ric for item in selected]
+        exchange_scope = (
+            f" on {approved.exchange_geography} exchanges"
+            if approved.exchange_geography
+            else " across all exchanges"
+        )
         if approved.discovery_theme:
             method_text = (
-                f"Screened the approved {approved.discovery_scope} universe. The model retained only "
+                f"Screened the approved {approved.discovery_scope} universe{exchange_scope}. "
+                "The model retained only "
                 f"direct or meaningful matches to {approved.discovery_theme!r} from retrieved LSEG "
                 "business descriptions; Python preserved the deterministic screen order."
             )
@@ -1133,7 +1203,7 @@ def execute_research(
             )
         else:
             method_text = (
-                f"Screened the approved {approved.discovery_scope} universe and selected candidates "
+                f"Screened the approved {approved.discovery_scope} universe{exchange_scope} and selected candidates "
                 "in the deterministic LSEG/Python screen order; no semantic profile filter was needed."
             )
             method_evidence = ("Validated LSEG stock screen", "Deterministic Python ranking")
