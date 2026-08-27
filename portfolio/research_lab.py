@@ -64,6 +64,8 @@ class AnalysisSpec:
     label: str
     description: str
     required_capabilities: tuple[str, ...]
+    exactly_one_capability: tuple[str, ...] = ()
+    exactly_one_label: str = "data source"
 
 
 @dataclass(frozen=True)
@@ -322,12 +324,16 @@ ANALYSES: tuple[AnalysisSpec, ...] = (
         "Rate-change correlation",
         "Correlate daily stock returns with changes in the selected rate series and report sample size.",
         ("price_history",),
+        ("fed_funds_history", "treasury_yield_history"),
+        "rate measure",
     ),
     AnalysisSpec(
         "falling_rate_comparison",
         "Falling-rate period comparison",
         "Compare monthly stock returns when the selected rate fell versus when it did not.",
         ("price_history",),
+        ("fed_funds_history", "treasury_yield_history"),
+        "rate measure",
     ),
     AnalysisSpec(
         "estimate_revision_change",
@@ -339,7 +345,6 @@ ANALYSES: tuple[AnalysisSpec, ...] = (
 
 CAPABILITY_BY_ID = {item.capability_id: item for item in CAPABILITIES}
 ANALYSIS_BY_ID = {item.analysis_id: item for item in ANALYSES}
-RATE_CAPABILITIES = {"fed_funds_history", "treasury_yield_history"}
 LSEG_CAPABILITIES = {
     item.capability_id for item in CAPABILITIES if item.source.startswith("LSEG")
 }
@@ -347,6 +352,33 @@ LSEG_CAPABILITIES = {
 
 class ResearchLabError(ValueError):
     """A proposal or approved plan is unsafe or incomplete."""
+
+
+def _validate_analysis_inputs(
+    analysis_ids: tuple[str, ...],
+    capability_ids: tuple[str, ...] | set[str],
+) -> None:
+    selected_capabilities = set(capability_ids)
+    for analysis_id in analysis_ids:
+        spec = ANALYSIS_BY_ID[analysis_id]
+        if not spec.exactly_one_capability:
+            continue
+        selected = _selected_exclusive_capabilities(spec, selected_capabilities)
+        if len(selected) != 1:
+            choices = " or ".join(
+                CAPABILITY_BY_ID[item].label for item in spec.exactly_one_capability
+            )
+            raise ResearchLabError(
+                f"Choose one {spec.exactly_one_label} for {spec.label}: {choices}."
+            )
+
+
+def _selected_exclusive_capabilities(
+    analysis: AnalysisSpec,
+    capability_ids: tuple[str, ...] | set[str],
+) -> set[str]:
+    """Return only exclusive inputs declared by this analysis."""
+    return set(capability_ids) & set(analysis.exactly_one_capability)
 
 
 @dataclass(frozen=True)
@@ -470,12 +502,7 @@ class ApprovedResearchPlan:
                 raise ResearchLabError(
                     f"{spec.label} also requires: {', '.join(labels)}."
                 )
-            if analysis_id in {"rate_change_correlation", "falling_rate_comparison"}:
-                selected_rates = RATE_CAPABILITIES & set(capability_ids)
-                if len(selected_rates) != 1:
-                    raise ResearchLabError(
-                        f"{spec.label} requires exactly one approved rate-history series."
-                    )
+        _validate_analysis_inputs(analysis_ids, capability_ids)
         benchmark = self.benchmark.strip() if self.benchmark else None
         if "benchmark_prices" in capability_ids and not benchmark:
             raise ResearchLabError("Enter a benchmark before approving benchmark prices.")
@@ -554,6 +581,7 @@ def proposal_catalog() -> dict[str, list[dict[str, Any]]]:
                 "label": item.label,
                 "description": item.description,
                 "requires": list(item.required_capabilities),
+                "requires_exactly_one": list(item.exactly_one_capability),
             }
             for item in ANALYSES
         ],
@@ -792,6 +820,10 @@ def validate_proposal_payload(
                 dependency,
                 f"Required by {ANALYSIS_BY_ID[analysis.item_id].label}.",
             )
+    _validate_analysis_inputs(
+        tuple(item.item_id for item in proposed_analyses),
+        set(capability_reasons),
+    )
     return ResearchProposal(
         question=question,
         securities=securities,
@@ -1339,7 +1371,12 @@ def derive_findings(
         elif analysis_id == "annualized_volatility":
             _append_metric_findings(findings, missing, primary, price_series, "volatility")
         elif analysis_id in {"rate_change_correlation", "falling_rate_comparison"}:
-            rate_id = next(iter(RATE_CAPABILITIES & set(approved.capability_ids)), None)
+            analysis = ANALYSIS_BY_ID[analysis_id]
+            selected = _selected_exclusive_capabilities(
+                analysis,
+                set(approved.capability_ids),
+            )
+            rate_id = next(iter(selected), None)
             observations = rate_series.get(str(rate_id), [])
             _append_rate_findings(
                 findings,
@@ -1569,8 +1606,9 @@ def _append_rate_findings(
     for instrument in instruments:
         stock = series_by_ric.get(instrument.ric, pd.Series(dtype=float))
         if comparison:
-            monthly_stock = stock.resample("ME").last().pct_change()
-            monthly_rate = rates.resample("ME").last().diff()
+            month_end = pd.offsets.MonthEnd()
+            monthly_stock = stock.resample(month_end).last().pct_change()
+            monthly_rate = rates.resample(month_end).last().diff()
             aligned = pd.concat([monthly_stock.rename("return"), monthly_rate.rename("rate_change")], axis=1).dropna()
             falling = aligned.loc[aligned["rate_change"] < 0, "return"]
             other = aligned.loc[aligned["rate_change"] >= 0, "return"]

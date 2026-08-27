@@ -235,8 +235,10 @@ def test_closed_lseg_session_raises_clear_error(tmp_path) -> None:
 
     settings = Settings(tmp_path, tmp_path / "db", None, "test", "desktop.workspace", None, 0.01)
     import pytest
-    with pytest.raises(Exception, match="did not reach Opened state"):
+    with pytest.raises(Exception, match="Open LSEG Workspace, sign in") as error:
         _open_lseg_session(FakeLD(), settings)
+
+    assert "state=Closed" not in str(error.value)
 
 
 def test_industrials_screen_uses_trbc_code() -> None:

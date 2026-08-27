@@ -169,6 +169,14 @@ class LSEGResearchError(RuntimeError):
     pass
 
 
+class LSEGWorkspaceUnavailable(LSEGResearchError):
+    """The configured desktop Workspace session could not be opened."""
+
+    def __init__(self, message: str, diagnostics: tuple[str, ...] = ()) -> None:
+        super().__init__(message)
+        self.diagnostics = diagnostics
+
+
 class LSEGNoMatches(LSEGResearchError):
     """The validated screen ran successfully but no rows met every constraint."""
 
@@ -455,16 +463,20 @@ def _open_lseg_session(ld: Any, settings: Settings) -> Any:
         except Exception as exc:
             errors.append(f"{label}: {type(exc).__name__}: {exc}")
 
-    app_key_hint = (
-        " Add LSEG_APP_KEY to .env if your Workspace setup requires a desktop application key."
-        if not settings.lseg_app_key
-        else " The configured LSEG_APP_KEY was used."
-    )
+    if settings.lseg_session_name == "desktop.workspace":
+        message = (
+            "LSEG Workspace is not connected. Open LSEG Workspace, sign in, and keep it "
+            "running, then retry the research."
+        )
+        if not settings.lseg_app_key:
+            message += (
+                " If Workspace is already open, your setup may require LSEG_APP_KEY; "
+                "run Test LSEG.command for diagnostics."
+            )
+        raise LSEGWorkspaceUnavailable(message, tuple(errors))
     raise LSEGResearchError(
-        "Workspace was detected by the application, but the LSEG Python session did not reach Opened state. "
-        + " | ".join(errors)
-        + app_key_hint
-        + f" Diagnostic log: {log_path}"
+        "The configured LSEG data session could not connect. Check its credentials and "
+        f"configuration, then retry. Diagnostic log: {log_path}"
     )
 
 
@@ -2324,6 +2336,7 @@ def _persist_research_trace(
         "warnings": result.warnings[:30],
         "error_type": type(error).__name__ if error is not None else None,
         "error": str(error)[:1000] if error is not None else None,
+        "error_diagnostics": list(getattr(error, "diagnostics", ()))[:10],
     }
     try:
         path.parent.mkdir(parents=True, exist_ok=True)

@@ -1,7 +1,16 @@
 from types import SimpleNamespace
 from datetime import date
 
-from gui import StockAgentApp, period_performance, sort_portfolio_rows, tab_drag_target
+from gui import (
+    ResearchApprovalDialog,
+    StockAgentApp,
+    friendly_research_error,
+    period_performance,
+    sort_portfolio_rows,
+    tab_drag_target,
+)
+from portfolio.company_resolver import InstrumentResolutionError
+from portfolio.lseg_research import LSEGWorkspaceUnavailable
 from portfolio.models import PortfolioHistoryPoint
 
 
@@ -106,6 +115,48 @@ def test_clicking_a_portfolio_heading_toggles_sort_direction() -> None:
         True,
     )
     assert len(renders) == 2
+
+
+def test_research_approval_keeps_only_one_rate_measure_selected() -> None:
+    class Variable:
+        def __init__(self, value: bool) -> None:
+            self.value = value
+
+        def get(self) -> bool:
+            return self.value
+
+        def set(self, value: bool) -> None:
+            self.value = value
+
+    app = SimpleNamespace(
+        capability_vars={
+            "fed_funds_history": Variable(True),
+            "treasury_yield_history": Variable(True),
+        }
+    )
+
+    ResearchApprovalDialog._enforce_exclusive_capability(app, "fed_funds_history")
+
+    assert app.capability_vars["fed_funds_history"].get()
+    assert not app.capability_vars["treasury_yield_history"].get()
+
+
+def test_expected_research_errors_do_not_leak_internal_type_names() -> None:
+    resolution = friendly_research_error(
+        InstrumentResolutionError("No listed security matched 'Unknown'.")
+    )
+    workspace = friendly_research_error(
+        LSEGWorkspaceUnavailable("Open LSEG Workspace and retry.")
+    )
+
+    assert resolution == "No listed security matched 'Unknown'."
+    assert workspace == "Open LSEG Workspace and retry."
+
+
+def test_unexpected_research_errors_keep_diagnostic_type() -> None:
+    assert friendly_research_error(RuntimeError("broken")) == (
+        "Unexpected error: RuntimeError: broken"
+    )
 
 
 def test_clicking_same_holding_twice_returns_to_portfolio_chart() -> None:

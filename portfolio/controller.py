@@ -353,7 +353,7 @@ class StockAgentController:
         except LSEGNoMatches as exc:
             return f"No adequately supported company matched this industry screen: {exc}"
         except LSEGResearchError as exc:
-            return f"LSEG research could not run: {type(exc).__name__}: {exc}"
+            return f"LSEG research could not run. {exc}"
 
     @staticmethod
     def industry_research_options() -> tuple[tuple[str, str], ...]:

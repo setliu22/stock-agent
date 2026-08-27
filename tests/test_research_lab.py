@@ -206,6 +206,44 @@ def test_invalid_entity_source_is_replanned_from_compiler_error(tmp_path, monkey
     assert "previous_plan_compiler_error" in requests[1]
 
 
+def test_missing_rate_input_is_replanned_before_approval(tmp_path, monkeypatch) -> None:
+    question = "Compare AAPL and MSFT when rates fall"
+    rate_analysis = [
+        {"id": "falling_rate_comparison", "reason": "Compare falling-rate periods."}
+    ]
+    payloads = [
+        _payload(
+            capabilities=[
+                {"id": "price_history", "reason": "Retrieve stock returns."}
+            ],
+            analyses=rate_analysis,
+        ),
+        _payload(
+            capabilities=[
+                {"id": "price_history", "reason": "Retrieve stock returns."},
+                {"id": "fed_funds_history", "reason": "Measure falling rates."},
+            ],
+            analyses=rate_analysis,
+        ),
+    ]
+    requests = []
+
+    def fake_invoke(_settings, _schema, messages, **_kwargs):
+        requests.append(json.loads(messages[-1][1]))
+        return payloads.pop(0)
+
+    monkeypatch.setattr("portfolio.research_lab.invoke_structured_groq", fake_invoke)
+    settings = Settings(tmp_path, tmp_path / "db.sqlite", "key", "test-model", "desktop.workspace")
+
+    proposal = propose_research(question, settings)
+
+    assert {item.item_id for item in proposal.capabilities} >= {
+        "price_history",
+        "fed_funds_history",
+    }
+    assert "Choose one rate measure" in requests[1]["previous_plan_compiler_error"]
+
+
 def test_discovery_proposal_rejects_theme_not_grounded_in_question() -> None:
     with pytest.raises(ResearchLabError, match="copied from the current question"):
         validate_proposal_payload(
@@ -361,8 +399,17 @@ def test_approval_requires_analysis_dependencies_and_one_rate_series() -> None:
         capability_ids=("macro_context", "price_history"),
         analysis_ids=("falling_rate_comparison",),
     )
-    with pytest.raises(ResearchLabError, match="exactly one"):
+    with pytest.raises(ResearchLabError, match="Choose one rate measure"):
         plan.validated()
+
+
+def test_rate_analysis_contract_is_exposed_to_the_proposal_model() -> None:
+    analyses = {item["id"]: item for item in proposal_catalog()["analyses"]}
+
+    assert analyses["falling_rate_comparison"]["requires_exactly_one"] == [
+        "fed_funds_history",
+        "treasury_yield_history",
+    ]
 
 
 def test_discovery_approval_requires_profile_and_no_preselected_security() -> None:

@@ -16,7 +16,8 @@ from typing import Any
 from portfolio.config import save_supabase_settings
 from portfolio.controller import StockAgentController
 from portfolio.cloud_portfolios import AuthResult, friendly_auth_error
-from portfolio.lseg_research import ResearchCancelled
+from portfolio.company_resolver import InstrumentResolutionError
+from portfolio.lseg_research import LSEGResearchError, ResearchCancelled
 from portfolio.market_regime import (
     DEFENSIVE_MACRO_TILT,
     MACRO_REFERENCE_ROWS,
@@ -33,6 +34,20 @@ from portfolio.research_lab import (
     research_discovery_scope_options,
 )
 from portfolio.research_plan import supported_research_taxonomy_options
+
+
+EXPECTED_RESEARCH_ERRORS = (
+    InstrumentResolutionError,
+    LSEGResearchError,
+    ResearchLabError,
+)
+
+
+def friendly_research_error(error: BaseException) -> str:
+    """Keep actionable research failures readable while preserving unknown diagnostics."""
+    if isinstance(error, EXPECTED_RESEARCH_ERRORS):
+        return str(error)
+    return f"Unexpected error: {type(error).__name__}: {error}"
 
 
 def tab_drag_target(
@@ -482,6 +497,9 @@ class ResearchApprovalDialog(tk.Toplevel):
                 row,
                 text=f"{capability.label} · {capability.source}",
                 variable=self.capability_vars[capability.capability_id],
+                command=lambda capability_id=capability.capability_id: self._enforce_exclusive_capability(
+                    capability_id
+                ),
             )
             check.pack(anchor="w")
             if capability.capability_id in self.required_capabilities:
@@ -529,6 +547,16 @@ class ResearchApprovalDialog(tk.Toplevel):
         )
         self.bind("<Escape>", lambda _event: self.destroy())
         self.after_idle(lambda: _center_dialog(self, parent))
+
+    def _enforce_exclusive_capability(self, selected_id: str) -> None:
+        if not self.capability_vars[selected_id].get():
+            return
+        for analysis in ANALYSES:
+            if selected_id not in analysis.exactly_one_capability:
+                continue
+            for capability_id in analysis.exactly_one_capability:
+                if capability_id != selected_id:
+                    self.capability_vars[capability_id].set(False)
 
     def _submit(self) -> None:
         securities = tuple(
@@ -1507,9 +1535,11 @@ class StockAgentApp(tk.Tk):
                     progress_callback=progress_callback,
                     cancel_event=cancel_event,
                 )
+                result_kind = "message"
             except Exception as exc:
-                response = f"Unexpected error: {type(exc).__name__}: {exc}"
-            self.results.put(("message", response))
+                response = friendly_research_error(exc)
+                result_kind = "research_error"
+            self.results.put((result_kind, response))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1539,7 +1569,8 @@ class StockAgentApp(tk.Tk):
                 self.results.put(
                     (
                         "research_proposal_error",
-                        f"Could not propose a research plan: {type(exc).__name__}: {exc}",
+                        "Could not prepare a research plan: "
+                        + friendly_research_error(exc),
                     )
                 )
 
@@ -1575,11 +1606,14 @@ class StockAgentApp(tk.Tk):
                     cancel_event=cancel_event,
                 )
                 response = result.report
+                result_kind = "message"
             except ResearchCancelled:
                 response = "Research stopped. Partial results were discarded."
+                result_kind = "message"
             except Exception as exc:
-                response = f"Unexpected error: {type(exc).__name__}: {exc}"
-            self.results.put(("message", response))
+                response = friendly_research_error(exc)
+                result_kind = "research_error"
+            self.results.put((result_kind, response))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1613,9 +1647,11 @@ class StockAgentApp(tk.Tk):
                     progress_callback=progress_callback,
                     cancel_event=cancel_event,
                 )
+                result_kind = "message"
             except Exception as exc:
-                response = f"Unexpected error: {type(exc).__name__}: {exc}"
-            self.results.put(("message", response))
+                response = friendly_research_error(exc)
+                result_kind = "research_error"
+            self.results.put((result_kind, response))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1660,7 +1696,7 @@ class StockAgentApp(tk.Tk):
                     continue
                 if kind == "research_proposal_error":
                     response = str(payload)
-                    self._finish_progress(response)
+                    self._finish_progress(response, failed=True)
                     self._append("Agent", response)
                     self._set_busy(False)
                     continue
@@ -1706,7 +1742,7 @@ class StockAgentApp(tk.Tk):
                         )
                     continue
                 response = str(payload)
-                self._finish_progress(response)
+                self._finish_progress(response, failed=kind == "research_error")
                 self._append("Agent", response)
                 self._set_busy(False)
                 self.refresh_holdings(refresh_prices=False)
@@ -1802,9 +1838,9 @@ class StockAgentApp(tk.Tk):
         self.transcript.see("end")
         self.transcript.configure(state="disabled")
 
-    def _finish_progress(self, response: str) -> None:
+    def _finish_progress(self, response: str, *, failed: bool = False) -> None:
         stopped = response.startswith("Research stopped.")
-        failed = response.startswith("LSEG research could not run") or response.startswith("Unexpected error")
+        failed = failed or response.startswith("LSEG research could not run") or response.startswith("Unexpected error")
         if stopped:
             self.current_stage = "Research stopped"
             self.progress_status.configure(text="Research status: stopped")
