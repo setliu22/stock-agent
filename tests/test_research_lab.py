@@ -1025,8 +1025,8 @@ def test_theme_selection_batches_candidates_without_losing_earlier_results(
             {
                 "Instrument": f"RIC{index}.N",
                 "TR.TickerSymbol": f"T{index}",
-                "TR.CommonName": f"Company {index}",
-                "TR.BusinessSummary": "Provides infrastructure used by data centers.",
+                    "TR.CommonName": f"Company {index}",
+                    "TR.BusinessSummary": f"Company {index} provides infrastructure used by data centers.",
                 "Discovery scope": "Technology" if index % 2 else "Industrials",
             }
             for index in range(12)
@@ -1060,7 +1060,13 @@ def test_theme_selection_batches_candidates_without_losing_earlier_results(
     selected, _missing = _select_theme_candidates(result, approved, settings)
 
     assert len(requests) == 2
-    assert [item.ticker for item in selected] == [f"T{index}" for index in range(8)]
+    assert all(
+        len({item["discovery_scope"] for item in request["candidates"]}) == 1
+        for request in requests
+    )
+    assert [item.ticker for item in selected] == [
+        "T1", "T0", "T3", "T2", "T5", "T4", "T7", "T6",
+    ]
 
 
 def test_theme_selection_splits_a_batch_after_provider_json_truncation(
@@ -1086,7 +1092,7 @@ def test_theme_selection_splits_a_batch_after_provider_json_truncation(
                 "Instrument": f"RIC{index}.N",
                 "TR.TickerSymbol": f"T{index}",
                 "TR.CommonName": f"Company {index}",
-                "TR.BusinessSummary": "Provides infrastructure used by data centers.",
+                "TR.BusinessSummary": f"Company {index} provides infrastructure used by data centers.",
                 "Discovery scope": "Technology",
             }
             for index in range(8)
@@ -1097,7 +1103,9 @@ def test_theme_selection_splits_a_batch_after_provider_json_truncation(
     class JsonGenerationFailure(RuntimeError):
         body = {"error": {"code": "json_validate_failed"}}
 
-    def fake_invoke(_settings, _schema, messages, **_kwargs):
+    def fake_invoke(_settings, _schema, messages, **kwargs):
+        assert kwargs["max_tokens"] == 400
+        assert kwargs["rate_limit_retries"] == 1
         request = json.loads(messages[-1][1])
         candidates = request["candidates"]
         batch_sizes.append(len(candidates))
@@ -1122,6 +1130,62 @@ def test_theme_selection_splits_a_batch_after_provider_json_truncation(
     assert batch_sizes == [5, 2, 3]
     assert [item.ticker for item in selected] == ["T0", "T1", "T2", "T3"]
     assert not missing
+
+
+def test_theme_selection_reuses_cached_profile_classifications(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    approved = ApprovedResearchPlan(
+        question="Find companies related to data centers",
+        securities=(),
+        lookback_days=365,
+        benchmark=None,
+        capability_ids=("macro_context", "candidate_discovery", "company_profile"),
+        analysis_ids=(),
+        mode="discovery",
+        discovery_scopes=("Technology",),
+        discovery_theme="data centers",
+        result_count=2,
+    ).validated()
+    result = ResearchResult(plan=ResearchPlan(mode="screen", workflow="stock_screen"))
+    result.tables["screen"] = pd.DataFrame(
+        [
+            {
+                "Instrument": f"RIC{index}.N",
+                "TR.TickerSymbol": f"T{index}",
+                "TR.CommonName": f"Company {index}",
+                "TR.BusinessSummary": f"Company {index} supplies data center equipment.",
+                "Discovery scope": "Technology",
+            }
+            for index in range(2)
+        ]
+    )
+    calls = []
+
+    def fake_invoke(_settings, _schema, messages, **_kwargs):
+        calls.append(True)
+        request = json.loads(messages[-1][1])
+        return {
+            "matches": [
+                {
+                    "candidate_id": item["candidate_id"],
+                    "relevance": "direct",
+                    "reason": "The retrieved profile explicitly supports the theme.",
+                }
+                for item in request["candidates"]
+            ]
+        }
+
+    monkeypatch.setattr("portfolio.research_lab.invoke_structured_groq", fake_invoke)
+    settings = Settings(tmp_path, tmp_path / "db.sqlite", "key", "test-model", "desktop.workspace")
+
+    first, _missing = _select_theme_candidates(result, approved, settings)
+    second, _missing = _select_theme_candidates(result, approved, settings)
+
+    assert [item.ticker for item in first] == ["T0", "T1"]
+    assert second == first
+    assert len(calls) == 1
 
 
 def test_theme_selection_rejects_incomplete_classifier_output(

@@ -35,12 +35,14 @@ from .research_plan import (
     exchange_geography_options,
     supported_research_taxonomy_options,
 )
+from .research_cache import ResearchClassificationCache
 
 
 ProgressCallback = Callable[[int | None, str, str], None]
 ALL_PUBLIC_EQUITIES = "All public equities"
 MAX_DISCOVERY_SCOPES = 6
 PROFILE_CLASSIFIER_BATCH_SIZE = 5
+PROFILE_CANDIDATES_PER_UNIVERSE = 10
 
 
 def research_discovery_scope_options() -> tuple[tuple[str, str], ...]:
@@ -794,6 +796,7 @@ def _invoke_proposal_model(
                 ("human", json.dumps(request, sort_keys=True)),
             ],
             max_retries=0,
+            max_tokens=600,
             rate_limit_retries=1,
         )
     except Exception as exc:
@@ -816,7 +819,7 @@ def _invoke_proposal_model(
                     ("human", json.dumps(request, sort_keys=True)),
                 ],
                 max_retries=0,
-                max_tokens=1800,
+                max_tokens=700,
                 method="json_mode",
                 rate_limit_retries=1,
             )
@@ -898,6 +901,8 @@ def _audit_theme_scopes(
                 ("human", json.dumps(request, sort_keys=True)),
             ],
             max_retries=0,
+            max_tokens=500,
+            rate_limit_retries=1,
         )
     except Exception as exc:
         payload = _failed_generation_payload(exc)
@@ -1369,15 +1374,20 @@ def _select_theme_candidates(
     packet: list[dict[str, str]] = []
     rows: dict[str, dict[str, str]] = {}
     missing_summaries = 0
-    candidate_limit = min(40, max(20, approved.result_count * 5))
-    for position, (_, row) in enumerate(frame.head(candidate_limit).iterrows(), start=1):
+    candidates_by_scope: dict[str, int] = {}
+    default_scope = approved.discovery_scope or "Approved universe"
+    for position, (_, row) in enumerate(frame.iterrows(), start=1):
         ric = _clean_text(row.get("Instrument"))
         summary = _clean_text(row.get("TR.BusinessSummary"))
         if not ric:
             continue
+        scope = _clean_text(row.get("Discovery scope")) or default_scope
+        if candidates_by_scope.get(scope, 0) >= PROFILE_CANDIDATES_PER_UNIVERSE:
+            continue
         if approved.discovery_theme and not summary:
             missing_summaries += 1
             continue
+        candidates_by_scope[scope] = candidates_by_scope.get(scope, 0) + 1
         candidate_id = f"C{position}"
         ticker = _clean_text(row.get("TR.TickerSymbol")) or ric.split(".", 1)[0]
         company = _clean_text(row.get("TR.CommonName")) or ticker
@@ -1388,7 +1398,7 @@ def _select_theme_candidates(
             "company": company,
             "sector": _clean_text(row.get("TR.TRBCEconomicSector")) or "",
             "industry": _clean_text(row.get("TR.TRBCIndustry")) or "",
-            "discovery_scope": _clean_text(row.get("Discovery scope")) or "",
+            "discovery_scope": scope,
             "business_summary": (summary or "")[:500],
             "screen_evidence": _candidate_screen_evidence(row, result),
         }
@@ -1417,12 +1427,52 @@ def _select_theme_candidates(
         return selected, []
     classifications: dict[str, tuple[str, str]] = {}
     unclassified_ids: set[str] = set()
-    all_candidate_ids = [item["candidate_id"] for item in packet]
+    try:
+        classification_cache: ResearchClassificationCache | None = (
+            ResearchClassificationCache(settings.database_path)
+        )
+    except Exception:
+        classification_cache = None
+
+    def cached_classification(item: dict[str, str]) -> tuple[str, str] | None:
+        if classification_cache is None:
+            return None
+        try:
+            return classification_cache.get(approved.discovery_theme or "", item)
+        except Exception:
+            return None
+
+    def cache_classification(
+        item: dict[str, str],
+        relevance: str,
+        reason: str,
+    ) -> None:
+        if classification_cache is None:
+            return
+        try:
+            classification_cache.put(
+                approved.discovery_theme or "",
+                item,
+                relevance,
+                reason,
+            )
+        except Exception:
+            return
 
     def classify_batch(
         batch: list[dict[str, str]],
     ) -> dict[str, tuple[str, str]]:
-        candidate_ids = [item["candidate_id"] for item in batch]
+        cached: dict[str, tuple[str, str]] = {}
+        pending: list[dict[str, str]] = []
+        for item in batch:
+            classification = cached_classification(item)
+            if classification is None:
+                pending.append(item)
+            else:
+                cached[item["candidate_id"]] = classification
+        if not pending:
+            return cached
+        candidate_ids = [item["candidate_id"] for item in pending]
         schema = {
             "title": "ProfileRelevanceClassification",
             "type": "object",
@@ -1462,7 +1512,7 @@ def _select_theme_candidates(
                     "business_summary",
                 )
             }
-            for item in batch
+            for item in pending
         ]
         try:
             payload = invoke_structured_groq(
@@ -1491,18 +1541,20 @@ def _select_theme_candidates(
                     ),
                 ],
                 max_retries=0,
-                max_tokens=900,
+                max_tokens=400,
+                rate_limit_retries=1,
             )
         except Exception as exc:
             if _is_structured_generation_failure(exc):
-                if len(batch) > 1:
-                    midpoint = len(batch) // 2
+                if len(pending) > 1:
+                    midpoint = len(pending) // 2
                     return {
-                        **classify_batch(batch[:midpoint]),
-                        **classify_batch(batch[midpoint:]),
+                        **cached,
+                        **classify_batch(pending[:midpoint]),
+                        **classify_batch(pending[midpoint:]),
                     }
                 unclassified_ids.add(candidate_ids[0])
-                return {}
+                return cached
             raise ResearchLabError(
                 f"The profile-relevance classifier could not complete: {type(exc).__name__}: {exc}"
             ) from exc
@@ -1526,19 +1578,58 @@ def _select_theme_candidates(
             raise ResearchLabError(
                 "The profile-relevance classifier did not classify every supplied candidate."
             )
-        return batch_classifications
+        pending_by_id = {item["candidate_id"]: item for item in pending}
+        for candidate_id, (relevance, reason) in batch_classifications.items():
+            cache_classification(
+                pending_by_id[candidate_id], relevance, reason
+            )
+        return {**cached, **batch_classifications}
 
-    for batch_start in range(0, len(packet), PROFILE_CLASSIFIER_BATCH_SIZE):
-        batch = packet[batch_start : batch_start + PROFILE_CLASSIFIER_BATCH_SIZE]
-        classifications.update(classify_batch(batch))
+    packets_by_scope: dict[str, list[dict[str, str]]] = {}
+    for item in packet:
+        packets_by_scope.setdefault(item["discovery_scope"], []).append(item)
+    scope_order = [
+        scope
+        for scope in (
+            *approved.discovery_scopes,
+            *packets_by_scope,
+        )
+        if scope in packets_by_scope
+    ]
+    scope_order = list(dict.fromkeys(scope_order))
+    max_scope_candidates = max(len(items) for items in packets_by_scope.values())
+    for batch_start in range(0, max_scope_candidates, PROFILE_CLASSIFIER_BATCH_SIZE):
+        for scope in scope_order:
+            batch = packets_by_scope[scope][
+                batch_start : batch_start + PROFILE_CLASSIFIER_BATCH_SIZE
+            ]
+            if batch:
+                classifications.update(classify_batch(batch))
         supported_count = sum(
             relevance in {"direct", "meaningful"}
             for relevance, _reason in classifications.values()
         )
         if supported_count >= approved.result_count:
             break
+
+    supported_by_scope: dict[str, list[str]] = {}
+    for scope in scope_order:
+        supported_by_scope[scope] = [
+            item["candidate_id"]
+            for item in packets_by_scope[scope]
+            if classifications.get(item["candidate_id"], (None, ""))[0]
+            in {"direct", "meaningful"}
+        ]
+    merged_candidate_ids: list[str] = []
+    if supported_by_scope:
+        for position in range(max(len(items) for items in supported_by_scope.values())):
+            for scope in scope_order:
+                items = supported_by_scope[scope]
+                if position < len(items):
+                    merged_candidate_ids.append(items[position])
+
     selected: list[ThemeCandidate] = []
-    for candidate_id in all_candidate_ids:
+    for candidate_id in merged_candidate_ids:
         classification = classifications.get(candidate_id)
         if classification is None or classification[0] not in {"direct", "meaningful"}:
             continue
@@ -2282,6 +2373,8 @@ def summarize_findings(
                     ),
                 ],
                 max_retries=0,
+                max_tokens=700,
+                rate_limit_retries=1,
             )
             if isinstance(payload, dict) and set(payload) == {"highlights", "caveats"}:
                 valid_ids = {item.finding_id for item in findings}
