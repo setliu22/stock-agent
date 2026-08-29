@@ -1013,6 +1013,67 @@ def test_theme_selection_batches_candidates_without_losing_earlier_results(
     assert [item.ticker for item in selected] == [f"T{index}" for index in range(8)]
 
 
+def test_theme_selection_splits_a_batch_after_provider_json_truncation(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    approved = ApprovedResearchPlan(
+        question="Find companies related to data centers",
+        securities=(),
+        lookback_days=365,
+        benchmark=None,
+        capability_ids=("macro_context", "candidate_discovery", "company_profile"),
+        analysis_ids=(),
+        mode="discovery",
+        discovery_scopes=("Technology",),
+        discovery_theme="data centers",
+        result_count=4,
+    ).validated()
+    result = ResearchResult(plan=ResearchPlan(mode="screen", workflow="stock_screen"))
+    result.tables["screen"] = pd.DataFrame(
+        [
+            {
+                "Instrument": f"RIC{index}.N",
+                "TR.TickerSymbol": f"T{index}",
+                "TR.CommonName": f"Company {index}",
+                "TR.BusinessSummary": "Provides infrastructure used by data centers.",
+                "Discovery scope": "Technology",
+            }
+            for index in range(8)
+        ]
+    )
+    batch_sizes = []
+
+    class JsonGenerationFailure(RuntimeError):
+        body = {"error": {"code": "json_validate_failed"}}
+
+    def fake_invoke(_settings, _schema, messages, **_kwargs):
+        request = json.loads(messages[-1][1])
+        candidates = request["candidates"]
+        batch_sizes.append(len(candidates))
+        if len(candidates) == 5:
+            raise JsonGenerationFailure("max completion tokens reached")
+        return {
+            "matches": [
+                {
+                    "candidate_id": item["candidate_id"],
+                    "relevance": "direct",
+                    "reason": "The retrieved profile explicitly supports the theme.",
+                }
+                for item in candidates
+            ]
+        }
+
+    monkeypatch.setattr("portfolio.research_lab.invoke_structured_groq", fake_invoke)
+    settings = Settings(tmp_path, tmp_path / "db.sqlite", "key", "test-model", "desktop.workspace")
+
+    selected, missing = _select_theme_candidates(result, approved, settings)
+
+    assert batch_sizes == [5, 2, 3]
+    assert [item.ticker for item in selected] == ["T0", "T1", "T2", "T3"]
+    assert not missing
+
+
 def test_theme_selection_rejects_incomplete_classifier_output(
     tmp_path,
     monkeypatch,

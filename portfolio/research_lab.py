@@ -40,6 +40,7 @@ from .research_plan import (
 ProgressCallback = Callable[[int | None, str, str], None]
 ALL_PUBLIC_EQUITIES = "All public equities"
 MAX_DISCOVERY_SCOPES = 6
+PROFILE_CLASSIFIER_BATCH_SIZE = 5
 
 
 def research_discovery_scope_options() -> tuple[tuple[str, str], ...]:
@@ -1342,7 +1343,7 @@ def _select_theme_candidates(
             "sector": _clean_text(row.get("TR.TRBCEconomicSector")) or "",
             "industry": _clean_text(row.get("TR.TRBCIndustry")) or "",
             "discovery_scope": _clean_text(row.get("Discovery scope")) or "",
-            "business_summary": (summary or "")[:700],
+            "business_summary": (summary or "")[:500],
             "screen_evidence": _candidate_screen_evidence(row, result),
         }
         packet.append(record)
@@ -1369,9 +1370,12 @@ def _select_theme_candidates(
         ]
         return selected, []
     classifications: dict[str, tuple[str, str]] = {}
+    unclassified_ids: set[str] = set()
     all_candidate_ids = [item["candidate_id"] for item in packet]
-    for batch_start in range(0, len(packet), 10):
-        batch = packet[batch_start : batch_start + 10]
+
+    def classify_batch(
+        batch: list[dict[str, str]],
+    ) -> dict[str, tuple[str, str]]:
         candidate_ids = [item["candidate_id"] for item in batch]
         schema = {
             "title": "ProfileRelevanceClassification",
@@ -1426,7 +1430,8 @@ def _select_theme_candidates(
                         "product or service; meaningful means it is an explicit material business activity; adjacent "
                         "means only enabling or indirect exposure; unsupported means the evidence does not establish "
                         "the relationship. Return each supplied candidate ID exactly once. Do not rank investment "
-                        "quality, use outside knowledge, infer missing facts, or introduce another company.",
+                        "quality, use outside knowledge, infer missing facts, or introduce another company. "
+                        "Keep each reason to one short sentence.",
                     ),
                     (
                         "human",
@@ -1440,8 +1445,18 @@ def _select_theme_candidates(
                     ),
                 ],
                 max_retries=0,
+                max_tokens=900,
             )
         except Exception as exc:
+            if _is_structured_generation_failure(exc):
+                if len(batch) > 1:
+                    midpoint = len(batch) // 2
+                    return {
+                        **classify_batch(batch[:midpoint]),
+                        **classify_batch(batch[midpoint:]),
+                    }
+                unclassified_ids.add(candidate_ids[0])
+                return {}
             raise ResearchLabError(
                 f"The profile-relevance classifier could not complete: {type(exc).__name__}: {exc}"
             ) from exc
@@ -1465,7 +1480,17 @@ def _select_theme_candidates(
             raise ResearchLabError(
                 "The profile-relevance classifier did not classify every supplied candidate."
             )
-        classifications.update(batch_classifications)
+        return batch_classifications
+
+    for batch_start in range(0, len(packet), PROFILE_CLASSIFIER_BATCH_SIZE):
+        batch = packet[batch_start : batch_start + PROFILE_CLASSIFIER_BATCH_SIZE]
+        classifications.update(classify_batch(batch))
+        supported_count = sum(
+            relevance in {"direct", "meaningful"}
+            for relevance, _reason in classifications.values()
+        )
+        if supported_count >= approved.result_count:
+            break
     selected: list[ThemeCandidate] = []
     for candidate_id in all_candidate_ids:
         classification = classifications.get(candidate_id)
@@ -1490,17 +1515,37 @@ def _select_theme_candidates(
         if len(selected) >= approved.result_count:
             break
     if not selected:
+        if unclassified_ids and not classifications:
+            raise ResearchLabError(
+                "The profile-relevance classifier could not produce valid output even for "
+                "individual candidates. No company was accepted without validation."
+            )
         raise ResearchLabError(
             "No screened company had direct or meaningful exposure supported by its LSEG profile."
         )
     missing: list[str] = []
     if missing_summaries:
         missing.append(f"business descriptions for {missing_summaries} screened candidates")
+    if unclassified_ids:
+        missing.append(
+            f"profile-relevance classifications for {len(unclassified_ids)} screened candidates"
+        )
     if len(selected) < approved.result_count:
         missing.append(
             f"only {len(selected)} of {approved.result_count} requested companies had supported business exposure"
         )
     return selected, missing
+
+
+def _is_structured_generation_failure(error: BaseException) -> bool:
+    """Identify provider-side JSON generation failures that are safe to split."""
+    body = getattr(error, "body", None)
+    if isinstance(body, dict):
+        details = body.get("error", body)
+        if isinstance(details, dict) and details.get("code") == "json_validate_failed":
+            return True
+    text = str(error).casefold()
+    return "failed to generate json" in text or "max completion tokens reached" in text
 
 
 def _candidate_screen_evidence(row: pd.Series, result: ResearchResult) -> str:
