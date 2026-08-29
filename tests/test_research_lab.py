@@ -7,9 +7,10 @@ import pytest
 from portfolio.company_resolver import ResolvedInstrument
 from portfolio.config import Settings
 from portfolio.lseg_research import ResearchResult
-from portfolio.market_regime import MarketRegimeSnapshot, Observation
+from portfolio.market_regime import MarketRegimeSnapshot, Observation, RegimeIndicator
 from portfolio.research_lab import (
     CAPABILITIES,
+    DISCOVERY_CORE_CAPABILITY_IDS,
     ApprovedResearchPlan,
     ResearchLabError,
     ThemeCandidate,
@@ -29,10 +30,12 @@ from portfolio.research_plan import ResearchPlan
 
 
 def _payload(**overrides):
+    reasons_supplied = "discovery_scope_reasons" in overrides
     payload = {
         "mode": "named",
         "securities": ["AAPL", "MSFT"],
         "discovery_scopes": [],
+        "discovery_scope_reasons": [],
         "exchange_geography": None,
         "discovery_theme": None,
         "result_count": 5,
@@ -50,6 +53,11 @@ def _payload(**overrides):
     payload.update(overrides)
     if legacy_scope is not None:
         payload["discovery_scopes"] = [legacy_scope]
+    if payload["discovery_scopes"] and not reasons_supplied:
+        payload["discovery_scope_reasons"] = [
+            {"id": scope, "reason": f"{scope} has a plausible business relationship."}
+            for scope in payload["discovery_scopes"]
+        ]
     return payload
 
 
@@ -150,9 +158,7 @@ def test_discovery_proposal_uses_supported_scope_without_inventing_stocks() -> N
     assert proposal.discovery_scope == "Technology"
     assert proposal.discovery_theme == "AI revolution"
     assert {item.item_id for item in proposal.capabilities} >= {
-        "macro_context",
-        "company_profile",
-        "valuation_snapshot",
+        *DISCOVERY_CORE_CAPABILITY_IDS,
     }
 
 
@@ -179,13 +185,53 @@ def test_cross_industry_theme_can_propose_multiple_validated_universes() -> None
         "Utilities",
         "Real Estate",
     )
+    assert {item.item_id for item in proposal.discovery_scope_reasons} == set(
+        proposal.discovery_scopes
+    )
+
+
+def test_discovery_proposal_rejects_unexplained_universe() -> None:
+    with pytest.raises(ResearchLabError, match="explain every selected"):
+        validate_proposal_payload(
+            "Find undervalued companies related to an emerging technology",
+            _payload(
+                mode="discovery",
+                securities=[],
+                discovery_scopes=["Technology", "Industrials"],
+                discovery_scope_reasons=[
+                    {"id": "Technology", "reason": "Potential enabling products."}
+                ],
+                discovery_theme="emerging technology",
+                capabilities=[],
+                analyses=[],
+            ),
+        )
+
+
+def test_approved_discovery_plan_always_includes_core_evidence() -> None:
+    approved = ApprovedResearchPlan(
+        question="Find undervalued software companies",
+        securities=(),
+        lookback_days=365,
+        benchmark=None,
+        capability_ids=("macro_context", "candidate_discovery", "company_profile"),
+        analysis_ids=(),
+        mode="discovery",
+        discovery_scopes=("Software",),
+        result_count=5,
+    ).validated()
+
+    assert approved.capability_ids[: len(DISCOVERY_CORE_CAPABILITY_IDS)] == (
+        DISCOVERY_CORE_CAPABILITY_IDS
+    )
 
 
 def test_proposal_schema_uses_only_supported_array_constraints() -> None:
     scopes_schema = _proposal_schema()["properties"]["discovery_scopes"]
 
     assert "uniqueItems" not in scopes_schema
-    assert scopes_schema["maxItems"] == 4
+    assert scopes_schema["maxItems"] == 6
+    assert _proposal_schema()["properties"]["discovery_scope_reasons"]["maxItems"] == 6
 
 
 def test_supported_industry_name_uses_normal_screen_without_theme_filter() -> None:
@@ -1156,3 +1202,94 @@ def test_deterministic_summary_prioritizes_approved_analysis(tmp_path) -> None:
     report = summarize_findings(approved, findings, [], settings)
 
     assert report.index("RATE_CORRELATION_AAPL") < report.index("MACRO_REGIME")
+
+
+def test_macro_finding_contains_all_standardized_signal_context() -> None:
+    approved = ApprovedResearchPlan(
+        question="Research AAPL",
+        securities=("AAPL",),
+        lookback_days=365,
+        benchmark=None,
+        capability_ids=("macro_context",),
+        analysis_ids=(),
+    ).validated()
+    labels = (
+        "Effective federal funds rate",
+        "Federal Reserve assets",
+        "Consumer Price Index inflation",
+        "US high-yield option-adjusted spread",
+        "CBOE Volatility Index",
+    )
+    snapshot = MarketRegimeSnapshot(
+        regime="Mixed liquidity regime",
+        summary="Core signals disagree.",
+        emphasis=(),
+        indicators=tuple(
+            RegimeIndicator(
+                key=f"signal_{index}",
+                label=label,
+                latest=f"{index + 1}.0",
+                trend="Stable",
+                as_of="2026-08-27",
+                source="FRED" if index < 4 else "Yahoo Finance ^VIX",
+                meaning="Use as context.",
+                macro_tilt="Neutral",
+            )
+            for index, label in enumerate(labels)
+        ),
+        missing_evidence=(),
+        generated_at=datetime.now(timezone.utc),
+        company_fit="Favor profitable growth with manageable debt.",
+    )
+
+    findings, _missing = derive_findings(
+        approved,
+        None,
+        snapshot,
+        {},
+        primary_count=1,
+    )
+
+    macro_text = findings[0].text
+    assert all(label in macro_text for label in labels)
+    assert "Application rules:" in macro_text
+    assert "Stock profile to prioritize:" in macro_text
+
+
+def test_model_summary_cannot_omit_macro_context(tmp_path, monkeypatch) -> None:
+    approved = ApprovedResearchPlan(
+        question="Research AAPL",
+        securities=("AAPL",),
+        lookback_days=365,
+        benchmark=None,
+        capability_ids=("macro_context", "company_profile"),
+        analysis_ids=(),
+    ).validated()
+    findings = [
+        VerifiedFinding("MACRO_REGIME", "Macro", "Neutral liquidity.", ("FRED",)),
+        VerifiedFinding("PROFILE_AAPL", "Profile", "Technology company.", ("LSEG",)),
+    ]
+    monkeypatch.setattr(
+        "portfolio.research_lab.invoke_structured_groq",
+        lambda *_args, **_kwargs: {
+            "highlights": [
+                {
+                    "finding_id": "PROFILE_AAPL",
+                    "interpretation": "The profile establishes the company identity.",
+                }
+            ],
+            "caveats": [],
+        },
+    )
+    settings = Settings(
+        tmp_path,
+        tmp_path / "db.sqlite",
+        "key",
+        "test-model",
+        "desktop.workspace",
+    )
+
+    report = summarize_findings(approved, findings, [], settings)
+
+    assert "PROFILE_AAPL" in report
+    assert "MACRO_REGIME" in report

@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from datetime import date
 
 from gui import (
+    RESEARCH_EXAMPLE_QUESTIONS,
     ResearchApprovalDialog,
     StockAgentApp,
     friendly_research_error,
@@ -139,6 +140,38 @@ def test_research_approval_keeps_only_one_rate_measure_selected() -> None:
 
     assert app.capability_vars["fed_funds_history"].get()
     assert not app.capability_vars["treasury_yield_history"].get()
+
+
+def test_research_examples_only_fill_the_input(monkeypatch) -> None:
+    calls: list[tuple[str, str]] = []
+
+    class Input:
+        def delete(self, start: str, end: str) -> None:
+            calls.append(("delete", f"{start}:{end}"))
+
+        def insert(self, start: str, value: str) -> None:
+            calls.append(("insert", f"{start}:{value}"))
+
+        def focus_set(self) -> None:
+            calls.append(("focus", ""))
+
+    class Dialog:
+        def __init__(self, _parent) -> None:
+            self.result = RESEARCH_EXAMPLE_QUESTIONS[0]
+
+    monkeypatch.setattr("gui.ResearchExamplesDialog", Dialog)
+    app = SimpleNamespace(
+        research_question=Input(),
+        wait_window=lambda _dialog: None,
+    )
+
+    StockAgentApp.show_research_examples(app)
+
+    assert calls == [
+        ("delete", "1.0:end"),
+        ("insert", f"1.0:{RESEARCH_EXAMPLE_QUESTIONS[0]}"),
+        ("focus", ""),
+    ]
 
 
 def test_expected_research_errors_do_not_leak_internal_type_names() -> None:

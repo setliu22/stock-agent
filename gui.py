@@ -28,6 +28,7 @@ from portfolio.market_regime import (
 from portfolio.research_lab import (
     ANALYSES,
     CAPABILITIES,
+    DISCOVERY_CORE_CAPABILITY_IDS,
     ApprovedResearchPlan,
     ResearchLabError,
     ResearchProposal,
@@ -43,6 +44,14 @@ EXPECTED_RESEARCH_ERRORS = (
     InstrumentResolutionError,
     LSEGResearchError,
     ResearchLabError,
+)
+
+RESEARCH_EXAMPLE_QUESTIONS = (
+    "What undervalued companies have meaningful exposure to data-center construction?",
+    "What European semiconductor companies look undervalued?",
+    "Compare AAPL and MSFT on valuation, profitability, balance-sheet strength, and earnings expectations.",
+    "Which of AAPL, MSFT, and NVDA performed best when the 10-year Treasury yield fell?",
+    "What recent Reuters developments are materially affecting semiconductor stocks?",
 )
 
 
@@ -334,6 +343,69 @@ class IndustryResearchDialog(tk.Toplevel):
         self.destroy()
 
 
+class ResearchExamplesDialog(tk.Toplevel):
+    def __init__(self, parent: tk.Misc) -> None:
+        super().__init__(parent)
+        self.title("Research examples")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.configure(background=StockAgentApp.BG)
+        self.result: str | None = None
+
+        frame = ttk.Frame(self, padding=22)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="Example questions", style="DialogTitle.TLabel").pack(
+            anchor="w"
+        )
+        ttk.Label(
+            frame,
+            text="These examples match workflows the Research Lab can execute with validated data.",
+            style="DialogMuted.TLabel",
+        ).pack(anchor="w", pady=(4, 14))
+        self.examples = tk.Listbox(
+            frame,
+            width=108,
+            height=len(RESEARCH_EXAMPLE_QUESTIONS),
+            background=StockAgentApp.SURFACE_ALT,
+            foreground=StockAgentApp.TEXT,
+            selectbackground="#285665",
+            selectforeground=StockAgentApp.TEXT,
+            relief="flat",
+            highlightthickness=1,
+            highlightbackground=StockAgentApp.BORDER,
+            activestyle="none",
+            font=(getattr(parent, "ui_font", "TkDefaultFont"), 10),
+        )
+        for question in RESEARCH_EXAMPLE_QUESTIONS:
+            self.examples.insert("end", question)
+        self.examples.selection_set(0)
+        self.examples.pack(fill="x")
+        self.examples.bind("<Double-Button-1>", lambda _event: self._submit())
+
+        buttons = ttk.Frame(frame)
+        buttons.pack(fill="x", pady=(16, 0))
+        ttk.Button(
+            buttons,
+            text="Use example",
+            style="Accent.TButton",
+            command=self._submit,
+        ).pack(side="right")
+        ttk.Button(buttons, text="Cancel", command=self.destroy).pack(
+            side="right", padx=(0, 8)
+        )
+        self.bind("<Return>", lambda _event: self._submit())
+        self.bind("<Escape>", lambda _event: self.destroy())
+        self.grab_set()
+        self.after_idle(lambda: _center_dialog(self, parent))
+
+    def _submit(self) -> None:
+        selected = self.examples.curselection()
+        if not selected:
+            return
+        self.result = RESEARCH_EXAMPLE_QUESTIONS[selected[0]]
+        self.destroy()
+
+
 class ResearchApprovalDialog(tk.Toplevel):
     TIMEFRAMES = {
         "3 months": 90,
@@ -359,6 +431,9 @@ class ResearchApprovalDialog(tk.Toplevel):
         self.proposed_discovery_scopes = proposal.discovery_scopes or (
             (proposal.discovery_scope,) if proposal.discovery_scope else ()
         )
+        self.discovery_scope_reasons = {
+            item.item_id: item.reason for item in proposal.discovery_scope_reasons
+        }
         self.exchange_geography = tk.StringVar(
             value=proposal.exchange_geography or "All exchanges"
         )
@@ -381,12 +456,32 @@ class ResearchApprovalDialog(tk.Toplevel):
             if item.required
             or (
                 self.discovery_mode
-                and item.capability_id in {"candidate_discovery", "company_profile"}
+                and item.capability_id in DISCOVERY_CORE_CAPABILITY_IDS
             )
             or (self.market_news_mode and item.capability_id == "market_news")
         }
+        capability_order = {
+            capability_id: index
+            for index, capability_id in enumerate(DISCOVERY_CORE_CAPABILITY_IDS)
+        }
+        visible_capabilities = [
+            item
+            for item in CAPABILITIES
+            if proposal.mode in item.modes
+            and (
+                item.capability_id != "benchmark_prices"
+                or proposal.benchmark is not None
+            )
+        ]
         self.visible_capabilities = tuple(
-            item for item in CAPABILITIES if proposal.mode in item.modes
+            sorted(
+                visible_capabilities,
+                key=lambda item: (
+                    item.capability_id not in capability_order,
+                    capability_order.get(item.capability_id, len(CAPABILITIES)),
+                    CAPABILITIES.index(item),
+                ),
+            )
         )
         visible_capability_ids = {item.capability_id for item in self.visible_capabilities}
         self.visible_analyses = tuple(
@@ -479,7 +574,7 @@ class ResearchApprovalDialog(tk.Toplevel):
                 width=8,
             ).grid(row=1, column=2, sticky="ew", padx=(12, 0), pady=(5, 0))
             timeframe_column = 3
-            benchmark_column = 4
+            benchmark_column = 4 if proposal.benchmark else None
         elif not self.market_news_mode:
             ttk.Label(controls, text="Securities (separate with ;)", style="DialogMuted.TLabel").grid(
                 row=0, column=0, sticky="w"
@@ -488,7 +583,7 @@ class ResearchApprovalDialog(tk.Toplevel):
                 row=1, column=0, sticky="ew", pady=(5, 0)
             )
             timeframe_column = 1
-            benchmark_column = 2
+            benchmark_column = 2 if proposal.benchmark else None
         else:
             timeframe_column = 0
             benchmark_column = None
@@ -496,7 +591,11 @@ class ResearchApprovalDialog(tk.Toplevel):
             row=0, column=timeframe_column, sticky="w", padx=(12, 0)
         )
         if benchmark_column is not None:
-            ttk.Label(controls, text="Benchmark", style="DialogMuted.TLabel").grid(
+            ttk.Label(
+                controls,
+                text="Comparison benchmark",
+                style="DialogMuted.TLabel",
+            ).grid(
                 row=0, column=benchmark_column, sticky="w", padx=(12, 0)
             )
         timeframe_values = list(self.TIMEFRAMES)
@@ -514,6 +613,19 @@ class ResearchApprovalDialog(tk.Toplevel):
                 row=1, column=benchmark_column, sticky="ew", padx=(12, 0), pady=(5, 0)
             )
         controls.columnconfigure(0, weight=1)
+        if self.discovery_scope_reasons:
+            rationale = "  |  ".join(
+                f"{scope}: {self.discovery_scope_reasons[scope]}"
+                for scope in self.proposed_discovery_scopes
+                if scope in self.discovery_scope_reasons
+            )
+            ttk.Label(
+                outer,
+                text="Planner coverage: " + rationale,
+                style="DialogMuted.TLabel",
+                wraplength=960,
+                justify="left",
+            ).pack(fill="x", anchor="w", pady=(0, 12))
 
         body = ttk.Frame(outer)
         body.pack(fill="both", expand=True)
@@ -524,11 +636,16 @@ class ResearchApprovalDialog(tk.Toplevel):
         body.columnconfigure(0, weight=2)
         body.columnconfigure(1, weight=1)
         body.rowconfigure(0, weight=1)
-        ttk.Label(data_frame, text="Data to retrieve", style="Section.TLabel").grid(
+        ttk.Label(
+            data_frame,
+            text="Data to retrieve · core evidence first",
+            style="Section.TLabel",
+        ).grid(
             row=0, column=0, columnspan=2, sticky="w"
         )
         reasons = {item.item_id: item.reason for item in proposal.capabilities}
         split = (len(self.visible_capabilities) + 1) // 2
+        optional_heading_added = False
         for index, capability in enumerate(self.visible_capabilities):
             row = ttk.Frame(data_frame)
             row.grid(
@@ -538,9 +655,24 @@ class ResearchApprovalDialog(tk.Toplevel):
                 padx=(0, 12),
                 pady=(7, 0),
             )
+            if (
+                capability.capability_id not in self.required_capabilities
+                and not optional_heading_added
+            ):
+                ttk.Label(row, text="Optional data", style="Section.TLabel").pack(
+                    anchor="w", pady=(0, 5)
+                )
+                optional_heading_added = True
             check = ttk.Checkbutton(
                 row,
-                text=f"{capability.label} · {capability.source}",
+                text=(
+                    f"{capability.label} · {capability.source}"
+                    + (
+                        " · Always included"
+                        if capability.capability_id in self.required_capabilities
+                        else ""
+                    )
+                ),
                 variable=self.capability_vars[capability.capability_id],
                 command=lambda capability_id=capability.capability_id: self._enforce_exclusive_capability(
                     capability_id
@@ -550,7 +682,7 @@ class ResearchApprovalDialog(tk.Toplevel):
             if capability.capability_id in self.required_capabilities:
                 check.configure(state="disabled")
             reason = reasons.get(capability.capability_id)
-            if reason:
+            if reason and capability.capability_id not in self.required_capabilities:
                 ttk.Label(
                     row,
                     text=reason,
@@ -561,7 +693,7 @@ class ResearchApprovalDialog(tk.Toplevel):
 
         ttk.Label(
             analysis_frame,
-            text="Optional Python analyses",
+            text="Optional calculations · question-specific",
             style="Section.TLabel",
         ).pack(anchor="w")
         analysis_reasons = {item.item_id: item.reason for item in proposal.analyses}
@@ -1048,6 +1180,12 @@ class StockAgentApp(tk.Tk):
             state="disabled",
         )
         self.stop_button.pack(side="right")
+        ttk.Button(
+            header,
+            text="Example questions",
+            style="Toolbar.TButton",
+            command=self.show_research_examples,
+        ).pack(side="right", padx=(0, 8))
 
         composer = ttk.Frame(self.chat_tab, style="Panel.TFrame", padding=12)
         composer.pack(fill="x", pady=(0, 12))
@@ -1639,6 +1777,15 @@ class StockAgentApp(tk.Tk):
                 )
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def show_research_examples(self) -> None:
+        dialog = ResearchExamplesDialog(self)
+        self.wait_window(dialog)
+        if dialog.result is None:
+            return
+        self.research_question.delete("1.0", "end")
+        self.research_question.insert("1.0", dialog.result)
+        self.research_question.focus_set()
 
     def _start_research_lab_worker(self, approved: ApprovedResearchPlan) -> None:
         if self.is_busy:

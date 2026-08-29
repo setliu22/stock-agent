@@ -39,6 +39,7 @@ from .research_plan import (
 
 ProgressCallback = Callable[[int | None, str, str], None]
 ALL_PUBLIC_EQUITIES = "All public equities"
+MAX_DISCOVERY_SCOPES = 6
 
 
 def research_discovery_scope_options() -> tuple[tuple[str, str], ...]:
@@ -349,6 +350,15 @@ ANALYSES: tuple[AnalysisSpec, ...] = (
 
 CAPABILITY_BY_ID = {item.capability_id: item for item in CAPABILITIES}
 ANALYSIS_BY_ID = {item.analysis_id: item for item in ANALYSES}
+DISCOVERY_CORE_CAPABILITY_IDS = (
+    "macro_context",
+    "candidate_discovery",
+    "company_profile",
+    "valuation_snapshot",
+    "profitability_snapshot",
+    "balance_sheet_snapshot",
+    "earnings_estimates",
+)
 LSEG_CAPABILITIES = {
     item.capability_id for item in CAPABILITIES if item.source.startswith("LSEG")
 }
@@ -402,6 +412,7 @@ class ResearchProposal:
     mode: str = "named"
     discovery_scope: str | None = None
     discovery_scopes: tuple[str, ...] = ()
+    discovery_scope_reasons: tuple[ProposedItem, ...] = ()
     exchange_geography: str | None = None
     discovery_theme: str | None = None
     result_count: int = 5
@@ -451,8 +462,10 @@ class ApprovedResearchPlan:
         if mode == "discovery":
             if not discovery_scopes:
                 raise ResearchLabError("A discovery plan requires at least one approved LSEG universe.")
-            if len(discovery_scopes) > 4:
-                raise ResearchLabError("Choose no more than four discovery universes.")
+            if len(discovery_scopes) > MAX_DISCOVERY_SCOPES:
+                raise ResearchLabError(
+                    f"Choose no more than {MAX_DISCOVERY_SCOPES} discovery universes."
+                )
             if ALL_PUBLIC_EQUITIES in discovery_scopes and len(discovery_scopes) > 1:
                 raise ResearchLabError(
                     "All public equities cannot be combined with narrower discovery universes."
@@ -482,6 +495,10 @@ class ApprovedResearchPlan:
         if not 30 <= int(self.lookback_days) <= 1_825:
             raise ResearchLabError("Choose a timeframe between 30 days and five years.")
         capability_ids = tuple(dict.fromkeys(self.capability_ids))
+        if mode == "discovery":
+            capability_ids = tuple(
+                dict.fromkeys((*DISCOVERY_CORE_CAPABILITY_IDS, *capability_ids))
+            )
         analysis_ids = tuple(dict.fromkeys(self.analysis_ids))
         unknown_capabilities = set(capability_ids) - set(CAPABILITY_BY_ID)
         unknown_analyses = set(analysis_ids) - set(ANALYSIS_BY_ID)
@@ -609,6 +626,8 @@ def proposal_catalog() -> dict[str, list[dict[str, Any]]]:
                 "source": item.source,
                 "description": item.description,
                 "required": item.required,
+                "core_for_discovery": item.capability_id
+                in DISCOVERY_CORE_CAPABILITY_IDS,
                 "modes": list(item.modes),
                 "requires": list(item.required_capabilities),
                 "backend_operations": list(item.backend_operations),
@@ -656,10 +675,10 @@ def _proposal_schema() -> dict[str, Any]:
             "discovery_scopes": {
                 "type": "array",
                 "description": (
-                    "For discovery mode, select one to four approved LSEG sector/industry universes. "
-                    "For a cross-industry technology or business theme, select every supported universe "
-                    "that has a defensible relationship to the theme. Use All public equities by itself "
-                    "only when no bounded set of supported scopes can cover the question."
+                    "For discovery mode, select one to six approved LSEG sector/industry universes. "
+                    "For a niche or cross-industry theme, cover its materially relevant economic chain "
+                    "rather than stopping after the first plausible universe. Use All public equities by "
+                    "itself only when no bounded set of supported scopes can cover the question."
                 ),
                 "items": {
                     "type": "string",
@@ -667,7 +686,18 @@ def _proposal_schema() -> dict[str, Any]:
                         value for _label, value in research_discovery_scope_options()
                     ],
                 },
-                "maxItems": 4,
+                "maxItems": MAX_DISCOVERY_SCOPES,
+            },
+            "discovery_scope_reasons": {
+                "type": "array",
+                "description": (
+                    "For discovery mode, provide one concise business-relationship reason for every "
+                    "selected discovery scope and no reasons for unselected scopes."
+                ),
+                "items": proposed_item(
+                    {value for _label, value in research_discovery_scope_options()}
+                ),
+                "maxItems": MAX_DISCOVERY_SCOPES,
             },
             "exchange_geography": {
                 "type": ["string", "null"],
@@ -706,9 +736,9 @@ def _proposal_schema() -> dict[str, Any]:
             },
         },
         "required": [
-            "mode", "securities", "discovery_scopes", "exchange_geography",
-            "discovery_theme", "result_count", "lookback_days", "benchmark",
-            "capabilities", "analyses",
+            "mode", "securities", "discovery_scopes", "discovery_scope_reasons",
+            "exchange_geography", "discovery_theme", "result_count", "lookback_days",
+            "benchmark", "capabilities", "analyses",
         ],
     }
 
@@ -717,8 +747,11 @@ _PROPOSAL_SYSTEM_PROMPT = (
     "Compile the user question into one valid read-only research plan using the supplied typed catalog. "
     "Select only catalog IDs and values. Satisfy each selected mode, capability, and analysis contract, "
     "including required inputs, dependencies, compatible modes, and produced resources. Ground any "
-    "user-supplied security or benchmark reference in the current question. For a cross-industry business "
-    "theme, propose the smallest defensible set of cataloged discovery universes that covers the theme. "
+    "user-supplied security or benchmark reference in the current question. For a niche or cross-industry "
+    "business theme, reason coverage-first: consider upstream inputs, equipment and enabling technology, "
+    "physical infrastructure, operators, and downstream beneficiaries. Audit the full supplied taxonomy, "
+    "then select every materially plausible universe up to the limit and explain each relationship. Do not "
+    "stop after finding one valid universe, and do not select a universe without a business rationale. "
     "When the request directly names one supported sector or industry, use that single universe and set "
     "discovery_theme to null so it follows the normal screen. Use discovery_theme only when retrieved "
     "company profiles must prove exposure to a niche or cross-industry concept. "
@@ -796,9 +829,9 @@ def validate_proposal_payload(
     payload: Any,
 ) -> ResearchProposal:
     expected = {
-        "mode", "securities", "discovery_scopes", "exchange_geography",
-        "discovery_theme", "result_count", "lookback_days", "benchmark",
-        "capabilities", "analyses",
+        "mode", "securities", "discovery_scopes", "discovery_scope_reasons",
+        "exchange_geography", "discovery_theme", "result_count", "lookback_days",
+        "benchmark", "capabilities", "analyses",
     }
     if not isinstance(payload, dict) or set(payload) != expected:
         raise ResearchLabError("The proposal model returned an invalid structure.")
@@ -817,6 +850,18 @@ def validate_proposal_payload(
         raise ResearchLabError("The proposal discovery universes must be a list.")
     discovery_scopes = _canonical_discovery_scopes(tuple(scopes_raw))
     discovery_scope = discovery_scopes[0] if discovery_scopes else None
+    scope_catalog = {
+        value: value for _label, value in research_discovery_scope_options()
+    }
+    discovery_scope_reasons = _validate_proposed_items(
+        payload.get("discovery_scope_reasons"),
+        scope_catalog,
+        "discovery-universe rationale",
+    )
+    if {item.item_id for item in discovery_scope_reasons} != set(discovery_scopes):
+        raise ResearchLabError(
+            "The proposal must explain every selected discovery universe exactly once."
+        )
     geography_value = payload.get("exchange_geography")
     geography = canonicalize_exchange_geography(
         str(geography_value) if geography_value else None
@@ -833,7 +878,12 @@ def validate_proposal_payload(
     if not 1 <= result_count <= 8:
         raise ResearchLabError("The proposed result count must be between one and eight.")
     if mode == "named":
-        if discovery_scopes or discovery_theme or exchange_geography:
+        if (
+            discovery_scopes
+            or discovery_scope_reasons
+            or discovery_theme
+            or exchange_geography
+        ):
             raise ResearchLabError("A named-security proposal cannot include discovery inputs.")
         if not 1 <= len(securities) <= 8:
             raise ResearchLabError("The proposal must contain between one and eight securities.")
@@ -847,8 +897,10 @@ def validate_proposal_payload(
             raise ResearchLabError("A discovery proposal cannot preselect securities.")
         if not discovery_scopes:
             raise ResearchLabError("The discovery proposal requires at least one supported LSEG universe.")
-        if len(discovery_scopes) > 4:
-            raise ResearchLabError("The proposal can select no more than four discovery universes.")
+        if len(discovery_scopes) > MAX_DISCOVERY_SCOPES:
+            raise ResearchLabError(
+                f"The proposal can select no more than {MAX_DISCOVERY_SCOPES} discovery universes."
+            )
         if ALL_PUBLIC_EQUITIES in discovery_scopes and len(discovery_scopes) > 1:
             raise ResearchLabError(
                 "All public equities cannot be combined with narrower discovery universes."
@@ -872,6 +924,10 @@ def validate_proposal_payload(
         if securities or discovery_scopes or discovery_theme or exchange_geography:
             raise ResearchLabError(
                 "A market-news proposal cannot contain securities or discovery inputs."
+            )
+        if discovery_scope_reasons:
+            raise ResearchLabError(
+                "A market-news proposal cannot contain discovery-universe rationales."
             )
     benchmark_value = payload.get("benchmark")
     benchmark = str(benchmark_value).strip() if benchmark_value else None
@@ -904,14 +960,19 @@ def validate_proposal_payload(
     capability_reasons = {item.item_id: item.reason for item in proposed_capabilities}
     capability_reasons.setdefault("macro_context", "Required standardized market context.")
     if mode == "discovery":
-        capability_reasons.setdefault(
-            "candidate_discovery",
-            "Required to discover candidates without allowing the model to invent companies.",
-        )
-        capability_reasons.setdefault(
-            "company_profile",
-            "Required to identify and describe candidates returned by LSEG.",
-        )
+        core_reasons = {
+            "candidate_discovery": "Required deterministic candidate screen.",
+            "company_profile": "Required identity and business-exposure evidence.",
+            "valuation_snapshot": "Required peer-relative valuation evidence.",
+            "profitability_snapshot": "Required profitability and returns evidence.",
+            "balance_sheet_snapshot": "Required cash-flow, debt, and financing evidence.",
+            "earnings_estimates": "Required forward earnings and revenue expectations.",
+        }
+        for capability_id in DISCOVERY_CORE_CAPABILITY_IDS:
+            capability_reasons.setdefault(
+                capability_id,
+                core_reasons.get(capability_id, "Required standardized market context."),
+            )
     elif mode == "market_news":
         capability_reasons.setdefault(
             "market_news",
@@ -936,6 +997,10 @@ def validate_proposal_payload(
         tuple(item.item_id for item in proposed_analyses),
         set(capability_reasons),
     )
+    if "benchmark_prices" in capability_reasons and not benchmark:
+        raise ResearchLabError(
+            "Benchmark price history requires a benchmark explicitly named in the question."
+        )
     return ResearchProposal(
         question=question,
         securities=securities,
@@ -948,6 +1013,7 @@ def validate_proposal_payload(
         mode=mode,
         discovery_scope=discovery_scope,
         discovery_scopes=discovery_scopes,
+        discovery_scope_reasons=discovery_scope_reasons,
         exchange_geography=exchange_geography,
         discovery_theme=discovery_theme,
         result_count=result_count,
@@ -1563,7 +1629,7 @@ def derive_findings(
         VerifiedFinding(
             "MACRO_REGIME",
             "Current macro regime",
-            f"{macro_snapshot.regime}. {macro_snapshot.company_fit}",
+            _macro_research_context(macro_snapshot),
             tuple(indicator.source for indicator in macro_snapshot.indicators),
         )
     ]
@@ -1796,6 +1862,27 @@ def derive_findings(
     return findings, list(dict.fromkeys(item for item in missing if item))
 
 
+def _macro_research_context(snapshot: MarketRegimeSnapshot) -> str:
+    """Render the Market tab's deterministic signals for bounded LLM interpretation."""
+    signals = "; ".join(
+        (
+            f"{indicator.label}: {indicator.latest}, {indicator.trend}, "
+            f"status {indicator.status}, tilt {indicator.macro_tilt}, "
+            f"meaning {indicator.meaning}"
+        )
+        for indicator in snapshot.indicators
+    )
+    rules = " ".join(snapshot.research_policy.rules)
+    parts = [
+        f"{snapshot.regime}. {snapshot.summary}",
+        f"Stock profile to prioritize: {snapshot.company_fit}",
+    ]
+    if signals:
+        parts.append(f"Current standardized signals: {signals}.")
+    parts.append(f"Application rules: {rules}")
+    return " ".join(parts)
+
+
 def _compact_table_summary(frame: pd.DataFrame | None) -> str | None:
     """Render a bounded evidence packet from an optional LSEG context table."""
     if frame is None or frame.empty:
@@ -1994,7 +2081,10 @@ def summarize_findings(
                 [
                     (
                         "system",
-                        "Select the verified findings that best answer the question. Use only supplied IDs. "
+                        "Select the verified findings that best answer the question and always include "
+                        "MACRO_REGIME when supplied. Use its five standardized market indicators and "
+                        "deterministic application rules as context for company evidence, without treating "
+                        "macro conditions as a standalone buy or sell signal. Use only supplied IDs. "
                         "Interpretations must be qualitative, contain no digits, and add no facts or outside "
                         "knowledge. Do not issue a buy or sell recommendation. Caveats must also contain no digits.",
                     ),
@@ -2032,6 +2122,7 @@ def summarize_findings(
                 ][:3]
         except Exception:
             pass
+    finding_ids = {item.finding_id for item in findings}
     if not selected_ids:
         analysis_prefixes = {
             "return_comparison": ("RETURN_",),
@@ -2052,7 +2143,7 @@ def summarize_findings(
             for item in findings
             if prefixes and item.finding_id.startswith(prefixes)
         ][:4]
-        if "MACRO_REGIME" in {item.finding_id for item in findings}:
+        if "MACRO_REGIME" in finding_ids:
             selected_ids.append("MACRO_REGIME")
         if len(selected_ids) < 5:
             selected_ids.extend(
@@ -2061,6 +2152,8 @@ def summarize_findings(
                 if item.finding_id not in selected_ids
             )
         selected_ids = selected_ids[:5]
+    if "MACRO_REGIME" in finding_ids and "MACRO_REGIME" not in selected_ids:
+        selected_ids = [*selected_ids[:4], "MACRO_REGIME"]
     by_id = {item.finding_id: item for item in findings}
     lines = ["Research Lab findings", f"Question: {approved.question}", ""]
     for finding_id in dict.fromkeys(selected_ids):
