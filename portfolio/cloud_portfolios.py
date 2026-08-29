@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import socket
 import ssl
 import threading
 from typing import Any
@@ -91,7 +92,35 @@ def friendly_auth_error(error: BaseException) -> str:
             "Run \u201cUpdate Stock Agent.command\u201d again so the trusted certificate "
             "bundle is installed, then retry. Do not disable SSL verification."
         )
-    return f"Supabase request failed: {friendly_cloud_error(error)}"
+    current: BaseException | None = error
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        reason = current.reason if isinstance(current, URLError) else current
+        if isinstance(reason, socket.gaierror):
+            return (
+                "Could not resolve the Supabase project address. Check the internet connection "
+                "and the Supabase project URL in Account settings, then retry. The request did "
+                "not reach Supabase."
+            )
+        if isinstance(reason, (TimeoutError, socket.timeout)):
+            return (
+                "Supabase did not respond before the connection timed out. Check the internet "
+                "connection and Supabase service status, then retry."
+            )
+        if isinstance(reason, ConnectionRefusedError):
+            return (
+                "The connection to Supabase was refused before sign-in could complete. Check the "
+                "internet connection and Supabase project status, then retry."
+            )
+        current = current.__cause__ or current.__context__
+    message = friendly_cloud_error(error)
+    if "could not reach supabase" in message.casefold():
+        return (
+            f"{message}. The request did not reach Supabase, so this is a network or project "
+            "address problem rather than a password or portfolio-table error."
+        )
+    return f"Supabase request failed: {message}"
 
 
 @dataclass(slots=True)

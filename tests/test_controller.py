@@ -58,9 +58,15 @@ def test_controller_builds_common_session_portfolio_history(tmp_path, monkeypatc
         "AAPL": [(date(2026, 8, 10), 110), (date(2026, 8, 11), 115)],
         "MSFT": [(date(2026, 8, 10), 210), (date(2026, 8, 11), 220)],
     }
-    monkeypatch.setattr("portfolio.controller.recent_closes", lambda ticker: histories[ticker])
+    starts = {}
 
-    points, positions = controller.performance_histories()
+    def fake_closes(ticker, *, start=None):
+        starts[ticker] = start
+        return histories[ticker]
+
+    monkeypatch.setattr("portfolio.controller.recent_closes", fake_closes)
+
+    points, positions, missing = controller.performance_histories()
 
     assert [(point.as_of, point.market_value) for point in points] == [
         (date(2026, 8, 10), 430),
@@ -70,6 +76,41 @@ def test_controller_builds_common_session_portfolio_history(tmp_path, monkeypatc
         (date(2026, 8, 10), 220),
         (date(2026, 8, 11), 230),
     ]
+    assert starts == {"AAPL": date(2026, 1, 1), "MSFT": date(2026, 1, 1)}
+    assert missing == ()
+
+
+def test_portfolio_history_uses_owned_quantity_and_keeps_partial_data(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
+    controller = StockAgentController(settings=settings)
+    controller.database.record_purchases(
+        [
+            Purchase("AAPL", 1, 100, date(2026, 8, 10)),
+            Purchase("AAPL", 2, 110, date(2026, 8, 12)),
+            Purchase("MSFT", 1, 200, date(2026, 8, 10)),
+        ]
+    )
+
+    def fake_closes(ticker, *, start=None):
+        assert start == date(2026, 8, 10)
+        if ticker == "MSFT":
+            return []
+        return [
+            (date(2026, 8, 10), 100),
+            (date(2026, 8, 11), 101),
+            (date(2026, 8, 12), 102),
+        ]
+
+    monkeypatch.setattr("portfolio.controller.recent_closes", fake_closes)
+
+    points, positions, missing = controller.performance_histories()
+
+    assert [point.market_value for point in positions["AAPL"]] == [100, 101, 306]
+    assert [point.market_value for point in points] == [100, 101, 306]
+    assert missing == ("MSFT",)
 
 
 def test_controller_delegates_market_regime(tmp_path, monkeypatch) -> None:

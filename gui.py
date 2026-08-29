@@ -1381,6 +1381,7 @@ class StockAgentApp(tk.Tk):
         self.performance_history = []
         self.performance_portfolio_history = []
         self.performance_position_histories: dict[str, list[Any]] = {}
+        self.performance_history_missing_tickers: tuple[str, ...] = ()
         self.selected_performance_ticker: str | None = None
         self.performance_sessions = 3
         self._set_performance_period(3)
@@ -1961,6 +1962,7 @@ class StockAgentApp(tk.Tk):
                             refresh_prices=True,
                             history=payload["history"],
                             position_histories=payload["position_histories"],
+                            missing_history_tickers=payload["missing_history_tickers"],
                         )
                     continue
                 response = str(payload)
@@ -2368,7 +2370,9 @@ class StockAgentApp(tk.Tk):
             def worker() -> None:
                 try:
                     holdings = self.controller.holding_snapshots()
-                    history, position_histories = self.controller.performance_histories()
+                    history, position_histories, missing_tickers = (
+                        self.controller.performance_histories()
+                    )
                     self.results.put(
                         (
                             "portfolio_refresh",
@@ -2377,6 +2381,7 @@ class StockAgentApp(tk.Tk):
                                 "holdings": holdings,
                                 "history": history,
                                 "position_histories": position_histories,
+                                "missing_history_tickers": missing_tickers,
                             },
                         )
                     )
@@ -2411,6 +2416,7 @@ class StockAgentApp(tk.Tk):
         self.portfolio_refresh_busy = False
         self.performance_portfolio_history = []
         self.performance_position_histories = {}
+        self.performance_history_missing_tickers = ()
         self.selected_performance_ticker = None
         if hasattr(self, "portfolio_refresh_button"):
             self.portfolio_refresh_button.configure(state="normal")
@@ -2422,11 +2428,13 @@ class StockAgentApp(tk.Tk):
         refresh_prices: bool,
         history: list[Any] | None = None,
         position_histories: dict[str, list[Any]] | None = None,
+        missing_history_tickers: tuple[str, ...] = (),
     ) -> None:
         self.current_holdings = list(holdings)
         if refresh_prices:
             self.performance_portfolio_history = list(history or [])
             self.performance_position_histories = dict(position_histories or {})
+            self.performance_history_missing_tickers = tuple(missing_history_tickers)
         for item in self.holdings_tree.get_children():
             self.holdings_tree.delete(item)
         total_cost = sum(holding.total_cost for holding in holdings)
@@ -2453,14 +2461,21 @@ class StockAgentApp(tk.Tk):
         self._render_holding_rows()
 
         if refresh_prices:
-            self.portfolio_status.set(
-                f"Prices refreshed {datetime.now().strftime('%-I:%M %p')}"
-                if holdings
-                else "No holdings yet"
-            )
+            if holdings and self.performance_history_missing_tickers:
+                unavailable = ", ".join(self.performance_history_missing_tickers)
+                self.portfolio_status.set(
+                    f"Prices refreshed; history unavailable for {unavailable}"
+                )
+            else:
+                self.portfolio_status.set(
+                    f"Prices refreshed {datetime.now().strftime('%-I:%M %p')}"
+                    if holdings
+                    else "No holdings yet"
+                )
         elif not holdings:
             self.performance_portfolio_history = []
             self.performance_position_histories = {}
+            self.performance_history_missing_tickers = ()
             self.selected_performance_ticker = None
             self.portfolio_status.set("No holdings yet")
         else:
@@ -2633,7 +2648,10 @@ class StockAgentApp(tk.Tk):
                 self.performance_position_histories.get(ticker, [])
             )
         else:
-            self.performance_title.set("Portfolio performance")
+            title = "Portfolio performance"
+            if self.performance_history_missing_tickers:
+                title += " (partial)"
+            self.performance_title.set(title)
             self.performance_history = list(self.performance_portfolio_history)
         self._draw_performance()
 

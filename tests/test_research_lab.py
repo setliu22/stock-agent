@@ -16,6 +16,7 @@ from portfolio.research_lab import (
     ThemeCandidate,
     VerifiedFinding,
     _proposal_schema,
+    _theme_scope_schema,
     _run_discovery_screen,
     _run_discovery_screens,
     _select_theme_candidates,
@@ -30,12 +31,10 @@ from portfolio.research_plan import ResearchPlan
 
 
 def _payload(**overrides):
-    reasons_supplied = "discovery_scope_reasons" in overrides
     payload = {
         "mode": "named",
         "securities": ["AAPL", "MSFT"],
         "discovery_scopes": [],
-        "discovery_scope_reasons": [],
         "exchange_geography": None,
         "discovery_theme": None,
         "result_count": 5,
@@ -53,11 +52,6 @@ def _payload(**overrides):
     payload.update(overrides)
     if legacy_scope is not None:
         payload["discovery_scopes"] = [legacy_scope]
-    if payload["discovery_scopes"] and not reasons_supplied:
-        payload["discovery_scope_reasons"] = [
-            {"id": scope, "reason": f"{scope} has a plausible business relationship."}
-            for scope in payload["discovery_scopes"]
-        ]
     return payload
 
 
@@ -185,27 +179,7 @@ def test_cross_industry_theme_can_propose_multiple_validated_universes() -> None
         "Utilities",
         "Real Estate",
     )
-    assert {item.item_id for item in proposal.discovery_scope_reasons} == set(
-        proposal.discovery_scopes
-    )
-
-
-def test_discovery_proposal_rejects_unexplained_universe() -> None:
-    with pytest.raises(ResearchLabError, match="explain every selected"):
-        validate_proposal_payload(
-            "Find undervalued companies related to an emerging technology",
-            _payload(
-                mode="discovery",
-                securities=[],
-                discovery_scopes=["Technology", "Industrials"],
-                discovery_scope_reasons=[
-                    {"id": "Technology", "reason": "Potential enabling products."}
-                ],
-                discovery_theme="emerging technology",
-                capabilities=[],
-                analyses=[],
-            ),
-        )
+    assert proposal.discovery_scope_reasons == ()
 
 
 def test_approved_discovery_plan_always_includes_core_evidence() -> None:
@@ -231,7 +205,7 @@ def test_proposal_schema_uses_only_supported_array_constraints() -> None:
 
     assert "uniqueItems" not in scopes_schema
     assert scopes_schema["maxItems"] == 6
-    assert _proposal_schema()["properties"]["discovery_scope_reasons"]["maxItems"] == 6
+    assert _theme_scope_schema()["properties"]["universes"]["maxItems"] == 6
 
 
 def test_supported_industry_name_uses_normal_screen_without_theme_filter() -> None:
@@ -425,8 +399,18 @@ def test_multiple_discovery_screens_are_interleaved_and_deduplicated(
 
 def test_exact_open_ended_question_can_propose_discovery(tmp_path, monkeypatch) -> None:
     question = "which stocks are best poised to take advantage of the AI revolution?"
+    calls = []
 
-    def fake_invoke(_settings, _schema, _messages, **_kwargs):
+    def fake_invoke(_settings, schema, _messages, **_kwargs):
+        calls.append(schema["title"])
+        if schema["title"] == "ThemeUniverseAudit":
+            return {
+                "universes": [
+                    {"scope": "Technology", "reason": "Enabling products."},
+                    {"scope": "Industrials", "reason": "Physical infrastructure."},
+                    {"scope": "Energy", "reason": "Energy inputs."},
+                ]
+            }
         return _payload(
             mode="discovery",
             securities=[],
@@ -448,7 +432,47 @@ def test_exact_open_ended_question_can_propose_discovery(tmp_path, monkeypatch) 
 
     assert proposal.mode == "discovery"
     assert proposal.discovery_scope == "Technology"
+    assert proposal.discovery_scopes == ("Technology", "Industrials", "Energy")
+    assert len(proposal.discovery_scope_reasons) == 3
     assert proposal.securities == ()
+    assert calls == ["ResearchCapabilityProposal", "ThemeUniverseAudit"]
+
+
+def test_schema_rejected_generation_recovers_missing_optional_analyses(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    failed = _payload(
+        securities=["AAPL"],
+        capabilities=[{"id": "company_profile", "reason": "Describe the company."}],
+        analyses=[],
+    )
+    failed.pop("analyses")
+
+    class SchemaFailure(RuntimeError):
+        body = {
+            "error": {
+                "code": "json_validate_failed",
+                "failed_generation": json.dumps(failed),
+            }
+        }
+
+    monkeypatch.setattr(
+        "portfolio.research_lab.invoke_structured_groq",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(SchemaFailure("invalid schema output")),
+    )
+    settings = Settings(
+        tmp_path,
+        tmp_path / "db.sqlite",
+        "key",
+        "test-model",
+        "desktop.workspace",
+    )
+
+    proposal = propose_research("Research AAPL", settings)
+
+    assert proposal.securities == ("AAPL",)
+    assert proposal.analyses == ()
 
 
 def test_invalid_entity_source_is_replanned_from_compiler_error(tmp_path, monkeypatch) -> None:

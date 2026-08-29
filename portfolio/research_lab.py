@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import math
 import re
@@ -688,17 +688,6 @@ def _proposal_schema() -> dict[str, Any]:
                 },
                 "maxItems": MAX_DISCOVERY_SCOPES,
             },
-            "discovery_scope_reasons": {
-                "type": "array",
-                "description": (
-                    "For discovery mode, provide one concise business-relationship reason for every "
-                    "selected discovery scope and no reasons for unselected scopes."
-                ),
-                "items": proposed_item(
-                    {value for _label, value in research_discovery_scope_options()}
-                ),
-                "maxItems": MAX_DISCOVERY_SCOPES,
-            },
             "exchange_geography": {
                 "type": ["string", "null"],
                 "description": (
@@ -736,9 +725,9 @@ def _proposal_schema() -> dict[str, Any]:
             },
         },
         "required": [
-            "mode", "securities", "discovery_scopes", "discovery_scope_reasons",
-            "exchange_geography", "discovery_theme", "result_count", "lookback_days",
-            "benchmark", "capabilities", "analyses",
+            "mode", "securities", "discovery_scopes", "exchange_geography",
+            "discovery_theme", "result_count", "lookback_days", "benchmark",
+            "capabilities", "analyses",
         ],
     }
 
@@ -748,10 +737,8 @@ _PROPOSAL_SYSTEM_PROMPT = (
     "Select only catalog IDs and values. Satisfy each selected mode, capability, and analysis contract, "
     "including required inputs, dependencies, compatible modes, and produced resources. Ground any "
     "user-supplied security or benchmark reference in the current question. For a niche or cross-industry "
-    "business theme, reason coverage-first: consider upstream inputs, equipment and enabling technology, "
-    "physical infrastructure, operators, and downstream beneficiaries. Audit the full supplied taxonomy, "
-    "then select every materially plausible universe up to the limit and explain each relationship. Do not "
-    "stop after finding one valid universe, and do not select a universe without a business rationale. "
+    "business theme, select one or more plausible starting universes; a separate focused coverage audit "
+    "will inspect the full economic chain before anything is executed. "
     "When the request directly names one supported sector or industry, use that single universe and set "
     "discovery_theme to null so it follows the normal screen. Use discovery_theme only when retrieved "
     "company profiles must prove exposure to a niche or cross-industry concept. "
@@ -770,20 +757,134 @@ def _invoke_proposal_model(
     request: dict[str, Any] = {"question": question, "catalog": proposal_catalog()}
     if compiler_error:
         request["previous_plan_compiler_error"] = compiler_error
-    return invoke_structured_groq(
-        settings,
-        _proposal_schema(),
-        [
-            ("system", _PROPOSAL_SYSTEM_PROMPT),
-            (
-                "human",
-                json.dumps(
-                    request,
-                    sort_keys=True,
-                ),
-            ),
+    try:
+        return invoke_structured_groq(
+            settings,
+            _proposal_schema(),
+            [
+                ("system", _PROPOSAL_SYSTEM_PROMPT),
+                ("human", json.dumps(request, sort_keys=True)),
+            ],
+            max_retries=0,
+        )
+    except Exception as exc:
+        recovered = _failed_generation_payload(exc)
+        if isinstance(recovered, dict) and "analyses" not in recovered:
+            recovered["analyses"] = []
+        if recovered is not None:
+            return recovered
+        raise
+
+
+def _failed_generation_payload(error: BaseException) -> Any | None:
+    """Recover model JSON rejected by Groq before local validation can run."""
+    body = getattr(error, "body", None)
+    if not isinstance(body, dict):
+        return None
+    details = body.get("error", body)
+    if not isinstance(details, dict):
+        return None
+    raw = details.get("failed_generation")
+    if not isinstance(raw, str):
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+
+def _theme_scope_schema() -> dict[str, Any]:
+    scope_values = [value for _label, value in research_discovery_scope_options()]
+    return {
+        "title": "ThemeUniverseAudit",
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "universes": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": MAX_DISCOVERY_SCOPES,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "scope": {"type": "string", "enum": scope_values},
+                        "reason": {"type": "string"},
+                    },
+                    "required": ["scope", "reason"],
+                },
+            }
+        },
+        "required": ["universes"],
+    }
+
+
+def _audit_theme_scopes(
+    proposal: ResearchProposal,
+    settings: Settings,
+) -> ResearchProposal:
+    """Use a compact second pass to audit cross-industry theme coverage."""
+    assert proposal.discovery_theme
+    request = {
+        "question": proposal.question,
+        "business_theme": proposal.discovery_theme,
+        "initial_universes": list(proposal.discovery_scopes),
+        "supported_universes": [
+            {"label": label, "value": value}
+            for label, value in research_discovery_scope_options()
         ],
-        max_retries=0,
+    }
+    try:
+        payload = invoke_structured_groq(
+            settings,
+            _theme_scope_schema(),
+            [
+                (
+                    "system",
+                    "Audit which supplied equity universes can contain companies with material business "
+                    "exposure to the user's niche theme. Consider the full economic chain: upstream "
+                    "inputs, equipment and enabling technology, physical infrastructure, operators, and "
+                    "downstream beneficiaries. Return every materially plausible supported universe up "
+                    "to the limit, not merely the first match. Give a concrete business-relationship "
+                    "reason for each. Do not assess valuation, invent a universe, or use outside company facts.",
+                ),
+                ("human", json.dumps(request, sort_keys=True)),
+            ],
+            max_retries=0,
+        )
+    except Exception as exc:
+        payload = _failed_generation_payload(exc)
+        if payload is None:
+            raise ResearchLabError(
+                f"The theme-universe audit could not complete: {type(exc).__name__}: {exc}"
+            ) from exc
+    if not isinstance(payload, dict) or set(payload) != {"universes"}:
+        raise ResearchLabError("The theme-universe audit returned an invalid structure.")
+    universes = payload.get("universes")
+    if not isinstance(universes, list) or not universes:
+        raise ResearchLabError("The theme-universe audit returned no supported universe.")
+    reasons: list[ProposedItem] = []
+    for item in universes:
+        if not isinstance(item, dict) or set(item) != {"scope", "reason"}:
+            raise ResearchLabError("The theme-universe audit returned an invalid universe.")
+        scope = _canonical_discovery_scope(item.get("scope"))
+        reason = str(item.get("reason") or "").strip()
+        if scope is None or not reason:
+            raise ResearchLabError("The theme-universe audit returned unsupported evidence.")
+        if scope not in {entry.item_id for entry in reasons}:
+            reasons.append(ProposedItem(scope, reason[:300]))
+    scopes = _canonical_discovery_scopes(tuple(item.item_id for item in reasons))
+    if len(scopes) > MAX_DISCOVERY_SCOPES:
+        raise ResearchLabError("The theme-universe audit exceeded the bounded universe limit.")
+    if ALL_PUBLIC_EQUITIES in scopes and len(scopes) > 1:
+        raise ResearchLabError(
+            "The theme-universe audit cannot mix all public equities with narrower universes."
+        )
+    return replace(
+        proposal,
+        discovery_scope=scopes[0],
+        discovery_scopes=scopes,
+        discovery_scope_reasons=tuple(reasons),
     )
 
 
@@ -814,7 +915,10 @@ def propose_research(
                 f"The proposal model could not complete this request: {type(exc).__name__}: {exc}"
             ) from exc
         try:
-            return validate_proposal_payload(question, payload)
+            proposal = validate_proposal_payload(question, payload)
+            if proposal.mode == "discovery" and proposal.discovery_theme:
+                proposal = _audit_theme_scopes(proposal, settings)
+            return proposal
         except ResearchLabError as exc:
             compiler_error = str(exc)
             if attempt == 1:
@@ -829,9 +933,9 @@ def validate_proposal_payload(
     payload: Any,
 ) -> ResearchProposal:
     expected = {
-        "mode", "securities", "discovery_scopes", "discovery_scope_reasons",
-        "exchange_geography", "discovery_theme", "result_count", "lookback_days",
-        "benchmark", "capabilities", "analyses",
+        "mode", "securities", "discovery_scopes", "exchange_geography",
+        "discovery_theme", "result_count", "lookback_days", "benchmark",
+        "capabilities", "analyses",
     }
     if not isinstance(payload, dict) or set(payload) != expected:
         raise ResearchLabError("The proposal model returned an invalid structure.")
@@ -850,18 +954,6 @@ def validate_proposal_payload(
         raise ResearchLabError("The proposal discovery universes must be a list.")
     discovery_scopes = _canonical_discovery_scopes(tuple(scopes_raw))
     discovery_scope = discovery_scopes[0] if discovery_scopes else None
-    scope_catalog = {
-        value: value for _label, value in research_discovery_scope_options()
-    }
-    discovery_scope_reasons = _validate_proposed_items(
-        payload.get("discovery_scope_reasons"),
-        scope_catalog,
-        "discovery-universe rationale",
-    )
-    if {item.item_id for item in discovery_scope_reasons} != set(discovery_scopes):
-        raise ResearchLabError(
-            "The proposal must explain every selected discovery universe exactly once."
-        )
     geography_value = payload.get("exchange_geography")
     geography = canonicalize_exchange_geography(
         str(geography_value) if geography_value else None
@@ -880,7 +972,6 @@ def validate_proposal_payload(
     if mode == "named":
         if (
             discovery_scopes
-            or discovery_scope_reasons
             or discovery_theme
             or exchange_geography
         ):
@@ -924,10 +1015,6 @@ def validate_proposal_payload(
         if securities or discovery_scopes or discovery_theme or exchange_geography:
             raise ResearchLabError(
                 "A market-news proposal cannot contain securities or discovery inputs."
-            )
-        if discovery_scope_reasons:
-            raise ResearchLabError(
-                "A market-news proposal cannot contain discovery-universe rationales."
             )
     benchmark_value = payload.get("benchmark")
     benchmark = str(benchmark_value).strip() if benchmark_value else None
@@ -1013,7 +1100,7 @@ def validate_proposal_payload(
         mode=mode,
         discovery_scope=discovery_scope,
         discovery_scopes=discovery_scopes,
-        discovery_scope_reasons=discovery_scope_reasons,
+        discovery_scope_reasons=(),
         exchange_geography=exchange_geography,
         discovery_theme=discovery_theme,
         result_count=result_count,

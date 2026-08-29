@@ -60,14 +60,24 @@ def current_price(ticker: str) -> float | None:
     return _number(history["Close"].dropna().iloc[-1])
 
 
-def recent_closes(ticker: str, period: str = "2mo") -> list[tuple[date, float]]:
+def recent_closes(
+    ticker: str,
+    period: str = "2mo",
+    *,
+    start: date | None = None,
+) -> list[tuple[date, float]]:
     """Return recent unadjusted daily closes in chronological order."""
     try:
         import yfinance as yf
     except Exception as exc:
         raise RuntimeError("yfinance is not installed.") from exc
 
-    history = yf.Ticker(ticker).history(period=period, interval="1d", auto_adjust=False)
+    history_kwargs: dict[str, Any] = {"interval": "1d", "auto_adjust": False}
+    if start is None:
+        history_kwargs["period"] = period
+    else:
+        history_kwargs["start"] = start.isoformat()
+    history = yf.Ticker(ticker).history(**history_kwargs)
     if history is None or history.empty or "Close" not in history.columns:
         return []
     closes: list[tuple[date, float]] = []

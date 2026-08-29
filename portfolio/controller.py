@@ -198,49 +198,75 @@ class StockAgentController:
         return snapshots
 
     def portfolio_history(self) -> list[PortfolioHistoryPoint]:
-        """Value current holdings across recent common market sessions."""
-        portfolio, _positions = self.performance_histories()
+        """Value owned shares across available market sessions."""
+        portfolio, _positions, _missing = self.performance_histories()
         return portfolio
 
     def performance_histories(
         self,
-    ) -> tuple[list[PortfolioHistoryPoint], dict[str, list[PortfolioHistoryPoint]]]:
-        """Return aggregate and per-position market values from one history pass."""
-        holdings = self.holdings()
-        if not holdings:
-            return [], {}
+    ) -> tuple[
+        list[PortfolioHistoryPoint],
+        dict[str, list[PortfolioHistoryPoint]],
+        tuple[str, ...],
+    ]:
+        """Return purchase-aware aggregate and per-position market histories."""
+        purchases = self.database.list_purchases()
+        if not purchases:
+            return [], {}, ()
+        purchases_by_ticker: dict[str, list[Purchase]] = {}
+        for purchase in purchases:
+            purchases_by_ticker.setdefault(purchase.ticker, []).append(purchase)
+        for lots in purchases_by_ticker.values():
+            lots.sort(key=lambda lot: lot.purchased_at)
+
         closes_by_ticker: dict[str, dict[date, float]] = {}
         positions: dict[str, list[PortfolioHistoryPoint]] = {}
-        for holding in holdings:
+        missing: list[str] = []
+        for ticker, lots in purchases_by_ticker.items():
             try:
-                closes = recent_closes(holding.ticker)
+                closes = recent_closes(ticker, start=lots[0].purchased_at)
             except Exception:
+                missing.append(ticker)
                 continue
             if not closes:
+                missing.append(ticker)
                 continue
-            closes_by_ticker[holding.ticker] = dict(closes)
-            positions[holding.ticker] = [
-                PortfolioHistoryPoint(as_of=as_of, market_value=price * holding.quantity)
+            closes_by_ticker[ticker] = dict(closes)
+            positions[ticker] = [
+                PortfolioHistoryPoint(
+                    as_of=as_of,
+                    market_value=price * sum(
+                        lot.quantity for lot in lots if lot.purchased_at <= as_of
+                    ),
+                )
                 for as_of, price in closes
+                if any(lot.purchased_at <= as_of for lot in lots)
             ]
 
-        if len(closes_by_ticker) != len(holdings):
-            return [], positions
-
-        common_dates = set.intersection(
-            *(set(closes) for closes in closes_by_ticker.values())
+        all_dates = sorted(
+            {as_of for closes in closes_by_ticker.values() for as_of in closes}
         )
-        portfolio = [
-            PortfolioHistoryPoint(
-                as_of=as_of,
-                market_value=sum(
-                    closes_by_ticker[holding.ticker][as_of] * holding.quantity
-                    for holding in holdings
-                ),
-            )
-            for as_of in sorted(common_dates)
-        ]
-        return portfolio, positions
+        latest_prices: dict[str, float] = {}
+        portfolio: list[PortfolioHistoryPoint] = []
+        for as_of in all_dates:
+            market_value = 0.0
+            active = False
+            for ticker, closes in closes_by_ticker.items():
+                if as_of in closes:
+                    latest_prices[ticker] = closes[as_of]
+                quantity = sum(
+                    lot.quantity
+                    for lot in purchases_by_ticker[ticker]
+                    if lot.purchased_at <= as_of
+                )
+                if quantity and ticker in latest_prices:
+                    market_value += latest_prices[ticker] * quantity
+                    active = True
+            if active:
+                portfolio.append(
+                    PortfolioHistoryPoint(as_of=as_of, market_value=market_value)
+                )
+        return portfolio, positions, tuple(sorted(missing))
 
     def market_regime(self) -> MarketRegimeSnapshot:
         snapshot = build_market_regime()

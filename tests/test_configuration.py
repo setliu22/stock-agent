@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import socket
 import ssl
+from urllib.error import URLError
 
 import pytest
 
@@ -72,3 +74,14 @@ def test_certificate_error_is_recognized_through_wrapper() -> None:
     except RuntimeError as wrapped:
         assert is_certificate_error(wrapped)
         assert "Update Stock Agent.command" in friendly_auth_error(wrapped)
+
+
+def test_supabase_dns_failure_is_explained_as_connectivity_problem() -> None:
+    error = RuntimeError("Could not reach Supabase")
+    error.__cause__ = URLError(socket.gaierror(-2, "Name or service not known"))
+
+    message = friendly_auth_error(error)
+
+    assert "resolve the Supabase project address" in message
+    assert "did not reach Supabase" in message
+    assert "password" not in message.casefold()
