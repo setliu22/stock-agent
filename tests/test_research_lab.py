@@ -15,6 +15,7 @@ from portfolio.research_lab import (
     ResearchLabError,
     ThemeCandidate,
     VerifiedFinding,
+    _proposal_model_catalog,
     _proposal_schema,
     _theme_scope_schema,
     _run_discovery_screen,
@@ -206,6 +207,15 @@ def test_proposal_schema_uses_only_supported_array_constraints() -> None:
     assert "uniqueItems" not in scopes_schema
     assert scopes_schema["maxItems"] == 6
     assert _theme_scope_schema()["properties"]["universes"]["maxItems"] == 6
+
+
+def test_proposal_model_catalog_omits_schema_and_execution_metadata() -> None:
+    catalog = _proposal_model_catalog()
+
+    assert set(catalog) == {"modes", "capabilities", "analyses"}
+    assert catalog["capabilities"]["company_profile"]
+    assert "backend_operations" not in json.dumps(catalog)
+    assert len(json.dumps(catalog)) < 6_000
 
 
 def test_supported_industry_name_uses_normal_screen_without_theme_filter() -> None:
@@ -473,6 +483,46 @@ def test_schema_rejected_generation_recovers_missing_optional_analyses(
 
     assert proposal.securities == ("AAPL",)
     assert proposal.analyses == ()
+
+
+def test_empty_schema_failure_uses_validated_json_mode_fallback(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    calls = []
+
+    class EmptySchemaFailure(RuntimeError):
+        body = {
+            "error": {
+                "code": "json_validate_failed",
+                "failed_generation": "",
+            }
+        }
+
+    def fake_invoke(_settings, _schema, messages, **kwargs):
+        calls.append(kwargs.get("method", "json_schema"))
+        if len(calls) == 1:
+            raise EmptySchemaFailure("Failed to validate JSON")
+        assert "JSON object" in messages[0][1]
+        return _payload(
+            securities=["AAPL"],
+            capabilities=[{"id": "company_profile", "reason": "Describe the company."}],
+            analyses=[],
+        )
+
+    monkeypatch.setattr("portfolio.research_lab.invoke_structured_groq", fake_invoke)
+    settings = Settings(
+        tmp_path,
+        tmp_path / "db.sqlite",
+        "key",
+        "test-model",
+        "desktop.workspace",
+    )
+
+    proposal = propose_research("Research AAPL", settings)
+
+    assert proposal.securities == ("AAPL",)
+    assert calls == ["json_schema", "json_mode"]
 
 
 def test_invalid_entity_source_is_replanned_from_compiler_error(tmp_path, monkeypatch) -> None:
