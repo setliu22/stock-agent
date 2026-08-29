@@ -411,31 +411,32 @@ def test_exact_open_ended_question_can_propose_discovery(tmp_path, monkeypatch) 
     question = "which stocks are best poised to take advantage of the AI revolution?"
     calls = []
 
-    def fake_invoke(_settings, schema, _messages, **_kwargs):
-        calls.append(schema["title"])
-        if schema["title"] == "ThemeUniverseAudit":
-            return {
-                "universes": [
-                    {"scope": "Technology", "reason": "Enabling products."},
-                    {"scope": "Industrials", "reason": "Physical infrastructure."},
-                    {"scope": "Energy", "reason": "Energy inputs."},
-                ]
-            }
-        return _payload(
-            mode="discovery",
-            securities=[],
-            discovery_scope="Technology",
-            discovery_theme="AI revolution",
-            result_count=5,
-            capabilities=[
-                {"id": "candidate_discovery", "reason": "Discover supported matches."},
-                {"id": "company_profile", "reason": "Validate thematic exposure."},
-                {"id": "valuation_snapshot", "reason": "Compare valuations."},
-            ],
-            analyses=[],
-        )
+    def fake_text(_settings, _messages, **_kwargs):
+        if not calls:
+            calls.append("plain_json_proposal")
+            return json.dumps(_payload(
+                mode="discovery",
+                securities=[],
+                discovery_scope="Technology",
+                discovery_theme="AI revolution",
+                result_count=5,
+                capabilities=[
+                    {"id": "candidate_discovery", "reason": "Discover supported matches."},
+                    {"id": "company_profile", "reason": "Validate thematic exposure."},
+                    {"id": "valuation_snapshot", "reason": "Compare valuations."},
+                ],
+                analyses=[],
+            ))
+        calls.append("plain_json_theme_audit")
+        return json.dumps({
+            "universes": [
+                {"scope": "Technology", "reason": "Enabling products."},
+                {"scope": "Industrials", "reason": "Physical infrastructure."},
+                {"scope": "Energy", "reason": "Energy inputs."},
+            ]
+        })
 
-    monkeypatch.setattr("portfolio.research_lab.invoke_structured_groq", fake_invoke)
+    monkeypatch.setattr("portfolio.research_lab.invoke_text_groq", fake_text)
     settings = Settings(tmp_path, tmp_path / "db.sqlite", "key", "test-model", "desktop.workspace")
 
     proposal = propose_research(question, settings)
@@ -445,10 +446,10 @@ def test_exact_open_ended_question_can_propose_discovery(tmp_path, monkeypatch) 
     assert proposal.discovery_scopes == ("Technology", "Industrials", "Energy")
     assert len(proposal.discovery_scope_reasons) == 3
     assert proposal.securities == ()
-    assert calls == ["ResearchCapabilityProposal", "ThemeUniverseAudit"]
+    assert calls == ["plain_json_proposal", "plain_json_theme_audit"]
 
 
-def test_schema_rejected_generation_recovers_missing_optional_analyses(
+def test_plain_proposal_extracts_fenced_json_and_defaults_missing_analyses(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -459,17 +460,9 @@ def test_schema_rejected_generation_recovers_missing_optional_analyses(
     )
     failed.pop("analyses")
 
-    class SchemaFailure(RuntimeError):
-        body = {
-            "error": {
-                "code": "json_validate_failed",
-                "failed_generation": json.dumps(failed),
-            }
-        }
-
     monkeypatch.setattr(
-        "portfolio.research_lab.invoke_structured_groq",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(SchemaFailure("invalid schema output")),
+        "portfolio.research_lab.invoke_text_groq",
+        lambda *_args, **_kwargs: f"```json\n{json.dumps(failed)}\n```",
     )
     settings = Settings(
         tmp_path,
@@ -485,32 +478,23 @@ def test_schema_rejected_generation_recovers_missing_optional_analyses(
     assert proposal.analyses == ()
 
 
-def test_empty_schema_failure_uses_validated_json_mode_fallback(
+def test_proposal_planner_does_not_use_provider_structured_output(
     tmp_path,
     monkeypatch,
 ) -> None:
-    calls = []
-
-    class EmptySchemaFailure(RuntimeError):
-        body = {
-            "error": {
-                "code": "json_validate_failed",
-                "failed_generation": "",
-            }
-        }
-
-    def fake_invoke(_settings, _schema, messages, **kwargs):
-        calls.append(kwargs.get("method", "json_schema"))
-        if len(calls) == 1:
-            raise EmptySchemaFailure("Failed to validate JSON")
+    def fake_text(_settings, messages, **_kwargs):
         assert "JSON object" in messages[0][1]
-        return _payload(
+        return json.dumps(_payload(
             securities=["AAPL"],
             capabilities=[{"id": "company_profile", "reason": "Describe the company."}],
             analyses=[],
-        )
+        ))
 
-    monkeypatch.setattr("portfolio.research_lab.invoke_structured_groq", fake_invoke)
+    monkeypatch.setattr("portfolio.research_lab.invoke_text_groq", fake_text)
+    monkeypatch.setattr(
+        "portfolio.research_lab.invoke_structured_groq",
+        lambda *_args, **_kwargs: pytest.fail("proposal must use plain text mode"),
+    )
     settings = Settings(
         tmp_path,
         tmp_path / "db.sqlite",
@@ -522,7 +506,37 @@ def test_empty_schema_failure_uses_validated_json_mode_fallback(
     proposal = propose_research("Research AAPL", settings)
 
     assert proposal.securities == ("AAPL",)
-    assert calls == ["json_schema", "json_mode"]
+
+
+def test_plain_proposal_retries_locally_after_malformed_text(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    requests = []
+
+    def fake_text(_settings, messages, **_kwargs):
+        requests.append(json.loads(messages[-1][1]))
+        if len(requests) == 1:
+            return "I could not format the response."
+        return json.dumps(_payload(
+            securities=["AAPL"],
+            capabilities=[{"id": "company_profile", "reason": "Describe the company."}],
+            analyses=[],
+        ))
+
+    monkeypatch.setattr("portfolio.research_lab.invoke_text_groq", fake_text)
+    settings = Settings(
+        tmp_path,
+        tmp_path / "db.sqlite",
+        "key",
+        "test-model",
+        "desktop.workspace",
+    )
+
+    proposal = propose_research("Research AAPL", settings)
+
+    assert proposal.securities == ("AAPL",)
+    assert "previous_json_error" in requests[1]
 
 
 def test_invalid_entity_source_is_replanned_from_compiler_error(tmp_path, monkeypatch) -> None:
@@ -544,11 +558,11 @@ def test_invalid_entity_source_is_replanned_from_compiler_error(tmp_path, monkey
     ]
     requests = []
 
-    def fake_invoke(_settings, _schema, messages, **_kwargs):
+    def fake_invoke(_settings, messages, **_kwargs):
         requests.append(json.loads(messages[-1][1]))
-        return payloads.pop(0)
+        return json.dumps(payloads.pop(0))
 
-    monkeypatch.setattr("portfolio.research_lab.invoke_structured_groq", fake_invoke)
+    monkeypatch.setattr("portfolio.research_lab.invoke_text_groq", fake_invoke)
     settings = Settings(tmp_path, tmp_path / "db.sqlite", "key", "test-model", "desktop.workspace")
 
     proposal = propose_research(question, settings)
@@ -580,11 +594,11 @@ def test_missing_rate_input_is_replanned_before_approval(tmp_path, monkeypatch) 
     ]
     requests = []
 
-    def fake_invoke(_settings, _schema, messages, **_kwargs):
+    def fake_invoke(_settings, messages, **_kwargs):
         requests.append(json.loads(messages[-1][1]))
-        return payloads.pop(0)
+        return json.dumps(payloads.pop(0))
 
-    monkeypatch.setattr("portfolio.research_lab.invoke_structured_groq", fake_invoke)
+    monkeypatch.setattr("portfolio.research_lab.invoke_text_groq", fake_invoke)
     settings = Settings(tmp_path, tmp_path / "db.sqlite", "key", "test-model", "desktop.workspace")
 
     proposal = propose_research(question, settings)

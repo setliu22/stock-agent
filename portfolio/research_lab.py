@@ -11,7 +11,7 @@ from typing import Any, Callable
 import pandas as pd
 
 from .config import Settings
-from .groq_client import invoke_structured_groq
+from .groq_client import invoke_structured_groq, invoke_text_groq
 from .lseg_research import (
     FIELD_LABELS,
     LSEGNoMatches,
@@ -787,60 +787,53 @@ def _invoke_proposal_model(
     }
     if compiler_error:
         request["previous_plan_compiler_error"] = compiler_error
-    try:
-        return invoke_structured_groq(
+    scope_values = [value for _label, value in research_discovery_scope_options()]
+    geography_values = [value for _label, value in exchange_geography_options()]
+    system_prompt = (
+        f"{_PROPOSAL_SYSTEM_PROMPT} Return only one valid JSON object with every key shown "
+        f"in this template: {json.dumps(_PROPOSAL_JSON_TEMPLATE, sort_keys=True)}. "
+        f"Supported discovery_scopes: {json.dumps(scope_values)}. "
+        f"Supported exchange_geography values: {json.dumps(geography_values)}."
+    )
+    parse_error: str | None = None
+    for _attempt in range(2):
+        retry_request = dict(request)
+        if parse_error:
+            retry_request["previous_json_error"] = parse_error
+        text = invoke_text_groq(
             settings,
-            _proposal_schema(),
             [
-                ("system", _PROPOSAL_SYSTEM_PROMPT),
-                ("human", json.dumps(request, sort_keys=True)),
+                ("system", system_prompt),
+                ("human", json.dumps(retry_request, sort_keys=True)),
             ],
             max_retries=0,
-            max_tokens=600,
+            max_tokens=700,
             rate_limit_retries=1,
         )
-    except Exception as exc:
-        recovered = _failed_generation_payload(exc)
-        if isinstance(recovered, dict) and "analyses" not in recovered:
-            recovered["analyses"] = []
-        if recovered is not None:
-            return recovered
-        if _is_structured_generation_failure(exc):
-            return invoke_structured_groq(
-                settings,
-                _proposal_schema(),
-                [
-                    (
-                        "system",
-                        f"{_PROPOSAL_SYSTEM_PROMPT} Return only one JSON object with every key "
-                        "shown in this output template: "
-                        f"{json.dumps(_PROPOSAL_JSON_TEMPLATE, sort_keys=True)}",
-                    ),
-                    ("human", json.dumps(request, sort_keys=True)),
-                ],
-                max_retries=0,
-                max_tokens=700,
-                method="json_mode",
-                rate_limit_retries=1,
-            )
-        raise
+        try:
+            payload = _parse_json_object(text)
+        except ResearchLabError as exc:
+            parse_error = str(exc)
+            continue
+        if "analyses" not in payload:
+            payload["analyses"] = []
+        return payload
+    raise ResearchLabError(parse_error or "The proposal model returned invalid JSON.")
 
 
-def _failed_generation_payload(error: BaseException) -> Any | None:
-    """Recover model JSON rejected by Groq before local validation can run."""
-    body = getattr(error, "body", None)
-    if not isinstance(body, dict):
-        return None
-    details = body.get("error", body)
-    if not isinstance(details, dict):
-        return None
-    raw = details.get("failed_generation")
-    if not isinstance(raw, str):
-        return None
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return None
+def _parse_json_object(text: str) -> dict[str, Any]:
+    """Extract the first complete JSON object from an ordinary model response."""
+    decoder = json.JSONDecoder()
+    for position, character in enumerate(text):
+        if character != "{":
+            continue
+        try:
+            value, _end = decoder.raw_decode(text[position:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            return value
+    raise ResearchLabError("The proposal model did not return a complete JSON object.")
 
 
 def _theme_scope_schema() -> dict[str, Any]:
@@ -884,32 +877,27 @@ def _audit_theme_scopes(
             for label, value in research_discovery_scope_options()
         ],
     }
-    try:
-        payload = invoke_structured_groq(
-            settings,
-            _theme_scope_schema(),
-            [
-                (
-                    "system",
-                    "Audit which supplied equity universes can contain companies with material business "
-                    "exposure to the user's niche theme. Consider the full economic chain: upstream "
-                    "inputs, equipment and enabling technology, physical infrastructure, operators, and "
-                    "downstream beneficiaries. Return every materially plausible supported universe up "
-                    "to the limit, not merely the first match. Give a concrete business-relationship "
-                    "reason for each. Do not assess valuation, invent a universe, or use outside company facts.",
-                ),
-                ("human", json.dumps(request, sort_keys=True)),
-            ],
-            max_retries=0,
-            max_tokens=500,
-            rate_limit_retries=1,
-        )
-    except Exception as exc:
-        payload = _failed_generation_payload(exc)
-        if payload is None:
-            raise ResearchLabError(
-                f"The theme-universe audit could not complete: {type(exc).__name__}: {exc}"
-            ) from exc
+    text = invoke_text_groq(
+        settings,
+        [
+            (
+                "system",
+                "Audit which supplied equity universes can contain companies with material business "
+                "exposure to the user's niche theme. Consider the full economic chain: upstream "
+                "inputs, equipment and enabling technology, physical infrastructure, operators, and "
+                "downstream beneficiaries. Return every materially plausible supported universe up "
+                "to the limit, not merely the first match. Give a concrete business-relationship "
+                "reason for each. Do not assess valuation, invent a universe, or use outside company facts. "
+                "Return only valid JSON in this form: "
+                '{"universes":[{"scope":"supported universe","reason":"short reason"}]}.',
+            ),
+            ("human", json.dumps(request, sort_keys=True)),
+        ],
+        max_retries=0,
+        max_tokens=500,
+        rate_limit_retries=1,
+    )
+    payload = _parse_json_object(text)
     if not isinstance(payload, dict) or set(payload) != {"universes"}:
         raise ResearchLabError("The theme-universe audit returned an invalid structure.")
     universes = payload.get("universes")

@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from portfolio.config import DEFAULT_GROQ_MODEL
-from portfolio.groq_client import invoke_structured_groq
+from portfolio.groq_client import invoke_structured_groq, invoke_text_groq
 
 
 class _ModelNotFound(Exception):
@@ -197,3 +197,32 @@ def test_client_retries_once_after_short_token_rate_limit(monkeypatch) -> None:
     assert result == {"status": "ok"}
     assert len(attempts) == 2
     assert sleeps == [1.75]
+
+
+def test_text_client_does_not_enable_provider_json_mode(monkeypatch) -> None:
+    received = []
+
+    class Response:
+        content = '{"status":"ok"}'
+
+    class FakeChatGroq:
+        def __init__(self, **_options):
+            pass
+
+        def with_structured_output(self, *_args, **_kwargs):
+            pytest.fail("plain text invocation must not enable structured output")
+
+        def invoke(self, messages):
+            received.append(messages)
+            return Response()
+
+    monkeypatch.setattr("portfolio.groq_client._chat_groq_class", lambda: FakeChatGroq)
+
+    output = invoke_text_groq(
+        _settings(DEFAULT_GROQ_MODEL),
+        [("system", "Return JSON."), ("human", "test")],
+        max_tokens=100,
+    )
+
+    assert output == '{"status":"ok"}'
+    assert received == [[("system", "Return JSON."), ("human", "test")]]

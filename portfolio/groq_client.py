@@ -122,3 +122,61 @@ def invoke_structured_groq(
         f"Tried: {', '.join(unavailable)}. Set GROQ_MODEL to an active text model "
         "listed in the Groq console."
     )
+
+
+def invoke_text_groq(
+    settings: Any,
+    messages: Sequence[tuple[str, str]],
+    *,
+    max_retries: int = 0,
+    max_tokens: int | None = None,
+    rate_limit_retries: int = 0,
+) -> str:
+    """Invoke Groq without provider-enforced JSON generation."""
+    if not getattr(settings, "groq_api_key", None):
+        raise ValueError("GROQ_API_KEY is not configured.")
+
+    unavailable: list[str] = []
+    chat_groq = _chat_groq_class()
+    for model_name in _model_candidates(getattr(settings, "groq_model", None)):
+        options: dict[str, Any] = {
+            "model": model_name,
+            "temperature": 0,
+            "max_retries": max_retries,
+            "api_key": settings.groq_api_key,
+        }
+        if max_tokens is not None:
+            options["max_tokens"] = max_tokens
+        retries_remaining = max(0, int(rate_limit_retries))
+        while True:
+            try:
+                response = chat_groq(**options).invoke(list(messages))
+                content = getattr(response, "content", response)
+                if isinstance(content, str):
+                    return content
+                if isinstance(content, list):
+                    parts = []
+                    for block in content:
+                        if isinstance(block, str):
+                            parts.append(block)
+                        elif isinstance(block, dict) and isinstance(block.get("text"), str):
+                            parts.append(block["text"])
+                    if parts:
+                        return "".join(parts)
+                raise RuntimeError("Groq returned an empty text response.")
+            except Exception as exc:
+                delay = _rate_limit_retry_after(exc)
+                if retries_remaining and delay is not None:
+                    retries_remaining -= 1
+                    time.sleep(delay + 0.25)
+                    continue
+                if not _is_model_unavailable(exc):
+                    raise
+                unavailable.append(model_name)
+                break
+
+    raise GroqModelUnavailableError(
+        "No supported Groq text model is available to this account. "
+        f"Tried: {', '.join(unavailable)}. Set GROQ_MODEL to an active text model "
+        "listed in the Groq console."
+    )
