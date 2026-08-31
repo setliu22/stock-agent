@@ -199,6 +199,50 @@ def test_client_retries_once_after_short_token_rate_limit(monkeypatch) -> None:
     assert sleeps == [1.75]
 
 
+def test_client_retries_after_provider_delay_in_milliseconds(monkeypatch) -> None:
+    attempts = []
+    sleeps = []
+
+    class TokenRateLimit(Exception):
+        status_code = 429
+        body = {
+            "error": {
+                "code": "rate_limit_exceeded",
+                "message": (
+                    "Rate limit reached on tokens per minute. Used 6731, "
+                    "Requested 1356. Please try again in 652.5ms."
+                ),
+            }
+        }
+
+    class FakeChatGroq:
+        def __init__(self, **_options):
+            pass
+
+        def with_structured_output(self, *_args, **_kwargs):
+            return self
+
+        def invoke(self, _messages):
+            attempts.append(True)
+            if len(attempts) == 1:
+                raise TokenRateLimit("rate limited")
+            return {"status": "ok"}
+
+    monkeypatch.setattr("portfolio.groq_client._chat_groq_class", lambda: FakeChatGroq)
+    monkeypatch.setattr("portfolio.groq_client.time.sleep", sleeps.append)
+
+    result = invoke_structured_groq(
+        _settings(DEFAULT_GROQ_MODEL),
+        {"type": "object"},
+        [("human", "test")],
+        rate_limit_retries=1,
+    )
+
+    assert result == {"status": "ok"}
+    assert len(attempts) == 2
+    assert sleeps == [pytest.approx(0.9025)]
+
+
 def test_text_client_does_not_enable_provider_json_mode(monkeypatch) -> None:
     received = []
     options = []

@@ -1404,7 +1404,7 @@ def test_theme_selection_splits_a_batch_after_provider_json_truncation(
 
     def fake_invoke(_settings, _schema, messages, **kwargs):
         assert kwargs["max_tokens"] == 400
-        assert kwargs["rate_limit_retries"] == 1
+        assert kwargs["rate_limit_retries"] == 3
         assert kwargs["preferred_model"] == "openai/gpt-oss-20b"
         request = json.loads(messages[-1][1])
         candidates = request["candidates"]

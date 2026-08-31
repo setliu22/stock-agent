@@ -1690,7 +1690,7 @@ def _select_theme_candidates(
                 ],
                 max_retries=0,
                 max_tokens=400,
-                rate_limit_retries=1,
+                rate_limit_retries=3,
                 preferred_model=GROQ_FAST_MODEL,
             )
         except Exception as exc:

@@ -65,13 +65,15 @@ def _rate_limit_retry_after(error: Exception) -> float | None:
         return None
     message = str(details.get("message") if isinstance(details, dict) else error)
     match = re.search(
-        r"try again in\s+([0-9]+(?:\.[0-9]+)?)s",
+        r"try again in\s+([0-9]+(?:\.[0-9]+)?)(ms|s)\b",
         message,
         re.IGNORECASE,
     )
     if not match:
         return None
     delay = float(match.group(1))
+    if match.group(2).casefold() == "ms":
+        delay /= 1_000
     return delay if 0 < delay <= 30 else None
 
 
