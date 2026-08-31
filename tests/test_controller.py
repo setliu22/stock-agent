@@ -113,6 +113,39 @@ def test_portfolio_history_uses_owned_quantity_and_keeps_partial_data(
     assert missing == ("MSFT",)
 
 
+def test_intraday_portfolio_history_uses_real_observations_and_complete_coverage(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
+    controller = StockAgentController(settings=settings)
+    controller.database.record_purchases(
+        [
+            Purchase("AAPL", 1, 100, date(2026, 8, 10)),
+            Purchase("MSFT", 1, 200, date(2026, 8, 10)),
+        ]
+    )
+    at_930 = datetime(2026, 8, 31, 13, 30, tzinfo=timezone.utc)
+    at_935 = datetime(2026, 8, 31, 13, 35, tzinfo=timezone.utc)
+    at_940 = datetime(2026, 8, 31, 13, 40, tzinfo=timezone.utc)
+    histories = {
+        "AAPL": [(at_930, 100), (at_935, 101)],
+        "MSFT": [(at_935, 200), (at_940, 202)],
+    }
+    monkeypatch.setattr(
+        "portfolio.controller.recent_intraday_closes",
+        lambda ticker: histories[ticker],
+    )
+
+    portfolio, positions = controller.intraday_performance_histories()
+
+    assert [(point.as_of, point.market_value) for point in portfolio] == [
+        (at_935, 301),
+        (at_940, 303),
+    ]
+    assert [point.market_value for point in positions["AAPL"]] == [100, 101]
+
+
 def test_controller_delegates_market_regime(tmp_path, monkeypatch) -> None:
     settings = Settings(tmp_path, tmp_path / "portfolio.db", None, "test-model", "desktop.workspace")
     controller = StockAgentController(settings=settings)

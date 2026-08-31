@@ -6,7 +6,11 @@ import pytest
 
 from portfolio.company_resolver import ResolvedInstrument
 from portfolio.config import Settings
-from portfolio.lseg_research import LSEGResearchError, ResearchResult
+from portfolio.lseg_research import (
+    LSEGResearchError,
+    LSEGWorkspaceUnavailable,
+    ResearchResult,
+)
 from portfolio.market_regime import MarketRegimeSnapshot, Observation, RegimeIndicator
 from portfolio.research_lab import (
     CAPABILITIES,
@@ -550,6 +554,43 @@ def test_discovery_keeps_successful_universes_when_another_universe_fails(
     assert any("Technology" in warning for warning in result.warnings)
 
 
+def test_discovery_stops_immediately_when_workspace_is_unavailable(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    approved = ApprovedResearchPlan(
+        question="Find undervalued companies related to data centers",
+        securities=(),
+        lookback_days=365,
+        benchmark=None,
+        capability_ids=("macro_context", "candidate_discovery", "company_profile"),
+        analysis_ids=(),
+        mode="discovery",
+        discovery_scopes=("Technology", "Industrials"),
+        discovery_theme="data centers",
+        selection_objectives=("relative_value",),
+    ).validated()
+    scopes = []
+
+    def fake_screen(_approved, *_args, scope=None, **_kwargs):
+        scopes.append(scope)
+        raise LSEGWorkspaceUnavailable("Open LSEG Workspace and retry.")
+
+    monkeypatch.setattr("portfolio.research_lab._run_discovery_screen", fake_screen)
+    settings = Settings(tmp_path, tmp_path / "db.sqlite", None, "test-model", "desktop.workspace")
+
+    with pytest.raises(LSEGWorkspaceUnavailable, match="Open LSEG Workspace"):
+        _run_discovery_screens(
+            approved,
+            settings,
+            _macro(),
+            progress_callback=None,
+            cancel_event=None,
+        )
+
+    assert scopes == ["Technology"]
+
+
 def test_discovery_methodology_rejects_cross_industry_intrinsic_value_claims() -> None:
     approved = ApprovedResearchPlan(
         question="Find undervalued companies related to data centers",
@@ -612,6 +653,82 @@ def test_exact_open_ended_question_can_propose_discovery(tmp_path, monkeypatch) 
     assert len(proposal.discovery_scope_reasons) == 3
     assert proposal.securities == ()
     assert calls == ["plain_json_proposal", "plain_json_theme_audit"]
+
+
+def test_undervalued_theme_audit_cannot_replace_peer_universes_with_all_equities(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    question = "what are some undervalued stocks related to data centers?"
+    requests = []
+
+    def fake_text(_settings, messages, **_kwargs):
+        request = json.loads(messages[-1][1])
+        requests.append(request)
+        if len(requests) == 1:
+            return json.dumps(_payload(
+                mode="discovery",
+                securities=[],
+                discovery_scopes=["Technology", "Industrials", "Utilities"],
+                discovery_theme="data centers",
+                selection_objectives=["relative_value"],
+                capabilities=[
+                    {"id": "candidate_discovery", "reason": "Discover candidates."},
+                    {"id": "company_profile", "reason": "Validate exposure."},
+                    {"id": "valuation_snapshot", "reason": "Compare valuations."},
+                ],
+                analyses=[],
+            ))
+        return json.dumps({
+            "universes": [
+                {"scope": "All public equities", "reason": "Broad coverage."},
+            ]
+        })
+
+    monkeypatch.setattr("portfolio.research_lab.invoke_text_groq", fake_text)
+    settings = Settings(tmp_path, tmp_path / "db.sqlite", "key", "test-model", "desktop.workspace")
+
+    proposal = propose_research(question, settings)
+
+    assert proposal.discovery_scopes == ("Technology", "Industrials", "Utilities")
+    assert proposal.selection_objectives == ("relative_value",)
+    assert all(
+        item["value"] != "All public equities"
+        for item in requests[1]["supported_universes"]
+    )
+
+
+def test_theme_audit_format_error_does_not_discard_valid_proposal(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    question = "what are some undervalued stocks related to data centers?"
+    responses = [
+        json.dumps(_payload(
+            mode="discovery",
+            securities=[],
+            discovery_scopes=["Technology", "Industrials"],
+            discovery_theme="data centers",
+            selection_objectives=["relative_value"],
+            capabilities=[
+                {"id": "candidate_discovery", "reason": "Discover candidates."},
+                {"id": "company_profile", "reason": "Validate exposure."},
+                {"id": "valuation_snapshot", "reason": "Compare valuations."},
+            ],
+            analyses=[],
+        )),
+        "The relevant universes are technology and industrials.",
+    ]
+    monkeypatch.setattr(
+        "portfolio.research_lab.invoke_text_groq",
+        lambda *_args, **_kwargs: responses.pop(0),
+    )
+    settings = Settings(tmp_path, tmp_path / "db.sqlite", "key", "test-model", "desktop.workspace")
+
+    proposal = propose_research(question, settings)
+
+    assert proposal.discovery_scopes == ("Technology", "Industrials")
+    assert proposal.selection_objectives == ("relative_value",)
 
 
 def test_plain_proposal_extracts_fenced_json_and_defaults_missing_analyses(

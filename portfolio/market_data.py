@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 from .company_resolver import company_name_to_ticker, extract_security_reference, is_explicit_ticker
@@ -86,6 +86,40 @@ def recent_closes(
         if parsed is not None and parsed >= 0:
             closes.append((timestamp.date(), parsed))
     return closes
+
+
+def recent_intraday_closes(ticker: str) -> list[tuple[datetime, float]]:
+    """Return the latest market session at five-minute resolution.
+
+    The prior session's final observation is included as the baseline so the
+    one-day change remains comparable with the daily-close calculation.
+    """
+    try:
+        import yfinance as yf
+    except Exception as exc:
+        raise RuntimeError("yfinance is not installed.") from exc
+
+    history = yf.Ticker(ticker).history(
+        period="2d",
+        interval="5m",
+        auto_adjust=False,
+        prepost=False,
+    )
+    if history is None or history.empty or "Close" not in history.columns:
+        return []
+    observations: list[tuple[datetime, float]] = []
+    for timestamp, value in history["Close"].dropna().items():
+        parsed = _number(value)
+        if parsed is None or parsed < 0:
+            continue
+        as_of = timestamp.to_pydatetime()
+        observations.append((as_of, parsed))
+    if not observations:
+        return []
+    latest_session = observations[-1][0].date()
+    current = [item for item in observations if item[0].date() == latest_session]
+    previous = [item for item in observations if item[0].date() < latest_session]
+    return ([previous[-1]] if previous else []) + current
 
 
 def snapshot(query: str) -> MarketSnapshot:

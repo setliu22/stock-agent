@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 
 
 @dataclass(frozen=True)
@@ -37,5 +37,5 @@ class HoldingSnapshot:
 
 @dataclass(frozen=True)
 class PortfolioHistoryPoint:
-    as_of: date
+    as_of: date | datetime
     market_value: float

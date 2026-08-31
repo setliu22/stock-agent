@@ -1,10 +1,11 @@
 from types import SimpleNamespace
-from datetime import date
+from datetime import date, datetime
 
 from gui import (
     RESEARCH_EXAMPLE_QUESTIONS,
     ResearchApprovalDialog,
     StockAgentApp,
+    _performance_time_label,
     friendly_research_error,
     period_performance,
     sort_portfolio_rows,
@@ -94,6 +95,14 @@ def test_portfolio_rows_sort_tickers_alphabetically_without_case_bias() -> None:
 def test_portfolio_period_labels_include_one_day_and_all_time() -> None:
     assert StockAgentApp._period_label(SimpleNamespace(performance_sessions=1)) == "1 day"
     assert StockAgentApp._period_label(SimpleNamespace(performance_sessions=0)) == "all time"
+
+
+def test_performance_time_labels_distinguish_daily_and_intraday_points() -> None:
+    assert _performance_time_label(date(2026, 8, 31)) == "Aug 31, 2026"
+    assert _performance_time_label(
+        datetime(2026, 8, 31, 13, 35),
+        end=True,
+    ) == "1:35 PM"
 
 
 def test_clicking_a_portfolio_heading_toggles_sort_direction() -> None:

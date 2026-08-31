@@ -950,6 +950,12 @@ def period_performance(history: list[Any], sessions: int) -> tuple[float, float]
     return change, change / points[0].market_value * 100
 
 
+def _performance_time_label(value: date | datetime, *, end: bool = False) -> str:
+    if isinstance(value, datetime):
+        return value.strftime("%-I:%M %p" if end else "%b %-d %-I:%M %p")
+    return value.strftime("%b %-d, %Y")
+
+
 class StockAgentApp(tk.Tk):
     BG = "#0D0F12"
     SURFACE = "#15181D"
@@ -1450,6 +1456,8 @@ class StockAgentApp(tk.Tk):
         self.performance_history = []
         self.performance_portfolio_history = []
         self.performance_position_histories: dict[str, list[Any]] = {}
+        self.performance_intraday_portfolio_history = []
+        self.performance_intraday_position_histories: dict[str, list[Any]] = {}
         self.performance_history_missing_tickers: tuple[str, ...] = ()
         self.selected_performance_ticker: str | None = None
         self.performance_sessions = 3
@@ -1942,8 +1950,9 @@ class StockAgentApp(tk.Tk):
                 ),
                 (
                     "Performance chart",
-                    "Historical values use the quantities owned after each recorded purchase date and available "
-                    "price history. Missing ticker history is labeled partial rather than silently substituted.",
+                    "The one-day chart uses five-minute observations from the latest market session. Longer "
+                    "charts use daily values and the quantities owned after each recorded purchase date. Missing "
+                    "ticker history is labeled partial rather than silently substituted.",
                 ),
                 (
                     "Decision context",
@@ -2139,6 +2148,10 @@ class StockAgentApp(tk.Tk):
                             refresh_prices=True,
                             history=payload["history"],
                             position_histories=payload["position_histories"],
+                            intraday_history=payload["intraday_history"],
+                            intraday_position_histories=payload[
+                                "intraday_position_histories"
+                            ],
                             missing_history_tickers=payload["missing_history_tickers"],
                         )
                     continue
@@ -2411,7 +2424,7 @@ class StockAgentApp(tk.Tk):
     def show_macro_reference(self) -> None:
         window = tk.Toplevel(self)
         window.title("How macro signals affect stocks")
-        window.geometry("1160x690")
+        window.geometry("1160x760")
         window.minsize(960, 620)
         window.transient(self)
 
@@ -2421,10 +2434,8 @@ class StockAgentApp(tk.Tk):
         tk.Label(
             content,
             text=(
-                "Valuation effect: A higher discount rate lowers the present value of future cash flows. "
-                "When Treasury bonds already offer a high safe return, investors require more return from "
-                "risky stocks. This disproportionately hurts high-growth companies whose expected cash flows "
-                "are further in the future."
+                '“Disproportionate” means the same market shock can cause a much larger percentage change '
+                "in some companies because of when their cash flows arrive or how their capital is structured."
             ),
             background=self.BG,
             foreground=self.TEXT,
@@ -2433,19 +2444,63 @@ class StockAgentApp(tk.Tk):
             anchor="w",
             wraplength=1100,
         ).pack(fill="x", pady=(10, 0))
-        tk.Label(
-            content,
-            text=(
-                "Borrowing effect: Higher market rates make bank loans and bond financing more expensive. "
-                "This disproportionately hurts high-leverage companies that depend on borrowing or refinancing."
+
+        impact_examples = ttk.Frame(content)
+        impact_examples.pack(fill="x", pady=(10, 16))
+        impact_examples.columnconfigure((0, 1), weight=1, uniform="impact")
+
+        examples = (
+            (
+                "HIGH GROWTH — DURATION",
+                "PV = CF_t / (1 + r)^t",
+                "If volatility makes investors demand a higher return (r), a cash flow 10 years away is "
+                "discounted at that higher rate across 10 compounded periods; next year's cash flow is hit "
+                "only once. High-growth companies have more value concentrated far in the future, so they "
+                "have greater duration and a larger valuation response.",
             ),
-            background=self.BG,
-            foreground=self.TEXT,
-            font=(self.ui_font, 10),
-            justify="left",
-            anchor="w",
-            wraplength=1100,
-        ).pack(fill="x", pady=(8, 16))
+            (
+                "HIGH LEVERAGE — EQUITY MAGNIFICATION",
+                "Equity value = Asset value − Debt",
+                "If assets are worth $120 and debt is $100, equity is $20. A 10% decline in asset value to "
+                "$108 reduces equity to $8—a 60% decline. Debt does not fall alongside asset value, so "
+                "leverage mechanically magnifies the change. Higher rates can also make borrowing and "
+                "refinancing more expensive.",
+            ),
+        )
+        for column, (heading, formula, explanation) in enumerate(examples):
+            panel = ttk.Frame(impact_examples, style="Panel.TFrame", padding=12)
+            panel.grid(
+                row=0,
+                column=column,
+                sticky="nsew",
+                padx=(0, 5) if column == 0 else (5, 0),
+            )
+            tk.Label(
+                panel,
+                text=heading,
+                background=self.SURFACE,
+                foreground=self.MUTED,
+                font=(self.ui_font, 9, "bold"),
+                anchor="w",
+            ).pack(fill="x")
+            tk.Label(
+                panel,
+                text=formula,
+                background=self.SURFACE,
+                foreground=self.ACCENT,
+                font=(self.ui_font, 12, "bold"),
+                anchor="w",
+            ).pack(fill="x", pady=(6, 5))
+            tk.Label(
+                panel,
+                text=explanation,
+                background=self.SURFACE,
+                foreground=self.TEXT,
+                font=(self.ui_font, 10),
+                justify="left",
+                anchor="nw",
+                wraplength=510,
+            ).pack(fill="x")
 
         table = ttk.Frame(content, style="Panel.TFrame", padding=1)
         table.pack(fill="both", expand=True)
@@ -2551,6 +2606,9 @@ class StockAgentApp(tk.Tk):
                     history, position_histories, missing_tickers = (
                         self.controller.performance_histories()
                     )
+                    intraday_history, intraday_position_histories = (
+                        self.controller.intraday_performance_histories()
+                    )
                     self.results.put(
                         (
                             "portfolio_refresh",
@@ -2559,6 +2617,8 @@ class StockAgentApp(tk.Tk):
                                 "holdings": holdings,
                                 "history": history,
                                 "position_histories": position_histories,
+                                "intraday_history": intraday_history,
+                                "intraday_position_histories": intraday_position_histories,
                                 "missing_history_tickers": missing_tickers,
                             },
                         )
@@ -2594,6 +2654,8 @@ class StockAgentApp(tk.Tk):
         self.portfolio_refresh_busy = False
         self.performance_portfolio_history = []
         self.performance_position_histories = {}
+        self.performance_intraday_portfolio_history = []
+        self.performance_intraday_position_histories = {}
         self.performance_history_missing_tickers = ()
         self.selected_performance_ticker = None
         if hasattr(self, "portfolio_refresh_button"):
@@ -2606,12 +2668,18 @@ class StockAgentApp(tk.Tk):
         refresh_prices: bool,
         history: list[Any] | None = None,
         position_histories: dict[str, list[Any]] | None = None,
+        intraday_history: list[Any] | None = None,
+        intraday_position_histories: dict[str, list[Any]] | None = None,
         missing_history_tickers: tuple[str, ...] = (),
     ) -> None:
         self.current_holdings = list(holdings)
         if refresh_prices:
             self.performance_portfolio_history = list(history or [])
             self.performance_position_histories = dict(position_histories or {})
+            self.performance_intraday_portfolio_history = list(intraday_history or [])
+            self.performance_intraday_position_histories = dict(
+                intraday_position_histories or {}
+            )
             self.performance_history_missing_tickers = tuple(missing_history_tickers)
         for item in self.holdings_tree.get_children():
             self.holdings_tree.delete(item)
@@ -2653,6 +2721,8 @@ class StockAgentApp(tk.Tk):
         elif not holdings:
             self.performance_portfolio_history = []
             self.performance_position_histories = {}
+            self.performance_intraday_portfolio_history = []
+            self.performance_intraday_position_histories = {}
             self.performance_history_missing_tickers = ()
             self.selected_performance_ticker = None
             self.portfolio_status.set("No holdings yet")
@@ -2857,17 +2927,33 @@ class StockAgentApp(tk.Tk):
                 )
                 and getattr(holding, "market_value", None) is not None
             ]
-            values = [
-                sum(holding.total_cost for holding in holdings),
-                sum(holding.market_value for holding in holdings),
-            ]
-            start_label, end_label = "Cost basis", "Current"
+            points = self.performance_history
+            values = [point.market_value for point in points]
+            start_label = _performance_time_label(points[0].as_of) if points else ""
+            end_label = _performance_time_label(points[-1].as_of) if points else ""
+            total_cost = sum(holding.total_cost for holding in holdings)
+            current_value = sum(holding.market_value for holding in holdings)
+            summary_values = (total_cost, current_value)
+        elif self.performance_sessions == 1:
+            if self.selected_performance_ticker:
+                points = self.performance_intraday_position_histories.get(
+                    self.selected_performance_ticker, []
+                )
+            else:
+                points = self.performance_intraday_portfolio_history
+            if len(points) < 2:
+                points = self.performance_history[-2:]
+            values = [point.market_value for point in points]
+            start_label = _performance_time_label(points[0].as_of) if points else ""
+            end_label = _performance_time_label(points[-1].as_of, end=True) if points else ""
+            summary_values = (values[0], values[-1]) if len(values) >= 2 else None
         else:
             points = self.performance_history[-(self.performance_sessions + 1):]
             values = [point.market_value for point in points]
             start_label = points[0].as_of.strftime("%b %-d") if points else ""
             end_label = points[-1].as_of.strftime("%b %-d") if points else ""
-        if len(values) < 2 or values[0] == 0:
+            summary_values = (values[0], values[-1]) if len(values) >= 2 else None
+        if len(values) < 2 or summary_values is None or summary_values[0] == 0:
             self.period_change.set("History unavailable")
             self.period_change_label.configure(style="MetricValue.TLabel")
             canvas.create_text(
@@ -2884,8 +2970,7 @@ class StockAgentApp(tk.Tk):
             )
             return
 
-        start_value = values[0]
-        end_value = values[-1]
+        start_value, end_value = summary_values
         change = end_value - start_value
         percent = change / start_value * 100 if start_value else 0.0
         color = self.POSITIVE if change >= 0 else self.NEGATIVE

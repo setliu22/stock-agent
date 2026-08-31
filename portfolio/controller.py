@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 import json
 from pathlib import Path
 from typing import Callable, Iterable
@@ -20,7 +20,7 @@ from .lseg_research import (
     concise_report,
     run_research,
 )
-from .market_data import current_price, recent_closes
+from .market_data import current_price, recent_closes, recent_intraday_closes
 from .market_regime import (
     MacroResearchPolicy,
     MarketRegimeSnapshot,
@@ -267,6 +267,51 @@ class StockAgentController:
                     PortfolioHistoryPoint(as_of=as_of, market_value=market_value)
                 )
         return portfolio, positions, tuple(sorted(missing))
+
+    def intraday_performance_histories(
+        self,
+    ) -> tuple[
+        list[PortfolioHistoryPoint],
+        dict[str, list[PortfolioHistoryPoint]],
+    ]:
+        """Return current-position values across the latest trading session."""
+        holdings = self.holdings()
+        closes_by_ticker: dict[str, dict[datetime, float]] = {}
+        positions: dict[str, list[PortfolioHistoryPoint]] = {}
+        quantities = {holding.ticker: holding.quantity for holding in holdings}
+        for holding in holdings:
+            try:
+                closes = recent_intraday_closes(holding.ticker)
+            except Exception:
+                continue
+            if not closes:
+                continue
+            closes_by_ticker[holding.ticker] = dict(closes)
+            positions[holding.ticker] = [
+                PortfolioHistoryPoint(as_of=as_of, market_value=price * holding.quantity)
+                for as_of, price in closes
+            ]
+
+        all_times = sorted(
+            {as_of for closes in closes_by_ticker.values() for as_of in closes}
+        )
+        latest_prices: dict[str, float] = {}
+        portfolio: list[PortfolioHistoryPoint] = []
+        for as_of in all_times:
+            for ticker, closes in closes_by_ticker.items():
+                if as_of in closes:
+                    latest_prices[ticker] = closes[as_of]
+            if len(latest_prices) == len(closes_by_ticker):
+                portfolio.append(
+                    PortfolioHistoryPoint(
+                        as_of=as_of,
+                        market_value=sum(
+                            price * quantities[ticker]
+                            for ticker, price in latest_prices.items()
+                        ),
+                    )
+                )
+        return portfolio, positions
 
     def market_regime(self) -> MarketRegimeSnapshot:
         snapshot = build_market_regime()
