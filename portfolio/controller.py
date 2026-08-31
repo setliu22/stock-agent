@@ -302,6 +302,7 @@ class StockAgentController:
         tickers: Iterable[str] | None = None,
         progress_callback=None,
         cancel_event=None,
+        user_context: str | None = None,
     ) -> str:
         holdings = self.holdings()
         if tickers is not None:
@@ -322,6 +323,7 @@ class StockAgentController:
             macro_snapshot=snapshot,
             progress_callback=progress_callback,
             cancel_event=cancel_event,
+            user_context=user_context,
         )
         return review.to_text()
 

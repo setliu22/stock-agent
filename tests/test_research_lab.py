@@ -6,7 +6,7 @@ import pytest
 
 from portfolio.company_resolver import ResolvedInstrument
 from portfolio.config import Settings
-from portfolio.lseg_research import ResearchResult
+from portfolio.lseg_research import LSEGResearchError, ResearchResult
 from portfolio.market_regime import MarketRegimeSnapshot, Observation, RegimeIndicator
 from portfolio.research_lab import (
     CAPABILITIES,
@@ -16,6 +16,8 @@ from portfolio.research_lab import (
     ThemeCandidate,
     VerifiedFinding,
     _proposal_model_catalog,
+    _discovery_methodology_finding,
+    _parse_proposal_document,
     _proposal_schema,
     _theme_scope_schema,
     _run_discovery_screen,
@@ -41,6 +43,7 @@ def _payload(**overrides):
         "result_count": 5,
         "lookback_days": 365,
         "benchmark": None,
+        "selection_objectives": [],
         "capabilities": [
             {"id": "price_history", "reason": "Returns are needed."},
             {"id": "treasury_yield_history", "reason": "The question asks about rates."},
@@ -183,6 +186,38 @@ def test_cross_industry_theme_can_propose_multiple_validated_universes() -> None
     assert proposal.discovery_scope_reasons == ()
 
 
+def test_relative_value_is_a_typed_python_selection_rule() -> None:
+    proposal = validate_proposal_payload(
+        "Which semiconductor companies are undervalued?",
+        _payload(
+            mode="discovery",
+            securities=[],
+            discovery_scope="Semiconductors",
+            discovery_theme=None,
+            selection_objectives=["relative_value"],
+            capabilities=[
+                {"id": "candidate_discovery", "reason": "Find candidates."},
+                {"id": "valuation_snapshot", "reason": "Compare peer multiples."},
+            ],
+            analyses=[],
+        ),
+    )
+
+    assert proposal.selection_objectives == ("relative_value",)
+    approved = ApprovedResearchPlan(
+        question=proposal.question,
+        securities=(),
+        lookback_days=proposal.lookback_days,
+        benchmark=None,
+        capability_ids=tuple(item.item_id for item in proposal.capabilities),
+        analysis_ids=(),
+        mode="discovery",
+        discovery_scopes=proposal.discovery_scopes,
+        selection_objectives=proposal.selection_objectives,
+    ).validated()
+    assert approved.selection_objectives == ("relative_value",)
+
+
 def test_approved_discovery_plan_always_includes_core_evidence() -> None:
     approved = ApprovedResearchPlan(
         question="Find undervalued software companies",
@@ -212,10 +247,41 @@ def test_proposal_schema_uses_only_supported_array_constraints() -> None:
 def test_proposal_model_catalog_omits_schema_and_execution_metadata() -> None:
     catalog = _proposal_model_catalog()
 
-    assert set(catalog) == {"modes", "capabilities", "analyses"}
+    assert set(catalog) == {
+        "modes",
+        "capabilities",
+        "analyses",
+        "selection_objectives",
+    }
     assert catalog["capabilities"]["company_profile"]
     assert "backend_operations" not in json.dumps(catalog)
     assert len(json.dumps(catalog)) < 6_000
+
+
+def test_line_protocol_compiles_to_the_validated_proposal_shape() -> None:
+    payload = _parse_proposal_document(
+        """MODE: discovery
+SECURITIES: NONE
+DISCOVERY_SCOPES: Technology | Utilities
+EXCHANGE_GEOGRAPHY: NONE
+DISCOVERY_THEME: data centers
+RESULT_COUNT: 3
+LOOKBACK_DAYS: 365
+BENCHMARK: NONE
+SELECTION_OBJECTIVES: relative_value
+CAPABILITIES: candidate_discovery | company_profile | valuation_snapshot
+ANALYSES: maximum_drawdown"""
+    )
+
+    assert payload["mode"] == "discovery"
+    assert payload["discovery_scopes"] == ["Technology", "Utilities"]
+    assert payload["discovery_theme"] == "data centers"
+    assert payload["selection_objectives"] == ["relative_value"]
+    assert [item["id"] for item in payload["capabilities"]] == [
+        "candidate_discovery",
+        "company_profile",
+        "valuation_snapshot",
+    ]
 
 
 def test_supported_industry_name_uses_normal_screen_without_theme_filter() -> None:
@@ -353,6 +419,42 @@ def test_discovery_screen_expands_europe_to_exchange_country_codes(
     assert "US" not in captured[0].screen.exchange_country_codes
 
 
+def test_discovery_screen_passes_approved_selection_rules_to_python(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    approved = ApprovedResearchPlan(
+        question="Find undervalued industrial companies",
+        securities=(),
+        lookback_days=365,
+        benchmark=None,
+        capability_ids=("macro_context", "candidate_discovery", "company_profile"),
+        analysis_ids=(),
+        mode="discovery",
+        discovery_scopes=("Industrials",),
+        selection_objectives=("relative_value",),
+    ).validated()
+    captured: list[ResearchPlan] = []
+
+    def fake_run(plan, *_args, **_kwargs):
+        captured.append(plan)
+        return ResearchResult(plan=plan)
+
+    monkeypatch.setattr("portfolio.research_lab.run_research", fake_run)
+    settings = Settings(tmp_path, tmp_path / "db.sqlite", None, "test-model", "desktop.workspace")
+
+    _run_discovery_screen(
+        approved,
+        settings,
+        _macro(),
+        progress_callback=None,
+        cancel_event=None,
+    )
+
+    assert captured[0].selection_objectives == ["relative_value"]
+    assert captured[0].screen.candidate_search is True
+
+
 def test_multiple_discovery_screens_are_interleaved_and_deduplicated(
     tmp_path,
     monkeypatch,
@@ -407,11 +509,74 @@ def test_multiple_discovery_screens_are_interleaved_and_deduplicated(
     ]
 
 
+def test_discovery_keeps_successful_universes_when_another_universe_fails(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    approved = ApprovedResearchPlan(
+        question="Find companies related to data centers",
+        securities=(),
+        lookback_days=365,
+        benchmark=None,
+        capability_ids=("macro_context", "candidate_discovery", "company_profile"),
+        analysis_ids=(),
+        mode="discovery",
+        discovery_scopes=("Technology", "Industrials"),
+        discovery_theme="data centers",
+        result_count=2,
+    ).validated()
+
+    def fake_screen(_approved, *_args, scope=None, **_kwargs):
+        if scope == "Technology":
+            raise LSEGResearchError("temporary entitlement failure")
+        result = ResearchResult(plan=ResearchPlan(mode="screen", workflow="stock_screen"))
+        result.tables["screen"] = pd.DataFrame(
+            {"Instrument": ["IND1.N"], "TR.CommonName": ["Industrial One"]}
+        )
+        return result
+
+    monkeypatch.setattr("portfolio.research_lab._run_discovery_screen", fake_screen)
+    settings = Settings(tmp_path, tmp_path / "db.sqlite", None, "test-model", "desktop.workspace")
+
+    result = _run_discovery_screens(
+        approved,
+        settings,
+        _macro(),
+        progress_callback=None,
+        cancel_event=None,
+    )
+
+    assert result.tables["screen"]["Instrument"].tolist() == ["IND1.N"]
+    assert any("Technology" in warning for warning in result.warnings)
+
+
+def test_discovery_methodology_rejects_cross_industry_intrinsic_value_claims() -> None:
+    approved = ApprovedResearchPlan(
+        question="Find undervalued companies related to data centers",
+        securities=(),
+        lookback_days=365,
+        benchmark=None,
+        capability_ids=("macro_context", "candidate_discovery", "company_profile"),
+        analysis_ids=(),
+        mode="discovery",
+        discovery_scopes=("Technology", "Utilities"),
+        discovery_theme="data centers",
+        selection_objectives=("relative_value",),
+    ).validated()
+
+    finding = _discovery_methodology_finding(approved)
+
+    assert "below its approved universe median" in finding.text
+    assert "raw multiples are not compared across industries" in finding.text
+    assert "not an intrinsic-value estimate" in finding.text
+
+
 def test_exact_open_ended_question_can_propose_discovery(tmp_path, monkeypatch) -> None:
     question = "which stocks are best poised to take advantage of the AI revolution?"
     calls = []
 
-    def fake_text(_settings, _messages, **_kwargs):
+    def fake_text(_settings, _messages, **kwargs):
+        assert kwargs["preferred_model"] == "openai/gpt-oss-120b"
         if not calls:
             calls.append("plain_json_proposal")
             return json.dumps(_payload(
@@ -483,7 +648,7 @@ def test_proposal_planner_does_not_use_provider_structured_output(
     monkeypatch,
 ) -> None:
     def fake_text(_settings, messages, **_kwargs):
-        assert "JSON object" in messages[0][1]
+        assert "eleven labeled lines" in messages[0][1]
         return json.dumps(_payload(
             securities=["AAPL"],
             capabilities=[{"id": "company_profile", "reason": "Describe the company."}],
@@ -536,7 +701,7 @@ def test_plain_proposal_retries_locally_after_malformed_text(
     proposal = propose_research("Research AAPL", settings)
 
     assert proposal.securities == ("AAPL",)
-    assert "previous_json_error" in requests[1]
+    assert "previous_format_error" in requests[1]
 
 
 def test_invalid_entity_source_is_replanned_from_compiler_error(tmp_path, monkeypatch) -> None:
@@ -754,6 +919,9 @@ def test_market_news_execution_uses_market_news_workflow(tmp_path, monkeypatch) 
 
     assert captured[0].workflow == "market_news"
     assert any(item.finding_id == "MARKET_NEWS_1" for item in output.findings)
+    assert output.completion_status == "complete"
+    assert output.generated_at.tzinfo is not None
+    assert "Data basis: Current retrieval snapshot" in output.report
 
 
 def test_approval_requires_analysis_dependencies_and_one_rate_series() -> None:
@@ -1120,6 +1288,7 @@ def test_theme_selection_splits_a_batch_after_provider_json_truncation(
     def fake_invoke(_settings, _schema, messages, **kwargs):
         assert kwargs["max_tokens"] == 400
         assert kwargs["rate_limit_retries"] == 1
+        assert kwargs["preferred_model"] == "openai/gpt-oss-20b"
         request = json.loads(messages[-1][1])
         candidates = request["candidates"]
         batch_sizes.append(len(candidates))
@@ -1469,6 +1638,32 @@ def test_macro_finding_contains_all_standardized_signal_context() -> None:
     assert "Stock profile to prioritize:" in macro_text
 
 
+def test_execution_labels_missing_evidence_as_partial(tmp_path) -> None:
+    approved = ApprovedResearchPlan(
+        question="Research AAPL",
+        securities=("AAPL",),
+        lookback_days=365,
+        benchmark=None,
+        capability_ids=("macro_context",),
+        analysis_ids=(),
+    ).validated()
+    snapshot = MarketRegimeSnapshot(
+        regime="Regime incomplete",
+        summary="Some macro inputs are unavailable.",
+        emphasis=(),
+        indicators=(),
+        missing_evidence=("Current VIX observation",),
+        generated_at=datetime.now(timezone.utc),
+    )
+    settings = Settings(tmp_path, tmp_path / "db.sqlite", None, "test-model", "desktop.workspace")
+
+    output = execute_research(approved, settings, snapshot)
+
+    assert output.completion_status == "partial"
+    assert "Status: Partial" in output.report
+    assert "Current VIX observation" in output.report
+
+
 def test_model_summary_cannot_omit_macro_context(tmp_path, monkeypatch) -> None:
     approved = ApprovedResearchPlan(
         question="Research AAPL",
@@ -1482,9 +1677,9 @@ def test_model_summary_cannot_omit_macro_context(tmp_path, monkeypatch) -> None:
         VerifiedFinding("MACRO_REGIME", "Macro", "Neutral liquidity.", ("FRED",)),
         VerifiedFinding("PROFILE_AAPL", "Profile", "Technology company.", ("LSEG",)),
     ]
-    monkeypatch.setattr(
-        "portfolio.research_lab.invoke_structured_groq",
-        lambda *_args, **_kwargs: {
+    def fake_summary(_settings, _schema, _messages, **kwargs):
+        assert kwargs["preferred_model"] == "openai/gpt-oss-120b"
+        return {
             "highlights": [
                 {
                     "finding_id": "PROFILE_AAPL",
@@ -1492,7 +1687,11 @@ def test_model_summary_cannot_omit_macro_context(tmp_path, monkeypatch) -> None:
                 }
             ],
             "caveats": [],
-        },
+        }
+
+    monkeypatch.setattr(
+        "portfolio.research_lab.invoke_structured_groq",
+        fake_summary,
     )
     settings = Settings(
         tmp_path,

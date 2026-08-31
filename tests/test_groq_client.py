@@ -201,13 +201,14 @@ def test_client_retries_once_after_short_token_rate_limit(monkeypatch) -> None:
 
 def test_text_client_does_not_enable_provider_json_mode(monkeypatch) -> None:
     received = []
+    options = []
 
     class Response:
         content = '{"status":"ok"}'
 
     class FakeChatGroq:
-        def __init__(self, **_options):
-            pass
+        def __init__(self, **model_options):
+            options.append(model_options)
 
         def with_structured_output(self, *_args, **_kwargs):
             pytest.fail("plain text invocation must not enable structured output")
@@ -226,3 +227,5 @@ def test_text_client_does_not_enable_provider_json_mode(monkeypatch) -> None:
 
     assert output == '{"status":"ok"}'
     assert received == [[("system", "Return JSON."), ("human", "test")]]
+    assert options[0]["reasoning_format"] == "hidden"
+    assert options[0]["reasoning_effort"] == "low"

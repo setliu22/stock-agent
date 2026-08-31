@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import pandas as pd
 
 from portfolio.company_resolver import ResolvedInstrument
@@ -9,12 +10,58 @@ from portfolio.lseg_research import (
     _canonicalize,
     _extract_values,
     _open_lseg_session,
+    _persist_research_trace,
     apply_screen_filters,
     build_screen_body,
     build_screen_expression,
     concise_report,
 )
 from portfolio.research_plan import ResearchPlan, ScreenFilters
+
+
+def test_research_diagnostic_trace_omits_raw_question_and_result_tables(tmp_path) -> None:
+    settings = Settings(
+        tmp_path,
+        tmp_path / "portfolio.db",
+        None,
+        "test-model",
+        "desktop.workspace",
+    )
+    plan = ResearchPlan(
+        mode="company",
+        workflow="research_lab",
+        entities=["AAPL"],
+        topics=["profile"],
+        raw_request="private question about AAPL",
+    ).normalized()
+    result = ResearchResult(plan=plan)
+    result.tables["profile"] = pd.DataFrame(
+        {"Instrument": ["AAPL.O"], "TR.BusinessSummary": ["licensed profile text"]}
+    )
+    result.call_records.append(
+        {
+            "label": "Market news",
+            "status": "failed",
+            "request": {
+                "operation": "news.get_headlines",
+                "query": "private question about AAPL",
+            },
+            "error_message": "private question about AAPL was rejected",
+        }
+    )
+
+    _persist_research_trace(result, settings, "success")
+
+    path = tmp_path / "data" / "research_diagnostics.jsonl"
+    payload = json.loads(path.read_text(encoding="utf-8").strip())
+    encoded = json.dumps(payload)
+    assert "request" not in payload
+    assert "normalized_plan" not in payload
+    assert "private question" not in encoded
+    assert "licensed profile text" not in encoded
+    assert payload["request_fingerprint"]
+    assert payload["call_records"][0]["request"]["query_fingerprint"]
+    assert payload["call_records"][0]["error_message"] == "[request] was rejected"
 
 
 def test_extract_values_maps_returned_columns_to_requested_fields() -> None:

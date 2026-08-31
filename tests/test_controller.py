@@ -441,16 +441,21 @@ def test_position_risk_review_can_be_scoped_to_selected_tickers(tmp_path, monkey
         generated_at=datetime.now(timezone.utc),
     )
     captured = []
+    captured_context = []
 
     class _Review:
         def to_text(self):
             return "reviewed"
 
-    def fake_review(_settings, holdings, **_kwargs):
+    def fake_review(_settings, holdings, **kwargs):
         captured.extend(holding.ticker for holding in holdings)
+        captured_context.append(kwargs.get("user_context"))
         return _Review()
 
     monkeypatch.setattr("portfolio.controller.run_portfolio_position_risk_review", fake_review)
 
-    assert controller.review_position_risk(["MSFT"]) == "reviewed"
+    assert controller.review_position_risk(
+        ["MSFT"], user_context="Objective: long-term compounder"
+    ) == "reviewed"
     assert captured == ["MSFT"]
+    assert captured_context == ["Objective: long-term compounder"]

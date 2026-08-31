@@ -117,11 +117,18 @@ def test_position_review_batches_more_than_eight_holdings(monkeypatch):
 
     monkeypatch.setattr("portfolio.lseg_research.run_research", fake_run)
     review = run_portfolio_position_risk_review(
-        settings, holdings, macro_snapshot=_macro()
+        settings,
+        holdings,
+        macro_snapshot=_macro(),
+        user_context="Objective: capital preservation; Expected horizon: two years",
     )
 
     assert [len(batch) for batch in calls] == [8, 1]
     assert [item.ticker for item in review.holdings] == [f"TICK{i}" for i in range(9)]
+    assert review.user_context == (
+        "Objective: capital preservation; Expected horizon: two years"
+    )
+    assert "User-provided review context" in review.to_text()
 
 
 def test_position_risk_separates_fundamental_valuation_macro_and_event_evidence():

@@ -626,6 +626,19 @@ class ResearchApprovalDialog(tk.Toplevel):
                 wraplength=960,
                 justify="left",
             ).pack(fill="x", anchor="w", pady=(0, 12))
+        if proposal.selection_objectives:
+            labels = {
+                "relative_value": "Require peer-relative value evidence",
+                "positive_signals": "Require positive evidence from multiple families",
+            }
+            ttk.Label(
+                outer,
+                text="Candidate rules: "
+                + "  |  ".join(labels[item] for item in proposal.selection_objectives),
+                style="DialogMuted.TLabel",
+                wraplength=960,
+                justify="left",
+            ).pack(fill="x", anchor="w", pady=(0, 12))
 
         body = ttk.Frame(outer)
         body.pack(fill="both", expand=True)
@@ -794,6 +807,7 @@ class ResearchApprovalDialog(tk.Toplevel):
             ),
             discovery_theme=self.proposal.discovery_theme,
             result_count=result_count,
+            selection_objectives=self.proposal.selection_objectives,
         )
         try:
             self.result = approved.validated()
@@ -811,9 +825,12 @@ class PositionRiskDialog(tk.Toplevel):
         self.transient(parent)
         self.grab_set()
         self.configure(background=StockAgentApp.BG)
-        self.result: list[str] | None = None
+        self.result: tuple[list[str], str | None] | None = None
         self.scope = tk.StringVar(value="all")
         self.selections = {ticker: tk.BooleanVar(value=False) for ticker in tickers}
+        self.objective = tk.StringVar()
+        self.horizon = tk.StringVar()
+        self.exit_conditions = tk.StringVar()
 
         frame = ttk.Frame(self, padding=24)
         frame.pack(fill="both", expand=True)
@@ -856,6 +873,36 @@ class PositionRiskDialog(tk.Toplevel):
             )
             check.grid(row=index // 3, column=index % 3, sticky="w", padx=(0, 28), pady=5)
             self.stock_checks.append(check)
+
+        context_panel = ttk.Frame(frame, style="Panel.TFrame", padding=16)
+        context_panel.pack(fill="x", pady=(12, 0))
+        ttk.Label(
+            context_panel,
+            text="Optional decision context",
+            style="SurfaceSection.TLabel",
+        ).grid(row=0, column=0, columnspan=2, sticky="w")
+        ttk.Label(
+            context_panel,
+            text="Used for this review only, sent to Groq for interpretation, and not saved as a thesis.",
+            style="DialogMuted.TLabel",
+            wraplength=650,
+            justify="left",
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(3, 10))
+        for row, (label, variable) in enumerate(
+            (
+                ("Holding objective", self.objective),
+                ("Expected horizon", self.horizon),
+                ("Exit or review conditions", self.exit_conditions),
+            ),
+            start=2,
+        ):
+            ttk.Label(context_panel, text=label, style="DialogMuted.TLabel").grid(
+                row=row, column=0, sticky="w", pady=4
+            )
+            ttk.Entry(context_panel, textvariable=variable, width=54).grid(
+                row=row, column=1, sticky="ew", padx=(12, 0), pady=4
+            )
+        context_panel.columnconfigure(1, weight=1)
         buttons = ttk.Frame(frame)
         buttons.pack(fill="x", pady=(18, 0))
         ttk.Button(buttons, text="Start review", style="Accent.TButton", command=self._submit).pack(
@@ -873,14 +920,24 @@ class PositionRiskDialog(tk.Toplevel):
 
     def _submit(self) -> None:
         if self.scope.get() == "all":
-            self.result = list(self.selections)
+            tickers = list(self.selections)
         else:
-            self.result = [ticker for ticker, selected in self.selections.items() if selected.get()]
-            if not self.result:
+            tickers = [ticker for ticker, selected in self.selections.items() if selected.get()]
+            if not tickers:
                 messagebox.showerror(
                     "Select stocks", "Select at least one portfolio stock.", parent=self
                 )
                 return
+        context_parts = [
+            f"Objective: {self.objective.get().strip()}" if self.objective.get().strip() else "",
+            f"Expected horizon: {self.horizon.get().strip()}" if self.horizon.get().strip() else "",
+            (
+                f"Exit or review conditions: {self.exit_conditions.get().strip()}"
+                if self.exit_conditions.get().strip()
+                else ""
+            ),
+        ]
+        self.result = (tickers, "; ".join(item for item in context_parts if item) or None)
         self.destroy()
 
 
@@ -1186,6 +1243,12 @@ class StockAgentApp(tk.Tk):
             style="Toolbar.TButton",
             command=self.show_research_examples,
         ).pack(side="right", padx=(0, 8))
+        ttk.Button(
+            header,
+            text="Method",
+            style="Toolbar.TButton",
+            command=self.show_research_methodology,
+        ).pack(side="right", padx=(0, 8))
 
         composer = ttk.Frame(self.chat_tab, style="Panel.TFrame", padding=12)
         composer.pack(fill="x", pady=(0, 12))
@@ -1325,6 +1388,12 @@ class StockAgentApp(tk.Tk):
             text="Reset portfolio",
             style="Toolbar.TButton",
             command=self.reset_portfolio,
+        ).pack(side="left", padx=(0, 8))
+        ttk.Button(
+            toolbar,
+            text="Model",
+            style="Toolbar.TButton",
+            command=self.show_portfolio_model,
         ).pack(side="left", padx=(0, 8))
         self.portfolio_refresh_button = ttk.Button(
             toolbar,
@@ -1716,7 +1785,11 @@ class StockAgentApp(tk.Tk):
         self._refresh_stop_button()
         self._replace_live_progress_message()
 
-    def _start_position_risk_worker(self, tickers: list[str]) -> None:
+    def _start_position_risk_worker(
+        self,
+        tickers: list[str],
+        user_context: str | None = None,
+    ) -> None:
         if self.is_busy:
             messagebox.showinfo("Research in progress", "Wait for the current research to finish or stop it.", parent=self)
             return
@@ -1737,6 +1810,7 @@ class StockAgentApp(tk.Tk):
                     tickers=tickers,
                     progress_callback=progress_callback,
                     cancel_event=cancel_event,
+                    user_context=user_context,
                 )
                 result_kind = "message"
             except Exception as exc:
@@ -1788,6 +1862,97 @@ class StockAgentApp(tk.Tk):
         self.research_question.insert("1.0", dialog.result)
         self.research_question.focus_set()
 
+    def _show_method_window(
+        self,
+        title: str,
+        heading: str,
+        sections: tuple[tuple[str, str], ...],
+    ) -> None:
+        window = tk.Toplevel(self)
+        window.title(title)
+        window.geometry("760x560")
+        window.minsize(680, 480)
+        window.transient(self)
+        content = ttk.Frame(window, padding=24)
+        content.pack(fill="both", expand=True)
+        ttk.Label(content, text=heading, style="Title.TLabel").pack(anchor="w")
+        for label, body in sections:
+            ttk.Label(content, text=label, style="Section.TLabel").pack(
+                anchor="w", pady=(18, 4)
+            )
+            ttk.Label(
+                content,
+                text=body,
+                style="Muted.TLabel",
+                wraplength=700,
+                justify="left",
+            ).pack(fill="x", anchor="w")
+        ttk.Button(content, text="Close", command=window.destroy).pack(
+            side="bottom", anchor="e", pady=(20, 0)
+        )
+        window.bind("<Escape>", lambda _event: window.destroy())
+        self.after_idle(lambda: _center_dialog(window, self))
+
+    def show_research_methodology(self) -> None:
+        self._show_method_window(
+            "Research methodology",
+            "How candidate research is interpreted",
+            (
+                (
+                    "Undervalued",
+                    "A relative-value plan requires at least one usable positive valuation multiple below "
+                    "the median of the approved LSEG sector or industry universe. It is a shortlist rule, "
+                    "not an intrinsic-value estimate or return forecast.",
+                ),
+                (
+                    "Different industries",
+                    "Each universe is ranked independently. Cross-industry theme results are interleaved by "
+                    "their within-universe order, so a software P/E is not treated as directly comparable to "
+                    "a utility P/E.",
+                ),
+                (
+                    "Freshness and history",
+                    "Reports show their generation time and missing evidence. Screens use the current retrieval "
+                    "snapshot. The app does not claim a point-in-time historical backtest because it does not "
+                    "retain historical universe membership and estimate vintages.",
+                ),
+                (
+                    "Incomplete runs",
+                    "Optional missing data and failed discovery universes are reported as partial results when "
+                    "usable evidence remains. Required identity or comparison evidence still stops the run.",
+                ),
+            ),
+        )
+
+    def show_portfolio_model(self) -> None:
+        self._show_method_window(
+            "Portfolio model",
+            "What the portfolio currently measures",
+            (
+                (
+                    "Open positions",
+                    "The portfolio aggregates recorded purchase lots into current shares, cost, average purchase "
+                    "price, market value, and unrealized gain or loss.",
+                ),
+                (
+                    "Not a transaction ledger",
+                    "Sales, dividends, stock splits, fees, cash balances, and taxes are not modeled yet. Total "
+                    "return therefore means unrealized return on the recorded open purchases, not complete "
+                    "account performance.",
+                ),
+                (
+                    "Performance chart",
+                    "Historical values use the quantities owned after each recorded purchase date and available "
+                    "price history. Missing ticker history is labeled partial rather than silently substituted.",
+                ),
+                (
+                    "Decision context",
+                    "Position review can accept an optional objective, horizon, and exit conditions for that run. "
+                    "The context is labeled as user supplied and is not stored as an independently verified thesis.",
+                ),
+            ),
+        )
+
     def _start_research_lab_worker(self, approved: ApprovedResearchPlan) -> None:
         if self.is_busy:
             return
@@ -1808,6 +1973,18 @@ class StockAgentApp(tk.Tk):
             )
             if approved.discovery_theme:
                 summary_parts.append("Business theme: " + approved.discovery_theme)
+            if approved.selection_objectives:
+                objective_labels = {
+                    "relative_value": "peer-relative value required",
+                    "positive_signals": "multiple positive signal families required",
+                }
+                summary_parts.append(
+                    "Candidate rules: "
+                    + ", ".join(
+                        objective_labels[item]
+                        for item in approved.selection_objectives
+                    )
+                )
         summary_parts.append("Data: " + ", ".join(capability_labels))
         if analysis_labels:
             summary_parts.append("Optional analyses: " + ", ".join(analysis_labels))
@@ -2202,7 +2379,8 @@ class StockAgentApp(tk.Tk):
         dialog = PositionRiskDialog(self, tickers)
         self.wait_window(dialog)
         if dialog.result is not None:
-            self._start_position_risk_worker(dialog.result)
+            selected_tickers, user_context = dialog.result
+            self._start_position_risk_worker(selected_tickers, user_context)
 
     def start_industry_research(self) -> None:
         dialog = IndustryResearchDialog(self, self.controller.industry_research_options())

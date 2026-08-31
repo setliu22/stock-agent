@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+import hashlib
 import html
 import json
 import math
@@ -2347,12 +2348,42 @@ def _persist_research_trace(
 ) -> None:
     """Append a sanitized, table-free run record for post-hoc trace auditing."""
     _finalize_call_metrics(result)
-    path = settings.project_root / "data" / "research_runs.jsonl"
+    path = settings.project_root / "data" / "research_diagnostics.jsonl"
+    request_fingerprint = hashlib.sha256(
+        result.plan.raw_request.encode("utf-8")
+    ).hexdigest()
+
+    def redact(value: Any) -> Any:
+        if isinstance(value, dict):
+            cleaned = {key: redact(item) for key, item in value.items()}
+            query = cleaned.get("query")
+            if query is not None:
+                cleaned["query_fingerprint"] = hashlib.sha256(
+                    str(query).encode("utf-8")
+                ).hexdigest()
+                cleaned.pop("query", None)
+            return cleaned
+        if isinstance(value, list):
+            return [redact(item) for item in value]
+        if isinstance(value, tuple):
+            return [redact(item) for item in value]
+        if isinstance(value, str) and result.plan.raw_request:
+            return value.replace(result.plan.raw_request, "[request]")
+        return value
+
     payload = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "outcome": outcome,
-        "request": result.plan.raw_request,
-        "normalized_plan": result.plan.to_dict(),
+        "request_fingerprint": request_fingerprint,
+        "plan_contract": {
+            "mode": result.plan.mode,
+            "workflow": result.plan.workflow,
+            "topics": list(result.plan.topics),
+            "selection_objectives": list(result.plan.selection_objectives),
+            "lookback_days": result.plan.lookback_days,
+            "has_benchmark": bool(result.plan.benchmark),
+            "has_discovery_theme": bool(result.plan.discovery_theme),
+        },
         "compiled_screen": result.metrics.get("screen_expression"),
         "constraint_validation": result.metrics.get("constraint_validation"),
         "counts": {
@@ -2363,11 +2394,13 @@ def _persist_research_trace(
         "resolved_rics": [item.ric for item in result.resolved],
         "evidence_coverage": result.metrics.get("evidence_coverage", {}),
         "data_request_coverage": result.metrics.get("data_request_coverage", {}),
-        "call_records": result.call_records,
-        "warnings": result.warnings[:30],
+        "call_records": redact(result.call_records),
+        "warnings": redact(result.warnings[:30]),
         "error_type": type(error).__name__ if error is not None else None,
-        "error": str(error)[:1000] if error is not None else None,
-        "error_diagnostics": list(getattr(error, "diagnostics", ()))[:10],
+        "error": redact(str(error)[:1000]) if error is not None else None,
+        "error_diagnostics": redact(
+            list(getattr(error, "diagnostics", ()))[:10]
+        ),
     }
     try:
         path.parent.mkdir(parents=True, exist_ok=True)

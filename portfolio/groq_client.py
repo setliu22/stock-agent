@@ -13,6 +13,8 @@ GROQ_FALLBACK_MODELS = (
     DEFAULT_GROQ_MODEL,
     "openai/gpt-oss-120b",
 )
+GROQ_REASONING_MODEL = "openai/gpt-oss-120b"
+GROQ_FAST_MODEL = "openai/gpt-oss-20b"
 
 
 class GroqModelUnavailableError(RuntimeError):
@@ -25,8 +27,15 @@ def _chat_groq_class():
     return ChatGroq
 
 
-def _model_candidates(preferred: str | None) -> tuple[str, ...]:
-    candidates = [normalize_groq_model(preferred), *GROQ_FALLBACK_MODELS]
+def _model_candidates(
+    preferred: str | None,
+    configured: str | None = None,
+) -> tuple[str, ...]:
+    candidates = [
+        normalize_groq_model(preferred),
+        normalize_groq_model(configured),
+        *GROQ_FALLBACK_MODELS,
+    ]
     return tuple(dict.fromkeys(candidates))
 
 
@@ -75,12 +84,17 @@ def invoke_structured_groq(
     max_tokens: int | None = None,
     method: Literal["json_schema", "json_mode"] = "json_schema",
     rate_limit_retries: int = 0,
+    preferred_model: str | None = None,
 ) -> Any:
     """Invoke one approved schema, retrying only an unavailable model ID."""
     if not getattr(settings, "groq_api_key", None):
         raise ValueError("GROQ_API_KEY is not configured.")
 
-    candidates = _model_candidates(getattr(settings, "groq_model", None))
+    configured_model = getattr(settings, "groq_model", None)
+    candidates = _model_candidates(
+        preferred_model or configured_model,
+        configured_model if preferred_model else None,
+    )
     unavailable: list[str] = []
     chat_groq = _chat_groq_class()
     for model_name in candidates:
@@ -90,6 +104,9 @@ def invoke_structured_groq(
             "max_retries": max_retries,
             "api_key": settings.groq_api_key,
         }
+        if model_name.startswith("openai/gpt-oss-"):
+            options["reasoning_format"] = "hidden"
+            options["reasoning_effort"] = "low"
         if max_tokens is not None:
             options["max_tokens"] = max_tokens
         structured_options: dict[str, Any] = {
@@ -131,6 +148,7 @@ def invoke_text_groq(
     max_retries: int = 0,
     max_tokens: int | None = None,
     rate_limit_retries: int = 0,
+    preferred_model: str | None = None,
 ) -> str:
     """Invoke Groq without provider-enforced JSON generation."""
     if not getattr(settings, "groq_api_key", None):
@@ -138,13 +156,21 @@ def invoke_text_groq(
 
     unavailable: list[str] = []
     chat_groq = _chat_groq_class()
-    for model_name in _model_candidates(getattr(settings, "groq_model", None)):
+    configured_model = getattr(settings, "groq_model", None)
+    candidates = _model_candidates(
+        preferred_model or configured_model,
+        configured_model if preferred_model else None,
+    )
+    for model_name in candidates:
         options: dict[str, Any] = {
             "model": model_name,
             "temperature": 0,
             "max_retries": max_retries,
             "api_key": settings.groq_api_key,
         }
+        if model_name.startswith("openai/gpt-oss-"):
+            options["reasoning_format"] = "hidden"
+            options["reasoning_effort"] = "low"
         if max_tokens is not None:
             options["max_tokens"] = max_tokens
         retries_remaining = max(0, int(rate_limit_retries))

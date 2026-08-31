@@ -3,6 +3,10 @@
 A local desktop application for human-approved LSEG research, deterministic
 industry screening, portfolio tracking, position-risk review, and macro context.
 
+See [research and portfolio product decisions](docs/research_and_portfolio_decisions.md)
+for the valuation methodology, accounting boundary, freshness rules,
+partial-result policy, evaluation plan, and LSEG retention decisions.
+
 ## Main workflows
 
 ### Research Lab
@@ -161,5 +165,9 @@ cancellation, and GUI navigation.
 data/stock_agent_install.log
 data/stock_agent_gui.log
 data/lseg-data-lib.log
-data/research_runs.jsonl
+data/research_diagnostics.jsonl
 ```
+
+Research diagnostics contain plan shape, coverage, request counts, warnings,
+and a one-way question fingerprint. They do not contain the raw question or
+LSEG result tables.
