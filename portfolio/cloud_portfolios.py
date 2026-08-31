@@ -70,6 +70,12 @@ def friendly_cloud_error(error: BaseException) -> str:
     """Turn common first-time Supabase setup failures into actionable messages."""
     message = str(error).strip() or type(error).__name__
     lowered = message.casefold()
+    if "bad gateway" in lowered or "http 502" in lowered:
+        return (
+            "Supabase's gateway could not reach the project backend. If the project was just "
+            "resumed or restarted, wait a few minutes and retry. If it continues, check the "
+            "project status in the Supabase dashboard and the Supabase service status page."
+        )
     if "public.portfolios" in lowered and "schema cache" in lowered:
         return (
             "Supabase login succeeded, but the cloud portfolio tables are not set up. "
@@ -99,9 +105,11 @@ def friendly_auth_error(error: BaseException) -> str:
         reason = current.reason if isinstance(current, URLError) else current
         if isinstance(reason, socket.gaierror):
             return (
-                "Could not resolve the Supabase project address. Check the internet connection "
-                "and the Supabase project URL in Account settings, then retry. The request did "
-                "not reach Supabase."
+                "Could not resolve the Supabase project address. Open the Supabase dashboard "
+                "and resume the project if it is paused, then allow a moment for it to become "
+                "available. If it is already active, verify the Project URL in Account settings "
+                "and check the internet connection. The request did not reach Supabase, so this "
+                "is not an authentication or database-table error."
             )
         if isinstance(reason, (TimeoutError, socket.timeout)):
             return (

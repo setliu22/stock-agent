@@ -8,7 +8,11 @@ from urllib.error import URLError
 import pytest
 
 from portfolio.certificates import configure_ssl_certificates
-from portfolio.cloud_portfolios import friendly_auth_error, is_certificate_error
+from portfolio.cloud_portfolios import (
+    friendly_auth_error,
+    friendly_cloud_error,
+    is_certificate_error,
+)
 from portfolio.config import DEFAULT_GROQ_MODEL, get_settings, save_supabase_settings
 
 
@@ -83,5 +87,14 @@ def test_supabase_dns_failure_is_explained_as_connectivity_problem() -> None:
     message = friendly_auth_error(error)
 
     assert "resolve the Supabase project address" in message
+    assert "resume the project if it is paused" in message
     assert "did not reach Supabase" in message
     assert "password" not in message.casefold()
+
+
+def test_supabase_bad_gateway_is_explained_as_backend_availability_problem() -> None:
+    message = friendly_cloud_error(RuntimeError("Bad Gateway"))
+
+    assert "gateway could not reach the project backend" in message
+    assert "resumed or restarted" in message
+    assert "service status" in message
