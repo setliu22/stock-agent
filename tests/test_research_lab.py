@@ -1368,6 +1368,58 @@ def test_theme_selection_batches_candidates_without_losing_earlier_results(
     ]
 
 
+def test_theme_selection_continues_past_first_ten_candidates(tmp_path, monkeypatch) -> None:
+    approved = ApprovedResearchPlan(
+        question="Find companies related to data centers",
+        securities=(),
+        lookback_days=365,
+        benchmark=None,
+        capability_ids=("macro_context", "candidate_discovery", "company_profile"),
+        analysis_ids=(),
+        mode="discovery",
+        discovery_scopes=("Technology",),
+        discovery_theme="data centers",
+        result_count=2,
+    ).validated()
+    result = ResearchResult(plan=ResearchPlan(mode="screen", workflow="stock_screen"))
+    result.tables["screen"] = pd.DataFrame(
+        [
+            {
+                "Instrument": f"RIC{index}.N",
+                "TR.TickerSymbol": f"T{index}",
+                "TR.CommonName": f"Company {index}",
+                "TR.BusinessSummary": "Semiconductor and infrastructure supplier.",
+                "Discovery scope": "Technology",
+            }
+            for index in range(15)
+        ]
+    )
+    seen = []
+
+    def fake_invoke(_settings, _schema, messages, **_kwargs):
+        candidates = json.loads(messages[-1][1])["candidates"]
+        seen.extend(item["ticker"] for item in candidates)
+        return {
+            "matches": [
+                {
+                    "candidate_id": item["candidate_id"],
+                    "relevance": "supplier_enabler" if int(item["ticker"][1:]) >= 11 else "unsupported",
+                    "reason": "Retrieved profile supports the classification.",
+                }
+                for item in candidates
+            ]
+        }
+
+    monkeypatch.setattr("portfolio.research_lab.invoke_structured_groq", fake_invoke)
+    settings = Settings(tmp_path, tmp_path / "db.sqlite", "key", "test-model", "desktop.workspace")
+
+    selected, missing = _select_theme_candidates(result, approved, settings)
+
+    assert [item.ticker for item in selected] == ["T11", "T12"]
+    assert "T10" in seen and "T12" in seen
+    assert not missing
+
+
 def test_theme_selection_splits_a_batch_after_provider_json_truncation(
     tmp_path,
     monkeypatch,

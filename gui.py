@@ -1460,8 +1460,10 @@ class StockAgentApp(tk.Tk):
         self.performance_intraday_position_histories: dict[str, list[Any]] = {}
         self.performance_history_missing_tickers: tuple[str, ...] = ()
         self.selected_performance_ticker: str | None = None
-        self.performance_sessions = 3
-        self._set_performance_period(3)
+        # Show the complete purchase-aware history on first load. A short
+        # default window can misleadingly look like the position began recently.
+        self.performance_sessions = 0
+        self._set_performance_period(0)
 
         columns = (
             "ticker",

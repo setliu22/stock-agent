@@ -8,8 +8,15 @@ from pathlib import Path
 import sqlite3
 
 
-CLASSIFIER_CONTRACT_VERSION = 1
-VALID_RELEVANCE = {"direct", "meaningful", "adjacent", "unsupported"}
+CLASSIFIER_CONTRACT_VERSION = 2
+VALID_RELEVANCE = {
+    "operator",
+    "direct",
+    "supplier_enabler",
+    "meaningful",
+    "adjacent",
+    "unsupported",
+}
 
 
 class ResearchClassificationCache:
@@ -36,6 +43,8 @@ class ResearchClassificationCache:
         evidence = {
             "version": CLASSIFIER_CONTRACT_VERSION,
             "theme": " ".join(theme.casefold().split()),
+            "ric": candidate.get("ric", "").strip(),
+            "company": candidate.get("company", "").strip(),
             "sector": candidate.get("sector", "").strip(),
             "industry": candidate.get("industry", "").strip(),
             "business_summary": candidate.get("business_summary", "").strip(),

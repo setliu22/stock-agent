@@ -22,66 +22,20 @@ pause_and_exit() {
 }
 
 clear
-print "${BLUE}Stock Agent Updater${RESET}"
+print "${BLUE}Stock Agent Local Rebuilder${RESET}"
 print
 print "Project folder:"
 print "  $PROJECT_ROOT"
 print
 
-if ! command -v git >/dev/null 2>&1; then
-    print "${RED}Git is not installed or is not available in PATH.${RESET}"
-    pause_and_exit 1
-fi
-if [[ ! -d "$PROJECT_ROOT/.git" ]]; then
-    print "${RED}This folder is not a Git checkout.${RESET}"
-    print "Download or clone the repository before using the updater."
-    pause_and_exit 1
-fi
 if [[ ! -f "$REFRESHER" ]]; then
-    print "${RED}The Stock Agent update helper is missing.${RESET}"
+    print "${RED}The Stock Agent local rebuild helper is missing.${RESET}"
     pause_and_exit 1
 fi
 
-BRANCH="$(git branch --show-current)"
-if [[ -z "$BRANCH" ]]; then
-    print "${RED}The repository is not currently on a named branch.${RESET}"
-    pause_and_exit 1
-fi
-
-# The update helper regenerates Stock Agent.app locally. Ignore that generated app
-# when checking whether source edits would be overwritten by an update.
-SOURCE_CHANGES="$(git status --porcelain --untracked-files=no -- . ':(exclude)Stock Agent.app')"
-if [[ -n "$SOURCE_CHANGES" ]]; then
-    print "${YELLOW}The updater found local source changes and will not overwrite them:${RESET}"
-    print
-    print -r -- "$SOURCE_CHANGES"
-    print
-    print "Commit, stash, or copy those changes somewhere safe, then run this updater again."
-    pause_and_exit 1
-fi
-
-print "Updating branch: $BRANCH"
+print "${GREEN}No GitHub or Git operations will be performed.${RESET}"
 print
-git fetch origin "$BRANCH"
-FETCH_STATUS=$?
-if [[ $FETCH_STATUS -ne 0 ]]; then
-    print
-    print "${RED}Could not download the latest version from GitHub.${RESET}"
-    print "Check your internet connection and GitHub access, then retry."
-    pause_and_exit "$FETCH_STATUS"
-fi
-
-git merge --ff-only "origin/$BRANCH"
-MERGE_STATUS=$?
-if [[ $MERGE_STATUS -ne 0 ]]; then
-    print
-    print "${RED}The update could not be applied as a safe fast-forward.${RESET}"
-    print "No local source files were overwritten."
-    pause_and_exit "$MERGE_STATUS"
-fi
-
-print
-print "${GREEN}Source update complete.${RESET}"
+print "Using the files currently in this local project folder."
 print "Refreshing Python packages, running tests, rebuilding, and opening the app."
 print
 exec /bin/zsh "$REFRESHER"

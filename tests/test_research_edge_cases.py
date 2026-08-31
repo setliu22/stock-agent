@@ -166,6 +166,24 @@ def test_nullable_lseg_numeric_columns_do_not_break_ranking() -> None:
     assert ranked["Value Evidence Count"].notna().all()
 
 
+def test_rank_candidate_screen_values_companies_against_trbc_industry_peers() -> None:
+    frame = pd.DataFrame(
+        [
+            {"Instrument": "A.N", "TR.TRBCIndustry": "Memory Chips", "TR.PtoEPSMeanEst(Period=FY1)": 12, "TR.CompanyMarketCap": 10},
+            {"Instrument": "B.N", "TR.TRBCIndustry": "Memory Chips", "TR.PtoEPSMeanEst(Period=FY1)": 20, "TR.CompanyMarketCap": 9},
+            {"Instrument": "C.N", "TR.TRBCIndustry": "Software", "TR.PtoEPSMeanEst(Period=FY1)": 5, "TR.CompanyMarketCap": 8},
+            {"Instrument": "D.N", "TR.TRBCIndustry": "Software", "TR.PtoEPSMeanEst(Period=FY1)": 8, "TR.CompanyMarketCap": 7},
+        ]
+    )
+
+    ranked = _rank_candidate_screen(frame)
+    by_ric = ranked.set_index("Instrument")
+
+    assert by_ric.loc["A.N", "Value Discount Count"] == 1
+    assert by_ric.loc["C.N", "Value Discount Count"] == 1
+    assert by_ric.loc["B.N", "Value Discount Count"] == 0
+
+
 def test_estimate_revision_does_not_cross_fiscal_period_rollover() -> None:
     class FakeLD:
         HeaderType = None

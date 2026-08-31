@@ -941,6 +941,24 @@ def _rank_candidate_screen(
             .replace([math.inf, -math.inf], float("nan"))
         )
 
+    industry_peers = output.get(
+        "TR.TRBCIndustry", pd.Series("", index=output.index, dtype="object")
+    ).fillna("").astype(str).str.strip()
+
+    def peer_percentile(values: pd.Series) -> pd.Series:
+        """Rank within TRBC industry where a comparison is possible."""
+        ranked = pd.Series(float("nan"), index=output.index, dtype="float64")
+        for _industry, indexes in industry_peers.groupby(industry_peers).groups.items():
+            peer_values = values.loc[indexes].dropna()
+            if len(peer_values) >= 2:
+                ranked.loc[peer_values.index] = peer_values.rank(
+                    pct=True, method="average"
+                )
+        # Missing/one-company industry classifications retain a transparent
+        # universe fallback rather than becoming unrankable.
+        fallback = values.rank(pct=True, method="average")
+        return ranked.fillna(fallback)
+
     price = numeric("TR.PriceClose")
     target = numeric("TR.PriceTargetMean")
     output["Target Upside"] = target.div(price).sub(1).where(price > 0)
@@ -1015,7 +1033,7 @@ def _rank_candidate_screen(
         valid = values.notna()
         if valid.sum() < 2:
             return
-        percentile = values.rank(pct=True, method="average")
+        percentile = peer_percentile(values)
         if not higher_is_better:
             percentile = 1.0 - percentile + (1.0 / valid.sum())
         components.append((family, percentile.where(valid), field))
@@ -1068,10 +1086,11 @@ def _rank_candidate_screen(
         value_evidence = value_evidence.add(positive.notna().astype(int), fill_value=0).astype(int)
         if not positive.notna().any():
             continue
-        median = positive.median()
-        if pd.isna(median):
-            continue
-        discounted = positive < float(median)
+        peer_medians = positive.groupby(industry_peers).transform("median")
+        peer_counts = positive.groupby(industry_peers).transform("count")
+        universe_median = positive.median()
+        comparison_medians = peer_medians.where(peer_counts >= 2, universe_median)
+        discounted = positive < comparison_medians
         for index in output.index[discounted.fillna(False)]:
             value_discounts[index].append(label)
     output["Value Evidence Count"] = value_evidence
@@ -1460,6 +1479,33 @@ def _retrieve_screen(ld: Any, client: _LSEGClient, result: ResearchResult) -> No
                 "industry": filters.industry,
             }
     result.metrics["cohort_statistics"] = cohort_statistics
+    industry_statistics: dict[str, dict[str, dict[str, Any]]] = {}
+    if "TR.TRBCIndustry" in full_ranked.columns:
+        for industry, peers in full_ranked.groupby("TR.TRBCIndustry", dropna=True):
+            industry_name = str(industry).strip()
+            if not industry_name or len(peers) < 2:
+                continue
+            statistics: dict[str, dict[str, Any]] = {}
+            for field_name, unit in (
+                ("TR.PtoEPSMeanEst(Period=FY1)", "multiple"),
+                ("TR.EVToEBITDA", "multiple"),
+                ("TR.PriceToSalesPerShare", "multiple"),
+                ("TR.PriceToBVPerShare", "multiple"),
+            ):
+                values = _column(peers, field_name).replace(
+                    [math.inf, -math.inf], pd.NA
+                ).dropna()
+                values = values[values > 0]
+                if not values.empty:
+                    statistics[field_name] = {
+                        "median": float(values.median()),
+                        "valid_n": len(values),
+                        "unit": unit,
+                        "industry": industry_name,
+                    }
+            if statistics:
+                industry_statistics[industry_name] = statistics
+    result.metrics["cohort_statistics_by_industry"] = industry_statistics
 
     result.tables["screen_universe"] = full_ranked.reset_index(drop=True)
 
@@ -1509,6 +1555,22 @@ def _retrieve_screen(ld: Any, client: _LSEGClient, result: ResearchResult) -> No
             if eligible.empty:
                 raise LSEGNoMatches(
                     "The screen matched companies, but none traded below the cohort median on a usable positive valuation multiple."
+                )
+            # Cheapness alone is not enough: require corroboration from at
+            # least two independent positive signal families to reduce value
+            # traps while preserving a simple, auditable rule.
+            if "Positive Signal Family Count" not in eligible.columns:
+                eligible = eligible.iloc[0:0]
+            else:
+                positive_count = pd.to_numeric(
+                    eligible["Positive Signal Family Count"], errors="coerce"
+                ).fillna(0)
+                eligible = eligible[positive_count >= 2]
+            result.metrics["screen_value_quality_eligible_count"] = len(eligible)
+            if eligible.empty:
+                raise LSEGNoMatches(
+                    "The screen found valuation discounts, but no company also had positive evidence "
+                    "in at least two independent signal families."
                 )
         result.metrics["screen_evidence_eligible_count"] = len(eligible)
 

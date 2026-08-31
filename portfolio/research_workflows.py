@@ -100,8 +100,10 @@ WORKFLOWS: dict[str, WorkflowDefinition] = {
         screen_limit=200,
         deep_dive_candidates=5,
         news_stories_per_candidate=2,
-        minimum_screen_factor_families=5,
-        minimum_evidence_families=5,
+        # The ranker defines four independent families: growth,
+        # profitability, valuation, and financial resilience.
+        minimum_screen_factor_families=4,
+        minimum_evidence_families=4,
     ),
     "stock_screen": WorkflowDefinition(
         workflow_id="stock_screen",

@@ -429,8 +429,8 @@ class ResearchPlan:
         if isinstance(self.screen.limit, bool) or not re.fullmatch(r"[+-]?\d+", str(self.screen.limit).strip()):
             raise UnsupportedResearchConstraint("Screen result limit must be an integer.")
         self.screen.limit = int(self.screen.limit)
-        if not 1 <= self.screen.limit <= 50:
-            raise UnsupportedResearchConstraint("Screen result limit must be between 1 and 50.")
+        if not 1 <= self.screen.limit <= 200:
+            raise UnsupportedResearchConstraint("Screen result limit must be between 1 and 200.")
         if not isinstance(self.screen.limit_explicit, bool):
             raise UnsupportedResearchConstraint("Screen limit provenance must be boolean.")
         if self.screen.sort_by not in {"market_cap", "pe", "forward_pe", "ev_ebitda", "return", "quality_value"}:

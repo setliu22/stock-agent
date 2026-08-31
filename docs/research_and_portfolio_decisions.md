@@ -9,9 +9,9 @@ This document records the product decisions behind the Research Lab and Portfoli
 In this application, undervalued means **peer-relative value evidence**, not an intrinsic-value estimate.
 
 - The research planner can select the typed `relative_value` objective.
-- Python then requires at least one usable, positive valuation multiple below the median of the approved LSEG sector or industry universe.
+- Python then requires at least one usable, positive valuation multiple below the narrower TRBC industry median when at least two peers have usable data (otherwise the approved-universe median), plus positive evidence in at least two independent signal families.
 - The ranking can use forward P/E, EV/EBITDA, price/sales, and price/book when applicable and available.
-- Growth, profitability, financial resilience, macro fit, and data coverage affect shortlist order, but the LLM does not invent a weighted valuation score.
+- Growth, profitability, financial resilience, macro fit, and data coverage affect shortlist order, but the LLM does not invent a weighted valuation score. Positive signals include quality, cash flow, income, momentum, and expectations; at least two are required for an undervalued candidate.
 - Missing factors remain missing. They are not replaced with zero or an estimate.
 
 This is a shortlist rule. The app does not claim that the market price is below a DCF value or that the stock will appreciate.

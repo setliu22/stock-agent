@@ -51,7 +51,21 @@ ProgressCallback = Callable[[int | None, str, str], None]
 ALL_PUBLIC_EQUITIES = "All public equities"
 MAX_DISCOVERY_SCOPES = 6
 PROFILE_CLASSIFIER_BATCH_SIZE = 5
-PROFILE_CANDIDATES_PER_UNIVERSE = 10
+# The LSEG screen itself is bounded at 200 instruments. Theme discovery must be
+# allowed to walk that universe instead of stopping at an arbitrary top ten.
+PROFILE_CANDIDATES_PER_UNIVERSE = 200
+
+DATA_CENTER_CONCEPTS: tuple[str, ...] = (
+    "data centers",
+    "servers",
+    "hyperscale cloud",
+    "high-bandwidth memory (HBM)",
+    "server DRAM",
+    "enterprise SSDs",
+    "data-center networking",
+    "cooling infrastructure",
+    "power infrastructure",
+)
 
 
 def research_discovery_scope_options() -> tuple[tuple[str, str], ...]:
@@ -701,8 +715,9 @@ def _proposal_model_catalog() -> dict[str, dict[str, str]]:
         "analyses": {item.analysis_id: item.description for item in ANALYSES},
         "selection_objectives": {
             "relative_value": (
-                "Require at least one usable positive valuation multiple below the median "
-                "of the candidate's approved sector or industry universe."
+                "Require at least one usable positive valuation multiple below the narrower "
+                "TRBC-industry median when available, plus positive evidence in at least two "
+                "independent signal families."
             ),
             "positive_signals": (
                 "Require positive evidence from at least two independent quality, cash-flow, "
@@ -1372,7 +1387,9 @@ def _run_discovery_screen(
             exchange_country_codes=geography.country_codes if geography else (),
             sector=sector if industry is None else None,
             industry=industry,
-            limit=20,
+            # Retrieve the full bounded screen so thematic relevance is checked
+            # before a financially ranked candidate window can discard a match.
+            limit=200,
             limit_explicit=True,
             sort_by="quality_value",
         ),
@@ -1500,6 +1517,10 @@ def _run_discovery_screens(
         scope: result.metrics.get("cohort_statistics", {})
         for scope, result in scoped_results
     }
+    merged.metrics["cohort_statistics_by_industry"] = {
+        scope: result.metrics.get("cohort_statistics_by_industry", {})
+        for scope, result in scoped_results
+    }
     merged.warnings.extend(skipped_scopes)
     if merged.tables["screen"].empty:
         detail = " | ".join(skipped_scopes[:4])
@@ -1515,7 +1536,7 @@ def _select_theme_candidates(
     approved: ApprovedResearchPlan,
     settings: Settings,
 ) -> tuple[list[ThemeCandidate], list[str]]:
-    """Optionally gate profile relevance and preserve Python's deterministic order."""
+    """Gate profile relevance while walking the full bounded screen in chunks."""
     frame = result.tables.get("screen", pd.DataFrame())
     if frame.empty:
         raise ResearchLabError("The approved discovery screen returned no candidates.")
@@ -1621,6 +1642,9 @@ def _select_theme_candidates(
         if not pending:
             return cached
         candidate_ids = [item["candidate_id"] for item in pending]
+        relevance_labels = [
+            "operator", "direct", "supplier_enabler", "meaningful", "adjacent", "unsupported"
+        ]
         schema = {
             "title": "ProfileRelevanceClassification",
             "type": "object",
@@ -1637,7 +1661,7 @@ def _select_theme_candidates(
                             "candidate_id": {"type": "string", "enum": candidate_ids},
                             "relevance": {
                                 "type": "string",
-                                "enum": ["direct", "meaningful", "adjacent", "unsupported"],
+                                "enum": relevance_labels,
                             },
                             "reason": {"type": "string"},
                         },
@@ -1670,10 +1694,13 @@ def _select_theme_candidates(
                     (
                         "system",
                         "Classify every supplied candidate's relationship to the user's business-exposure query using only its "
-                        "retrieved LSEG business description and classification. Direct means the theme is a core "
-                        "product or service; meaningful means it is an explicit material business activity; adjacent "
-                        "means only enabling or indirect exposure; unsupported means the evidence does not establish "
-                        "the relationship. Return each supplied candidate ID exactly once. Do not rank investment "
+                        "retrieved LSEG business description and classification. Operator means it owns or operates the themed "
+                        "infrastructure; direct means the theme is a core product or service; supplier_enabler means it explicitly "
+                        "supplies essential equipment, components, power, cooling, networking, memory, or storage for the theme; "
+                        "meaningful means another explicit material business activity; adjacent means only a vague or indirect "
+                        "relationship; unsupported means the evidence does not establish the relationship. Exposure need not use "
+                        "the exact query phrase when the retrieved description explicitly names a supplied business concept. "
+                        "Return each supplied candidate ID exactly once. Do not rank investment "
                         "quality, use outside knowledge, infer missing facts, or introduce another company. "
                         "Keep each reason to one short sentence.",
                     ),
@@ -1682,6 +1709,11 @@ def _select_theme_candidates(
                         json.dumps(
                             {
                                 "business_exposure_query": approved.discovery_theme,
+                                "related_business_concepts": (
+                                    DATA_CENTER_CONCEPTS
+                                    if "data center" in (approved.discovery_theme or "").casefold()
+                                    else ()
+                                ),
                                 "candidates": classifier_batch,
                             },
                             sort_keys=True,
@@ -1719,7 +1751,7 @@ def _select_theme_candidates(
             if (
                 candidate_id in candidate_ids
                 and candidate_id not in batch_classifications
-                and relevance in {"direct", "meaningful", "adjacent", "unsupported"}
+                and relevance in set(relevance_labels)
                 and reason
             ):
                 batch_classifications[candidate_id] = (relevance, reason[:400])
@@ -1755,7 +1787,7 @@ def _select_theme_candidates(
             if batch:
                 classifications.update(classify_batch(batch))
         supported_count = sum(
-            relevance in {"direct", "meaningful"}
+            relevance in {"operator", "direct", "supplier_enabler", "meaningful"}
             for relevance, _reason in classifications.values()
         )
         if supported_count >= approved.result_count:
@@ -1767,7 +1799,7 @@ def _select_theme_candidates(
             item["candidate_id"]
             for item in packets_by_scope[scope]
             if classifications.get(item["candidate_id"], (None, ""))[0]
-            in {"direct", "meaningful"}
+            in {"operator", "direct", "supplier_enabler", "meaningful"}
         ]
     merged_candidate_ids: list[str] = []
     if supported_by_scope:
@@ -1780,7 +1812,9 @@ def _select_theme_candidates(
     selected: list[ThemeCandidate] = []
     for candidate_id in merged_candidate_ids:
         classification = classifications.get(candidate_id)
-        if classification is None or classification[0] not in {"direct", "meaningful"}:
+        if classification is None or classification[0] not in {
+            "operator", "direct", "supplier_enabler", "meaningful"
+        }:
             continue
         row = rows[candidate_id]
         selected.append(
@@ -1837,7 +1871,15 @@ def _is_structured_generation_failure(error: BaseException) -> bool:
 def _candidate_screen_evidence(row: pd.Series, result: ResearchResult) -> str:
     """Describe peer-relative screen evidence without cross-industry comparisons."""
     scope = _clean_text(row.get("Discovery scope")) or "approved universe"
-    cohort = result.metrics.get("cohort_statistics_by_scope", {}).get(scope, {})
+    industry = _clean_text(row.get("TR.TRBCIndustry"))
+    industry_cohorts = result.metrics.get(
+        "cohort_statistics_by_industry", {}
+    ).get(scope, {})
+    cohort = industry_cohorts.get(industry, {}) if industry else {}
+    peer_label = industry
+    if not cohort:
+        cohort = result.metrics.get("cohort_statistics_by_scope", {}).get(scope, {})
+        peer_label = scope
     comparisons = []
     for field_name, label in (
         ("TR.PtoEPSMeanEst(Period=FY1)", "forward P/E"),
@@ -1847,7 +1889,9 @@ def _candidate_screen_evidence(row: pd.Series, result: ResearchResult) -> str:
         value = _number(row.get(field_name))
         median = _number(cohort.get(field_name, {}).get("median"))
         if value is not None and median is not None:
-            comparisons.append(f"{label} {_format_number(value)} vs {scope} median {_format_number(median)}")
+            comparisons.append(
+                f"{label} {_format_number(value)} vs {peer_label} median {_format_number(median)}"
+            )
     quality = _number(row.get("TR.ReturnonAvgTotEqtyPctNetIncomeBeforeExtraItemsTTM"))
     if quality is not None:
         comparisons.append(f"ROE {_format_number(quality)}")
@@ -1864,7 +1908,10 @@ def _discovery_methodology_finding(
     if "relative_value" in approved.selection_objectives:
         rules.append(
             "each candidate must have at least one usable positive valuation multiple "
-            "below its approved universe median"
+            "below its approved universe median, defined at the narrower TRBC-industry level "
+            "when at least two industry peers have usable data (otherwise the broader approved "
+            "universe is the explicit fallback), plus positive evidence in at least two independent "
+            "signal families"
         )
     if "positive_signals" in approved.selection_objectives:
         rules.append(
@@ -1877,9 +1924,9 @@ def _discovery_methodology_finding(
     )
     cross_universe = (
         " Candidates from different universes are interleaved by their within-universe order; "
-        "raw multiples are not compared across industries."
+            "raw multiples are not compared across industries, and valuation ranks use TRBC-industry peers."
         if len(approved.discovery_scopes) > 1
-        else " Candidates are compared only inside the approved universe."
+        else " Valuation ranks use TRBC-industry peers inside the approved universe."
     )
     return VerifiedFinding(
         "RESEARCH_METHODOLOGY",
@@ -1947,9 +1994,10 @@ def execute_research(
         if approved.discovery_theme:
             method_text = (
                 f"Screened the approved {scope_text} universes{exchange_scope}. "
-                "The model retained only "
-                f"direct or meaningful matches to {approved.discovery_theme!r} from retrieved LSEG "
-                "business descriptions; Python preserved the deterministic screen order."
+                "The model retained only operator, direct, supplier/enabler, or other meaningful "
+                f"matches to {approved.discovery_theme!r} from retrieved LSEG business descriptions; "
+                "Python preserved the deterministic peer-relative screen order and continued through "
+                "the bounded universe until enough supported matches were found or it was exhausted."
             )
             method_evidence = (
                 "Validated LSEG stock screen",
@@ -2653,10 +2701,31 @@ def summarize_findings(
         f"Question: {approved.question}",
         "",
     ]
+    discovery_candidates = [
+        item
+        for item in findings
+        if item.finding_id.startswith("DISCOVERY_")
+        and item.finding_id != "DISCOVERY_METHOD"
+    ]
+    if approved.mode == "discovery" and discovery_candidates:
+        lines.extend(
+            (
+                "Candidate comparison",
+                "| Candidate | Exposure and peer-relative evidence |",
+                "|---|---|",
+            )
+        )
+        for finding in discovery_candidates:
+            candidate = finding.title.removesuffix(" discovery evidence")
+            evidence = finding.text.replace("|", "\\|").replace("\n", " ")
+            lines.append(f"| {candidate} | {evidence} |")
+        lines.append("")
     for finding_id in dict.fromkeys(selected_ids):
+        if finding_id.startswith("DISCOVERY_") and finding_id != "DISCOVERY_METHOD":
+            continue
         finding = by_id[finding_id]
         lines.append(f"{finding.title}: {finding.text} [{finding.finding_id}]")
-        if finding_id in interpretations:
+        if finding_id in interpretations and approved.mode != "discovery":
             lines.append(f"Interpretation: {interpretations[finding_id]}")
     if missing:
         lines.extend(("", "Missing or incomplete evidence:"))

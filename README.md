@@ -117,9 +117,10 @@ After the first checkout and for every later update, run:
 Update Stock Agent.command
 ```
 
-This is the only setup command. It fast-forwards the current Git branch,
-refreshes dependencies, runs the test suite, rebuilds the app, and opens it
-while preserving `.env` and portfolio data.
+This is the only setup command. It uses the files in the current local folder,
+refreshes dependencies, runs the test suite, rebuilds the app, and opens it.
+It does not fetch, merge, or overwrite anything from GitHub. The generated app
+also launches directly from this local folder.
 
 Keep LSEG Workspace open and signed in while running research.
 
