@@ -185,22 +185,41 @@ ESCAPED_LOG="$(escape_applescript "$LOG_FILE")"
 TEMP_SCRIPT="$(mktemp -t stock-agent-launcher).applescript"
 
 cat > "$TEMP_SCRIPT" <<APPLESCRIPT
+use scripting additions
+
 on run
     set projectRoot to "$ESCAPED_PROJECT"
     set pythonPath to "$ESCAPED_PYTHON"
     set launcherPath to "$ESCAPED_LAUNCHER"
     set logPath to "$ESCAPED_LOG"
     set launchCommand to "cd " & quoted form of projectRoot & "; /usr/bin/nohup " & quoted form of pythonPath & " " & quoted form of launcherPath & " >> " & quoted form of logPath & " 2>&1 < /dev/null &"
-    do shell script launchCommand
+    «event sysoexec» launchCommand
 end run
 APPLESCRIPT
 
 rm -rf "$APP_PATH"
-/usr/bin/osacompile -o "$APP_PATH" "$TEMP_SCRIPT" 2>&1 | tee -a "$UPDATE_LOG"
+/usr/bin/osacompile -l AppleScript -o "$APP_PATH" "$TEMP_SCRIPT" 2>&1 | tee -a "$UPDATE_LOG"
 COMPILE_STATUS=${pipestatus[1]}
 rm -f "$TEMP_SCRIPT"
 if [[ $COMPILE_STATUS -ne 0 ]] || [[ ! -d "$APP_PATH" ]]; then
     fail "macOS could not create Stock Agent.app."
+fi
+# Keep the generated app visually distinct from the default Script Editor/
+# Python-style applet icon. The ICNS is installed under the standard applet
+# resource name so Finder and LaunchServices use it reliably.
+if [[ -f "$PROJECT_ROOT/assets/stock-agent-icon.png" ]]; then
+    cp "$PROJECT_ROOT/assets/stock-agent-icon.png" "$APP_PATH/Contents/Resources/stock-agent-icon.png"
+fi
+if [[ -f "$PROJECT_ROOT/assets/stock-agent.icns" ]]; then
+    cp "$PROJECT_ROOT/assets/stock-agent.icns" "$APP_PATH/Contents/Resources/applet.icns"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleIconFile applet" "$APP_PATH/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleIconName applet" "$APP_PATH/Contents/Info.plist"
+fi
+# Changing a signed applet's resources invalidates its original signature. Re-sign
+# after installing the custom icon so LaunchServices will open the bundle.
+/usr/bin/codesign --force --deep --sign - "$APP_PATH" 2>&1 | tee -a "$UPDATE_LOG"
+if [[ ${pipestatus[1]} -ne 0 ]]; then
+    fail "Stock Agent.app could not be signed after installing its icon."
 fi
 /usr/bin/xattr -dr com.apple.quarantine "$APP_PATH" 2>/dev/null || true
 success "Stock Agent.app created"

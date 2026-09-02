@@ -166,7 +166,26 @@ def test_macro_reference_covers_the_five_live_metrics() -> None:
         "VIX",
         "CPI inflation",
     }
-    assert {row[2] for row in MACRO_REFERENCE_ROWS} == {DEFENSIVE_MACRO_TILT}
+    assert [row[1] for row in MACRO_REFERENCE_ROWS] == [
+        "High or rising",
+        "Falling",
+        "High or rising",
+        "High or rising sharply",
+        "High or accelerating",
+    ]
+    assert [row[2] for row in MACRO_REFERENCE_ROWS] == [
+        "Profitable, low-leverage companies (less dependent on distant future profits or expensive refinancing)",
+        "Profitable, low-leverage companies (less dependent on distant future profits or expensive refinancing)",
+        "Profitable, low-leverage companies (less debt exposed to expensive refinancing)",
+        "Profitable, stable companies (less uncertainty about future profits)",
+        "Profitable companies with pricing power (can raise prices enough to offset higher costs)",
+    ]
+    reference_text = " ".join(value for row in MACRO_REFERENCE_ROWS for value in row).casefold()
+    assert "investors can earn more risk-free" in reference_text
+    assert "treasury prices fall" in reference_text
+    assert "roughly 8%" in reference_text
+    assert "mechanically causes stock prices to fall" in reference_text
+    assert "pricing power" in reference_text
 
 
 def test_cpi_year_over_year_uses_calendar_months_when_observations_are_missing() -> None:

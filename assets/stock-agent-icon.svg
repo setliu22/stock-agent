@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Stock Agent app icon</title>
+  <desc id="desc">A rising market signal inside a glass-like lens.</desc>
+  <defs>
+    <linearGradient id="background" x1="118" y1="88" x2="892" y2="938" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#52D6C5"/>
+      <stop offset="0.48" stop-color="#527DEB"/>
+      <stop offset="1" stop-color="#3D278C"/>
+    </linearGradient>
+    <linearGradient id="glass" x1="312" y1="262" x2="712" y2="700" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity=".34"/>
+      <stop offset=".48" stop-color="#FFFFFF" stop-opacity=".14"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity=".07"/>
+    </linearGradient>
+    <linearGradient id="signal" x1="320" y1="650" x2="722" y2="352" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#CCFFF8"/>
+      <stop offset="1" stop-color="#FFFFFF"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="170%">
+      <feDropShadow dx="0" dy="28" stdDeviation="28" flood-color="#10143F" flood-opacity=".38"/>
+    </filter>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#background)"/>
+  <path d="M181 262C298 132 527 108 716 169c88 29 159 75 208 132V100H100v824h31c-14-188-10-503 50-662Z" fill="#FFFFFF" opacity=".10"/>
+  <g filter="url(#shadow)">
+    <circle cx="492" cy="474" r="240" fill="url(#glass)" stroke="#FFFFFF" stroke-opacity=".62" stroke-width="16"/>
+    <circle cx="492" cy="474" r="211" fill="none" stroke="#FFFFFF" stroke-opacity=".11" stroke-width="5"/>
+    <path d="m651 654 125 125" fill="none" stroke="#FFFFFF" stroke-linecap="round" stroke-width="72"/>
+    <path d="m651 654 125 125" fill="none" stroke="#C9FFF8" stroke-linecap="round" stroke-opacity=".34" stroke-width="34"/>
+  </g>
+  <path d="M320 586 421 491l80 58 151-168" fill="none" stroke="url(#signal)" stroke-linecap="round" stroke-linejoin="round" stroke-width="43"/>
+  <circle cx="320" cy="586" r="24" fill="#FFFFFF"/>
+  <circle cx="421" cy="491" r="24" fill="#FFFFFF"/>
+  <circle cx="501" cy="549" r="24" fill="#FFFFFF"/>
+  <circle cx="652" cy="381" r="24" fill="#FFFFFF"/>
+  <path d="m599 381 53-2-2 54" fill="none" stroke="#FFFFFF" stroke-linecap="round" stroke-linejoin="round" stroke-width="32"/>
+</svg>

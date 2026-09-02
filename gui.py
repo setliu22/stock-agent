@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from pathlib import Path
+import ctypes
+import ctypes.util
+import sys
 import queue
 import re
 import threading
@@ -47,11 +51,11 @@ EXPECTED_RESEARCH_ERRORS = (
 )
 
 RESEARCH_EXAMPLE_QUESTIONS = (
-    "What undervalued companies have meaningful exposure to data-center construction?",
-    "What European semiconductor companies look undervalued?",
-    "Compare AAPL and MSFT on valuation, profitability, balance-sheet strength, and earnings expectations.",
-    "Which of AAPL, MSFT, and NVDA performed best when the 10-year Treasury yield fell?",
-    "What recent Reuters developments are materially affecting semiconductor stocks?",
+    "Find undervalued semiconductor stocks.",
+    "Find undervalued technology companies.",
+    "Find undervalued companies related to data centers.",
+    "Find undervalued companies related to power infrastructure.",
+    "Find undervalued companies related to artificial intelligence.",
 )
 
 
@@ -132,6 +136,113 @@ def _collapse_text_selection(widget: tk.Text, *, to_end: bool) -> str | None:
     widget.tag_remove("sel", "1.0", "end")
     widget.see("insert")
     return "break"
+
+
+class MacChoice(tk.Canvas):
+    """Canvas-rendered checkbox/radio control with macOS-style geometry."""
+
+    def __init__(
+        self,
+        parent: tk.Misc,
+        *,
+        text: str,
+        variable: tk.Variable,
+        value: str | None = None,
+        command: Any = None,
+        kind: str = "checkbox",
+        background: str = "#23242B",
+        foreground: str = "#F4F4F6",
+        muted: str = "#A5A6AE",
+        accent: str = "#8291FF",
+        font: str = "Helvetica Neue",
+        width: int | None = None,
+    ) -> None:
+        label_font = tkfont.Font(family=font, size=11)
+        measured_width = label_font.measure(text) + 52
+        super().__init__(
+            parent, width=width or measured_width, height=34,
+            background=background, highlightthickness=0, borderwidth=0,
+            cursor="pointinghand",
+        )
+        self._label = text
+        self._variable = variable
+        self._value = value
+        self._command = command
+        self._kind = kind
+        self._background = background
+        self._foreground = foreground
+        self._muted = muted
+        self._accent = accent
+        self._font = font
+        self._control_state = "normal"
+        self._hovered = False
+        symbol_directory = Path(__file__).resolve().parent / "assets" / "control-symbols"
+        prefix = "radio" if kind == "radio" else "checkbox"
+        self._symbols = {
+            "off": tk.PhotoImage(file=str(symbol_directory / f"{prefix}-off.png")),
+            "on": tk.PhotoImage(file=str(symbol_directory / f"{prefix}-on.png")),
+            "disabled": tk.PhotoImage(file=str(symbol_directory / f"{prefix}-disabled.png")),
+            "disabled-on": tk.PhotoImage(
+                file=str(symbol_directory / f"{prefix}-disabled-on.png")
+            ),
+        }
+        self._trace = variable.trace_add("write", lambda *_args: self._draw())
+        self.bind("<Enter>", lambda _event: self._set_hovered(True))
+        self.bind("<Leave>", lambda _event: self._set_hovered(False))
+        self.bind("<ButtonRelease-1>", self._activate)
+        self.bind("<space>", self._activate)
+        self.after_idle(self._draw)
+
+    def configure(self, cnf: Any = None, **kwargs: Any) -> Any:
+        state = kwargs.pop("state", None)
+        if state is not None:
+            self._control_state = str(state)
+            self.configure(cursor="arrow" if state == "disabled" else "pointinghand")
+            self._draw()
+        if cnf is not None or kwargs:
+            return super().configure(cnf, **kwargs)
+        return None
+
+    config = configure
+
+    def _set_hovered(self, hovered: bool) -> None:
+        self._hovered = hovered
+        self._draw()
+
+    def _selected(self) -> bool:
+        if self._kind == "radio":
+            return str(self._variable.get()) == str(self._value)
+        return bool(self._variable.get())
+
+    def _activate(self, _event: tk.Event | None = None) -> str:
+        if self._control_state == "disabled":
+            return "break"
+        if self._kind == "radio":
+            self._variable.set(self._value)
+        else:
+            self._variable.set(not bool(self._variable.get()))
+        if self._command is not None:
+            self._command()
+        self._draw()
+        return "break"
+
+    def _draw(self) -> None:
+        if not self.winfo_exists():
+            return
+        self.delete("all")
+        selected = self._selected()
+        disabled = self._control_state == "disabled"
+        if self._hovered and not disabled:
+            self.create_rectangle(0, 2, max(1, self.winfo_width()), 32, fill="#2A2B34", outline="")
+        symbol_state = (
+            "disabled-on" if disabled and selected
+            else "disabled" if disabled
+            else "on" if selected
+            else "off"
+        )
+        self.create_image(16, 17, image=self._symbols[symbol_state])
+        label_color = "#686A73" if disabled else self._foreground
+        self.create_text(38, 17, anchor="w", text=self._label, fill=label_color, font=(self._font, 11))
 
 
 class PurchaseDialog(tk.Toplevel):
@@ -359,7 +470,7 @@ class ResearchExamplesDialog(tk.Toplevel):
         )
         ttk.Label(
             frame,
-            text="These examples match workflows the Research Lab can execute with validated data.",
+            text="Choose a simple question to copy into the research box.",
             style="DialogMuted.TLabel",
         ).pack(anchor="w", pady=(4, 14))
         self.examples = tk.Listbox(
@@ -676,7 +787,7 @@ class ResearchApprovalDialog(tk.Toplevel):
                     anchor="w", pady=(0, 5)
                 )
                 optional_heading_added = True
-            check = ttk.Checkbutton(
+            check = MacChoice(
                 row,
                 text=(
                     f"{capability.label} · {capability.source}"
@@ -690,6 +801,8 @@ class ResearchApprovalDialog(tk.Toplevel):
                 command=lambda capability_id=capability.capability_id: self._enforce_exclusive_capability(
                     capability_id
                 ),
+                background=StockAgentApp.BG,
+                font=self.ui_font,
             )
             check.pack(anchor="w")
             if capability.capability_id in self.required_capabilities:
@@ -713,10 +826,12 @@ class ResearchApprovalDialog(tk.Toplevel):
         for analysis in self.visible_analyses:
             row = ttk.Frame(analysis_frame)
             row.pack(fill="x", pady=(7, 0))
-            ttk.Checkbutton(
+            MacChoice(
                 row,
                 text=analysis.label,
                 variable=self.analysis_vars[analysis.analysis_id],
+                background=StockAgentApp.BG,
+                font=self.ui_font,
             ).pack(anchor="w")
             reason = analysis_reasons.get(analysis.analysis_id)
             if reason:
@@ -825,12 +940,9 @@ class PositionRiskDialog(tk.Toplevel):
         self.transient(parent)
         self.grab_set()
         self.configure(background=StockAgentApp.BG)
-        self.result: tuple[list[str], str | None] | None = None
+        self.result: list[str] | None = None
         self.scope = tk.StringVar(value="all")
         self.selections = {ticker: tk.BooleanVar(value=False) for ticker in tickers}
-        self.objective = tk.StringVar()
-        self.horizon = tk.StringVar()
-        self.exit_conditions = tk.StringVar()
 
         frame = ttk.Frame(self, padding=24)
         frame.pack(fill="both", expand=True)
@@ -843,66 +955,45 @@ class PositionRiskDialog(tk.Toplevel):
 
         scope_panel = ttk.Frame(frame, style="Panel.TFrame", padding=16)
         scope_panel.pack(fill="x")
-        ttk.Radiobutton(
+        MacChoice(
             scope_panel,
             text=f"Entire portfolio ({len(tickers)} stocks)",
             variable=self.scope,
             value="all",
             command=self._update_scope,
-            style="Dialog.TRadiobutton",
+            kind="radio",
+            background=StockAgentApp.SURFACE,
+            font=getattr(parent, "ui_font", "Helvetica Neue"),
+            width=460,
         ).pack(anchor="w")
-        ttk.Radiobutton(
+        MacChoice(
             scope_panel,
             text="Specific stocks",
             variable=self.scope,
             value="specific",
             command=self._update_scope,
-            style="Dialog.TRadiobutton",
+            kind="radio",
+            background=StockAgentApp.SURFACE,
+            font=getattr(parent, "ui_font", "Helvetica Neue"),
+            width=460,
         ).pack(anchor="w", pady=(10, 0))
 
         ttk.Separator(scope_panel).pack(fill="x", pady=14)
         self.stock_frame = ttk.Frame(scope_panel, style="Surface.TFrame")
         self.stock_frame.pack(fill="x")
-        self.stock_checks: list[ttk.Checkbutton] = []
+        self.stock_checks: list[MacChoice] = []
         for index, ticker in enumerate(tickers):
-            check = ttk.Checkbutton(
+            check = MacChoice(
                 self.stock_frame,
                 text=ticker,
                 variable=self.selections[ticker],
-                style="Dialog.TCheckbutton",
+                background=StockAgentApp.SURFACE,
+                font=getattr(parent, "ui_font", "Helvetica Neue"),
+                width=135,
             )
             check.grid(row=index // 3, column=index % 3, sticky="w", padx=(0, 28), pady=5)
             self.stock_checks.append(check)
 
-        context_panel = ttk.Frame(frame, style="Panel.TFrame", padding=16)
-        context_panel.pack(fill="x", pady=(12, 0))
-        ttk.Label(
-            context_panel,
-            text="Optional decision context",
-            style="SurfaceSection.TLabel",
-        ).grid(row=0, column=0, columnspan=2, sticky="w")
-        ttk.Label(
-            context_panel,
-            text="Used for this review only, sent to Groq for interpretation, and not saved as a thesis.",
-            style="DialogMuted.TLabel",
-            wraplength=650,
-            justify="left",
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(3, 10))
-        for row, (label, variable) in enumerate(
-            (
-                ("Holding objective", self.objective),
-                ("Expected horizon", self.horizon),
-                ("Exit or review conditions", self.exit_conditions),
-            ),
-            start=2,
-        ):
-            ttk.Label(context_panel, text=label, style="DialogMuted.TLabel").grid(
-                row=row, column=0, sticky="w", pady=4
-            )
-            ttk.Entry(context_panel, textvariable=variable, width=54).grid(
-                row=row, column=1, sticky="ew", padx=(12, 0), pady=4
-            )
-        context_panel.columnconfigure(1, weight=1)
         buttons = ttk.Frame(frame)
         buttons.pack(fill="x", pady=(18, 0))
         ttk.Button(buttons, text="Start review", style="Accent.TButton", command=self._submit).pack(
@@ -928,16 +1019,7 @@ class PositionRiskDialog(tk.Toplevel):
                     "Select stocks", "Select at least one portfolio stock.", parent=self
                 )
                 return
-        context_parts = [
-            f"Objective: {self.objective.get().strip()}" if self.objective.get().strip() else "",
-            f"Expected horizon: {self.horizon.get().strip()}" if self.horizon.get().strip() else "",
-            (
-                f"Exit or review conditions: {self.exit_conditions.get().strip()}"
-                if self.exit_conditions.get().strip()
-                else ""
-            ),
-        ]
-        self.result = (tickers, "; ".join(item for item in context_parts if item) or None)
+        self.result = tickers
         self.destroy()
 
 
@@ -956,23 +1038,266 @@ def _performance_time_label(value: date | datetime, *, end: bool = False) -> str
     return value.strftime("%b %-d, %Y")
 
 
+class SidebarButton(tk.Canvas):
+    """A rounded, low-chrome navigation row modeled on native macOS sidebars."""
+
+    def __init__(
+        self,
+        parent: tk.Misc,
+        *,
+        icon: str,
+        label: str,
+        command: Any,
+        font: str,
+        background: str,
+        selection: str,
+        text: str,
+        muted: str,
+        accent: str,
+    ) -> None:
+        super().__init__(
+            parent, width=1, height=48, background=background, highlightthickness=0,
+            borderwidth=0, cursor="pointinghand",
+        )
+        self._icon = icon
+        self._label = label
+        self._command = command
+        self._font = font
+        self._background = background
+        self._selection = selection
+        self._text = text
+        self._muted = muted
+        self._accent = accent
+        self._selected = False
+        self._hovered = False
+        self.bind("<Configure>", lambda _event: self._draw())
+        self.bind("<Enter>", lambda _event: self._set_hovered(True))
+        self.bind("<Leave>", lambda _event: self._set_hovered(False))
+        self.bind("<ButtonRelease-1>", lambda _event: self._command())
+
+    def _set_hovered(self, hovered: bool) -> None:
+        self._hovered = hovered
+        self._draw()
+
+    def set_selected(self, selected: bool) -> None:
+        self._selected = selected
+        self._draw()
+
+    def _draw(self) -> None:
+        self.delete("all")
+        width = max(1, self.winfo_width())
+        if self._selected or self._hovered:
+            fill = self._selection if self._selected else "#252A37"
+            radius = 11
+            self.create_polygon(
+                1 + radius, 2, width - 1 - radius, 2,
+                width - 1, 2, width - 1, 2 + radius,
+                width - 1, 46 - radius, width - 1, 46,
+                width - 1 - radius, 46, 1 + radius, 46,
+                1, 46, 1, 46 - radius,
+                1, 2 + radius, 1, 2,
+                smooth=True, splinesteps=24, fill=fill, outline="",
+            )
+        color = self._accent if self._selected else (self._text if self._hovered else self._muted)
+        self.create_text(18, 24, anchor="w", text=self._icon, fill=color, font=(self._font, 16))
+        self.create_text(52, 24, anchor="w", text=self._label, fill=color, font=(self._font, 13, "bold"))
+
+
+class ResearchSuggestionCard(tk.Canvas):
+    """Compact editorial card used to avoid an empty utility-style landing page."""
+
+    def __init__(
+        self,
+        parent: tk.Misc,
+        *,
+        eyebrow: str,
+        title: str,
+        prompt: str,
+        command: Any,
+        font: str,
+        background: str,
+        surface: str,
+        hover: str,
+        text: str,
+        muted: str,
+        accent: str,
+    ) -> None:
+        super().__init__(parent, width=1, height=116, background=background, highlightthickness=0, cursor="pointinghand")
+        self._eyebrow = eyebrow
+        self._title = title
+        self._prompt = prompt
+        self._command = command
+        self._font = font
+        self._surface = surface
+        self._hover = hover
+        self._text = text
+        self._muted = muted
+        self._accent = accent
+        self._hovered = False
+        self.bind("<Configure>", lambda _event: self._draw())
+        self.bind("<Enter>", lambda _event: self._set_hovered(True))
+        self.bind("<Leave>", lambda _event: self._set_hovered(False))
+        self.bind("<ButtonRelease-1>", lambda _event: self._command(self._prompt))
+
+    def _set_hovered(self, hovered: bool) -> None:
+        self._hovered = hovered
+        self._draw()
+
+    def _draw(self) -> None:
+        self.delete("all")
+        width = max(1, self.winfo_width())
+        fill = self._hover if self._hovered else self._surface
+        radius = 14
+        self.create_polygon(
+            radius, 1, width - radius, 1, width - 1, 1, width - 1, radius,
+            width - 1, 115 - radius, width - 1, 115, width - radius, 115,
+            radius, 115, 1, 115, 1, 115 - radius, 1, radius, 1, 1,
+            smooth=True, splinesteps=28, fill=fill, outline="",
+        )
+        self.create_rectangle(17, 19, 21, 96, fill=self._accent, outline="")
+        self.create_text(37, 25, anchor="w", text=self._eyebrow.upper(), fill=self._accent, font=(self._font, 9, "bold"))
+        self.create_text(37, 54, anchor="w", text=self._title, fill=self._text, font=(self._font, 14, "bold"))
+        self.create_text(37, 84, anchor="w", text="Use this prompt  →", fill=self._muted, font=(self._font, 10))
+
+
+class IconActionButton(tk.Canvas):
+    """Small icon-only action matching modern document and chat surfaces."""
+
+    def __init__(
+        self,
+        parent: tk.Misc,
+        *,
+        image: tk.PhotoImage,
+        command: Any,
+        background: str,
+        hover: str,
+        state: str = "normal",
+    ) -> None:
+        super().__init__(
+            parent, width=36, height=34, background=background,
+            highlightthickness=0, borderwidth=0,
+            cursor="arrow" if state == "disabled" else "pointinghand",
+        )
+        self._image = image
+        self._command = command
+        self._background = background
+        self._hover = hover
+        self._hovered = False
+        self._control_state = state
+        self.bind("<Enter>", lambda _event: self._set_hovered(True))
+        self.bind("<Leave>", lambda _event: self._set_hovered(False))
+        self.bind("<ButtonRelease-1>", self._activate)
+        self.after_idle(self._draw)
+
+    def configure(self, cnf: Any = None, **kwargs: Any) -> Any:
+        state = kwargs.pop("state", None)
+        image = kwargs.pop("image", None)
+        if state is not None:
+            self._control_state = str(state)
+        if image is not None:
+            self._image = image
+        if state is not None and "cursor" not in kwargs:
+            super().configure(
+                cursor="arrow" if self._control_state == "disabled" else "pointinghand"
+            )
+        self._draw()
+        if cnf is not None or kwargs:
+            return super().configure(cnf, **kwargs)
+        return None
+
+    config = configure
+
+    def _set_hovered(self, hovered: bool) -> None:
+        self._hovered = hovered
+        self._draw()
+
+    def _activate(self, _event: tk.Event) -> str:
+        if self._control_state != "disabled":
+            self._command()
+        return "break"
+
+    def _draw(self) -> None:
+        if not self.winfo_exists():
+            return
+        self.delete("all")
+        if self._hovered and self._control_state != "disabled":
+            self.create_polygon(
+                10, 2, 26, 2, 34, 10, 34, 24, 26, 32,
+                10, 32, 2, 24, 2, 10,
+                smooth=True, splinesteps=24, fill=self._hover, outline="",
+            )
+        self.create_image(18, 17, image=self._image)
+
+
+class ChatBubble(tk.Canvas):
+    """Right-aligned user message with a continuous rounded bubble shape."""
+
+    def __init__(
+        self,
+        parent: tk.Misc,
+        *,
+        text: str,
+        font: str,
+        background: str,
+        fill: str,
+        foreground: str,
+    ) -> None:
+        message_font = tkfont.Font(family=font, size=11)
+        words = text.strip().split()
+        lines: list[str] = []
+        current = ""
+        for word in words:
+            candidate = f"{current} {word}".strip()
+            if current and message_font.measure(candidate) > 590:
+                lines.append(current)
+                current = word
+            else:
+                current = candidate
+        if current or not lines:
+            lines.append(current)
+        display = "\n".join(lines)
+        width = min(630, max(180, max(message_font.measure(line) for line in lines) + 38))
+        height = len(lines) * 23 + 24
+        super().__init__(
+            parent, width=width, height=height, background=background,
+            highlightthickness=0, borderwidth=0,
+        )
+        radius = min(22, height // 2)
+        self.create_polygon(
+            radius, 1, width - radius, 1, width - 1, 1, width - 1, radius,
+            width - 1, height - radius, width - 1, height - 1,
+            width - radius, height - 1, radius, height - 1,
+            1, height - 1, 1, height - radius, 1, radius, 1, 1,
+            smooth=True, splinesteps=32, fill=fill, outline="",
+        )
+        self.create_text(
+            19, 12, anchor="nw", text=display, fill=foreground,
+            font=(font, 11), justify="left",
+        )
+
+
 class StockAgentApp(tk.Tk):
-    BG = "#0D0F12"
-    SURFACE = "#15181D"
-    SURFACE_ALT = "#1B1F25"
-    BORDER = "#2B3139"
-    TEXT = "#F2F4F7"
-    MUTED = "#929AA6"
-    ACCENT = "#5AC8E8"
-    POSITIVE = "#34C759"
-    NEGATIVE = "#FF453A"
-    WARNING = "#FFD60A"
+    BG = "#191A20"
+    SIDEBAR = "#202129"
+    SURFACE = "#23242B"
+    SURFACE_ALT = "#30313A"
+    BORDER = "#383A44"
+    TEXT = "#F4F4F6"
+    MUTED = "#A5A6AE"
+    ACCENT = "#8291FF"
+    ACCENT_ACTIVE = "#9BA7FF"
+    POSITIVE = "#30D158"
+    NEGATIVE = "#FF6B6B"
+    NEUTRAL = "#B8BAC4"
 
     def __init__(self) -> None:
-        super().__init__()
+        super().__init__(className="Stock Agent")
+        self._set_macos_process_name()
         self.title("Stock Agent")
-        self.geometry("1280x820")
-        self.minsize(1100, 700)
+        self.geometry("1320x840")
+        self.minsize(1120, 700)
+        self._app_icon: tk.PhotoImage | None = None
+        self._install_app_icon()
         self.controller = StockAgentController()
         self.auth_busy = False
         self.results: queue.Queue[tuple[str, Any]] = queue.Queue()
@@ -995,18 +1320,68 @@ class StockAgentApp(tk.Tk):
         self.holdings_sort_column: str | None = None
         self.holdings_sort_descending = False
         self._tab_drag_anchor_x: int | None = None
-        families = set(tkfont.families(self))
-        self.ui_font = next(
-            (name for name in ("SF Pro Text", "Helvetica Neue", "Arial", "DejaVu Sans") if name in families),
-            "TkDefaultFont",
-        )
-        self.mono_font = next(
-            (name for name in ("SF Mono", "Menlo", "DejaVu Sans Mono") if name in families),
-            "TkFixedFont",
-        )
+        # Resolve Tk's named fonts to their real Aqua families. Treating
+        # "TkDefaultFont" as a family name causes an unintended fallback.
+        self.ui_font = str(tkfont.nametofont("TkDefaultFont").actual("family"))
+        self.display_font = str(tkfont.nametofont("TkHeadingFont").actual("family"))
+        self.mono_font = str(tkfont.nametofont("TkFixedFont").actual("family"))
         self._configure_style()
         self._build_ui()
         self.after(100, self._poll_results)
+
+    def _install_app_icon(self) -> None:
+        """Give the running Tk process our identity instead of Python's icon."""
+        icon_path = Path(__file__).resolve().parent / "assets" / "stock-agent-icon.png"
+        if not icon_path.exists():
+            return
+        try:
+            self._app_icon = tk.PhotoImage(file=str(icon_path))
+            self.iconphoto(True, self._app_icon)
+            if self.tk.call("tk", "windowingsystem") == "aqua":
+                try:
+                    self.tk.call("tk::mac::iconBitmap", self._app_icon)
+                except tk.TclError:
+                    # iconphoto is supported across newer AquaTk builds; the
+                    # mac-specific command covers older framework builds.
+                    pass
+        except tk.TclError:
+            self._app_icon = None
+
+    @staticmethod
+    def _set_macos_process_name() -> None:
+        """Keep the Dock label from inheriting the Python executable name."""
+        if sys.platform != "darwin":
+            return
+        try:
+            foundation = ctypes.cdll.LoadLibrary(
+                ctypes.util.find_library("Foundation") or "Foundation"
+            )
+            objc = ctypes.cdll.LoadLibrary(
+                ctypes.util.find_library("objc") or "/usr/lib/libobjc.A.dylib"
+            )
+            objc.objc_getClass.restype = ctypes.c_void_p
+            objc.sel_registerName.restype = ctypes.c_void_p
+            send0 = ctypes.CFUNCTYPE(
+                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p
+            )(("objc_msgSend", objc))
+            send1 = ctypes.CFUNCTYPE(
+                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p
+            )(("objc_msgSend", objc))
+            process_info = send0(
+                objc.objc_getClass(b"NSProcessInfo"),
+                objc.sel_registerName(b"processInfo"),
+            )
+            ns_string = send0(
+                objc.objc_getClass(b"NSString"), objc.sel_registerName(b"alloc")
+            )
+            ns_string = send1(
+                ns_string,
+                objc.sel_registerName(b"initWithUTF8String:"),
+                ctypes.cast(ctypes.c_char_p(b"Stock Agent"), ctypes.c_void_p),
+            )
+            send1(process_info, objc.sel_registerName(b"setProcessName:"), ns_string)
+        except (AttributeError, OSError):
+            pass
 
     def _configure_style(self) -> None:
         style = ttk.Style(self)
@@ -1016,9 +1391,13 @@ class StockAgentApp(tk.Tk):
             pass
         self.configure(background=self.BG)
         style.configure("TFrame", background=self.BG)
+        style.configure("Sidebar.TFrame", background=self.SIDEBAR)
+        style.configure("Sidebar.TLabel", background=self.SIDEBAR, foreground=self.TEXT)
+        style.configure("Brand.TLabel", background=self.SIDEBAR, foreground=self.TEXT, font=(self.display_font, 19, "bold"))
+        style.configure("SidebarMuted.TLabel", background=self.SIDEBAR, foreground=self.MUTED, font=(self.ui_font, 9))
         style.configure("TLabel", background=self.BG, foreground=self.TEXT, font=(self.ui_font, 11))
         style.configure("AppTitle.TLabel", background=self.BG, foreground=self.TEXT, font=(self.ui_font, 15, "bold"))
-        style.configure("Title.TLabel", background=self.BG, foreground=self.TEXT, font=(self.ui_font, 22, "bold"))
+        style.configure("Title.TLabel", background=self.BG, foreground=self.TEXT, font=(self.display_font, 38, "bold"))
         style.configure("Section.TLabel", background=self.BG, foreground=self.TEXT, font=(self.ui_font, 13, "bold"))
         style.configure("SurfaceSection.TLabel", background=self.SURFACE, foreground=self.TEXT, font=(self.ui_font, 13, "bold"))
         style.configure("Muted.TLabel", background=self.BG, foreground=self.MUTED, font=(self.ui_font, 10))
@@ -1035,6 +1414,12 @@ class StockAgentApp(tk.Tk):
             font=(self.ui_font, 10),
         )
         style.configure(
+            "SurfaceMuted.TLabel",
+            background=self.SURFACE,
+            foreground=self.MUTED,
+            font=(self.ui_font, 10),
+        )
+        style.configure(
             "DialogLabel.TLabel",
             background=self.SURFACE,
             foreground=self.MUTED,
@@ -1044,11 +1429,8 @@ class StockAgentApp(tk.Tk):
         style.configure(
             "Panel.TFrame",
             background=self.SURFACE,
-            bordercolor=self.BORDER,
-            lightcolor=self.BORDER,
-            darkcolor=self.BORDER,
-            borderwidth=1,
-            relief="solid",
+            borderwidth=0,
+            relief="flat",
         )
         style.configure("MetricLabel.TLabel", background=self.SURFACE, foreground=self.MUTED, font=(self.ui_font, 9))
         style.configure("MetricValue.TLabel", background=self.SURFACE, foreground=self.TEXT, font=(self.ui_font, 17, "bold"))
@@ -1063,15 +1445,38 @@ class StockAgentApp(tk.Tk):
             bordercolor=self.BORDER,
             lightcolor=self.BORDER,
             darkcolor=self.BORDER,
-            borderwidth=1,
+            borderwidth=0,
             relief="flat",
-            padding=(12, 7),
+            padding=(14, 8),
             font=(self.ui_font, 10),
+            focusthickness=0,
+            focuscolor=self.SURFACE_ALT,
         )
-        style.map("TButton", background=[("active", "#242A32"), ("pressed", "#20252C")], foreground=[("disabled", "#666D76")])
-        style.configure("Toolbar.TButton", padding=(10, 6), font=(self.ui_font, 9))
-        style.configure("Accent.TButton", background=self.ACCENT, foreground="#071014", bordercolor=self.ACCENT, lightcolor=self.ACCENT, darkcolor=self.ACCENT, font=(self.ui_font, 10, "bold"))
-        style.map("Accent.TButton", background=[("active", "#7AD7EF"), ("pressed", "#45B4D4")])
+        style.map("TButton", background=[("active", "#3A3A3C"), ("pressed", "#48484A")], foreground=[("disabled", "#636366")])
+        style.configure("Toolbar.TButton", padding=(14, 9), font=(self.ui_font, 10, "bold"))
+        style.configure(
+            "Copy.TButton", background=self.BG, foreground=self.MUTED,
+            borderwidth=0, padding=(9, 5), font=(self.ui_font, 9, "bold"),
+        )
+        style.map(
+            "Copy.TButton",
+            background=[("active", self.SURFACE_ALT)],
+            foreground=[("active", self.TEXT), ("disabled", "#63656F")],
+        )
+        style.configure("Accent.TButton", background=self.ACCENT, foreground="#FFFFFF", bordercolor=self.ACCENT, lightcolor=self.ACCENT, darkcolor=self.ACCENT, font=(self.ui_font, 10, "bold"))
+        style.map("Accent.TButton", background=[("active", self.ACCENT_ACTIVE), ("pressed", "#D91E39")])
+        style.configure(
+            "Nav.TButton", background=self.SIDEBAR, foreground=self.MUTED,
+            padding=(17, 13), anchor="w", font=(self.ui_font, 13, "bold"),
+            borderwidth=0, relief="flat",
+        )
+        style.map("Nav.TButton", background=[("active", "#29292C")], foreground=[("active", self.TEXT)])
+        style.configure(
+            "Selected.Nav.TButton", background=self.SURFACE_ALT, foreground=self.ACCENT,
+            padding=(17, 13), anchor="w", font=(self.ui_font, 13, "bold"),
+            borderwidth=0, relief="flat",
+        )
+        style.map("Selected.Nav.TButton", background=[("active", "#353539")])
         style.configure(
             "DeleteIcon.TButton",
             background=self.SURFACE_ALT,
@@ -1090,20 +1495,53 @@ class StockAgentApp(tk.Tk):
             foreground=[("active", self.TEXT), ("pressed", self.TEXT)],
         )
         style.configure("Segment.TButton", padding=(10, 4), font=(self.ui_font, 9))
-        style.configure("Selected.Segment.TButton", background="#193841", foreground=self.ACCENT, bordercolor="#32616D", padding=(10, 4), font=(self.ui_font, 9, "bold"))
+        style.configure("Selected.Segment.TButton", background=self.ACCENT, foreground="#FFFFFF", bordercolor=self.ACCENT, padding=(10, 4), font=(self.ui_font, 9, "bold"))
+
+        # The macOS ttk theme draws a dotted keyboard-focus box around a
+        # button after clicking it. Remove that visual-only element so the
+        # controls read as deliberate app controls rather than browser chrome.
+        def without_button_focus(layout):
+            cleaned = []
+            for element, options in layout:
+                options = dict(options)
+                if "children" in options:
+                    options["children"] = without_button_focus(options["children"])
+                if element in {"Button.focus", "Button.default"}:
+                    cleaned.extend(options.get("children", []))
+                    continue
+                cleaned.append((element, options))
+            return cleaned
+
+        for button_style in (
+            "TButton", "Accent.TButton", "Toolbar.TButton", "Segment.TButton",
+            "Selected.Segment.TButton", "DeleteIcon.TButton", "Nav.TButton",
+            "Selected.Nav.TButton", "Copy.TButton",
+        ):
+            try:
+                style.layout(button_style, without_button_focus(style.layout(button_style)))
+            except tk.TclError:
+                pass
         style.configure("TNotebook", background=self.BG, borderwidth=0, tabmargins=(0, 0, 0, 0))
         style.configure("TNotebook.Tab", background=self.BG, foreground=self.MUTED, bordercolor=self.BG, lightcolor=self.BG, darkcolor=self.BG, padding=(18, 9), font=(self.ui_font, 10))
         style.map(
             "TNotebook.Tab",
-            background=[("selected", self.SURFACE_ALT), ("active", self.SURFACE)],
+            background=[("selected", self.SURFACE), ("active", self.SURFACE_ALT)],
             foreground=[("selected", self.TEXT), ("active", self.TEXT)],
             bordercolor=[("selected", self.BORDER), ("!selected", self.BG)],
             lightcolor=[("selected", self.BORDER), ("!selected", self.BG)],
             darkcolor=[("selected", self.BORDER), ("!selected", self.BG)],
         )
+        # Navigation is provided by the persistent sidebar; hide the stock
+        # notebook strip while retaining its robust page-management behavior.
+        style.layout("App.TNotebook.Tab", [])
+        style.layout("App.TNotebook", [("Notebook.client", {"sticky": "nswe"})])
+        style.configure(
+            "App.TNotebook", background=self.BG, borderwidth=0, tabmargins=0,
+            bordercolor=self.BG, lightcolor=self.BG, darkcolor=self.BG,
+        )
         style.configure("Treeview", background=self.SURFACE, fieldbackground=self.SURFACE, foreground=self.TEXT, bordercolor=self.BORDER, lightcolor=self.BORDER, darkcolor=self.BORDER, borderwidth=1, rowheight=36, font=(self.ui_font, 10))
         style.configure("Market.Treeview", rowheight=31, font=(self.ui_font, 9))
-        style.map("Treeview", background=[("selected", "#204A55")], foreground=[("selected", self.TEXT)])
+        style.map("Treeview", background=[("selected", self.ACCENT)], foreground=[("selected", "#FFFFFF")])
         style.configure("Treeview.Heading", background=self.SURFACE_ALT, foreground=self.MUTED, bordercolor=self.BORDER, lightcolor=self.BORDER, darkcolor=self.BORDER, relief="flat", font=(self.ui_font, 9, "bold"), padding=(8, 7))
         style.map("Treeview.Heading", background=[("active", "#20262D")])
         style.configure("TEntry", fieldbackground=self.SURFACE_ALT, foreground=self.TEXT, insertcolor=self.TEXT, bordercolor=self.BORDER, padding=8)
@@ -1125,7 +1563,7 @@ class StockAgentApp(tk.Tk):
         )
         self.option_add("*TCombobox*Listbox.background", self.SURFACE_ALT)
         self.option_add("*TCombobox*Listbox.foreground", self.TEXT)
-        self.option_add("*TCombobox*Listbox.selectBackground", "#204A55")
+        self.option_add("*TCombobox*Listbox.selectBackground", self.ACCENT)
         self.option_add("*TCombobox*Listbox.selectForeground", self.TEXT)
         self.option_add("*TCombobox*Listbox.font", (self.ui_font, 10))
         self.option_add("*TCombobox*Listbox.relief", "flat")
@@ -1175,34 +1613,69 @@ class StockAgentApp(tk.Tk):
         )
 
     def _build_ui(self) -> None:
-        outer = ttk.Frame(self, padding=(20, 12, 20, 20))
-        outer.pack(fill="both", expand=True)
-        ttk.Label(outer, text="Stock Agent", style="AppTitle.TLabel").pack(
-            anchor="w", pady=(0, 10)
-        )
+        shell = ttk.Frame(self)
+        shell.pack(fill="both", expand=True)
 
-        notebook = ttk.Notebook(outer)
+        sidebar = ttk.Frame(shell, style="Sidebar.TFrame", width=272, padding=(20, 28, 20, 20))
+        sidebar.pack(side="left", fill="y")
+        sidebar.pack_propagate(False)
+        brand = ttk.Frame(sidebar, style="Sidebar.TFrame")
+        brand.pack(fill="x", padx=7, pady=(0, 34))
+        ttk.Label(brand, text="◉", foreground=self.ACCENT, background=self.SIDEBAR, font=(self.ui_font, 25, "bold")).pack(side="left")
+        ttk.Label(brand, text="Stock Agent", style="Brand.TLabel").pack(side="left", padx=(9, 0))
+        ttk.Label(sidebar, text="LIBRARY", style="SidebarMuted.TLabel").pack(anchor="w", padx=12, pady=(0, 7))
+
+        content = ttk.Frame(shell, padding=(42, 28, 42, 34))
+        content.pack(side="left", fill="both", expand=True)
+        notebook = ttk.Notebook(content, style="App.TNotebook")
         notebook.pack(fill="both", expand=True)
         self.notebook = notebook
-        self.chat_tab = ttk.Frame(notebook, padding=(8, 16, 8, 8))
-        self.holdings_tab = ttk.Frame(notebook, padding=(8, 16, 8, 8))
-        self.market_tab = ttk.Frame(notebook, padding=(8, 16, 8, 8))
-        self.account_tab = ttk.Frame(notebook, padding=(8, 16, 8, 8))
+        self.chat_tab = ttk.Frame(notebook, padding=(3, 10, 3, 3))
+        self.holdings_tab = ttk.Frame(notebook, padding=(3, 10, 3, 3))
+        self.market_tab = ttk.Frame(notebook, padding=(3, 10, 3, 3))
+        self.account_tab = ttk.Frame(notebook, padding=(3, 10, 3, 3))
         notebook.add(self.chat_tab, text="Research Lab")
         notebook.add(self.holdings_tab, text="Portfolio")
         notebook.add(self.market_tab, text="Market")
         notebook.add(self.account_tab, text="Account")
-        notebook.bind("<ButtonPress-1>", self._start_tab_drag, add="+")
-        notebook.bind("<B1-Motion>", self._continue_tab_drag, add="+")
-        notebook.bind("<ButtonRelease-1>", self._finish_tab_drag, add="+")
+        self.nav_buttons: dict[str, SidebarButton] = {}
+        for page, icon, label in (
+            (self.chat_tab, "⌕", "Research Lab"),
+            (self.holdings_tab, "▥", "Portfolio"),
+            (self.market_tab, "⌁", "Market"),
+            (self.account_tab, "●", "Account"),
+        ):
+            button = SidebarButton(
+                sidebar,
+                icon=icon,
+                label=label,
+                command=lambda selected=page: notebook.select(selected),
+                font=self.ui_font,
+                background=self.SIDEBAR,
+                selection=self.SURFACE_ALT,
+                text=self.TEXT,
+                muted=self.MUTED,
+                accent=self.ACCENT,
+            )
+            button.pack(fill="x", pady=2)
+            self.nav_buttons[str(page)] = button
+        ttk.Label(sidebar, text="Private • Local-first", style="SidebarMuted.TLabel").pack(side="bottom", anchor="w", padx=12)
         self._build_chat_tab()
         self._build_holdings_tab()
         self._build_market_tab()
         self._build_account_tab()
         notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed, add="+")
+        self._sync_navigation()
+
+    def _sync_navigation(self) -> None:
+        selected = self.notebook.select()
+        for page, button in self.nav_buttons.items():
+            button.set_selected(page == selected)
 
     def _on_tab_changed(self, _event: tk.Event) -> None:
         selected = self.notebook.select()
+        if hasattr(self, "nav_buttons"):
+            self._sync_navigation()
         if selected == str(self.holdings_tab):
             self.refresh_holdings()
         elif selected == str(self.market_tab):
@@ -1257,10 +1730,15 @@ class StockAgentApp(tk.Tk):
         ).pack(side="right", padx=(0, 8))
 
         composer = ttk.Frame(self.chat_tab, style="Panel.TFrame", padding=12)
-        composer.pack(fill="x", pady=(0, 12))
-        ttk.Label(composer, text="Research idea", style="SurfaceSection.TLabel").pack(
+        self.research_composer = composer
+        ttk.Label(composer, text="Ask a research question", style="SurfaceSection.TLabel").pack(
             anchor="w", pady=(0, 7)
         )
+        ttk.Label(
+            composer,
+            text="Try: “Find undervalued companies related to data centers” or “Find undervalued semiconductor stocks.”",
+            style="SurfaceMuted.TLabel",
+        ).pack(anchor="w", pady=(0, 8))
         input_row = ttk.Frame(composer, style="Surface.TFrame")
         input_row.pack(fill="x")
         self.research_question = tk.Text(
@@ -1271,11 +1749,10 @@ class StockAgentApp(tk.Tk):
             background=self.SURFACE_ALT,
             foreground=self.TEXT,
             insertbackground=self.TEXT,
-            selectbackground="#285665",
+            selectbackground=self.ACCENT,
             relief="flat",
             borderwidth=0,
-            highlightthickness=1,
-            highlightbackground=self.BORDER,
+            highlightthickness=0,
             padx=10,
             pady=8,
         )
@@ -1308,27 +1785,85 @@ class StockAgentApp(tk.Tk):
             lambda _event: _collapse_text_selection(self.research_question, to_end=True),
         )
 
+        self.quick_starts_label = ttk.Label(
+            self.chat_tab, text="Quick starts", style="Section.TLabel"
+        )
+        self.quick_starts_label.pack(anchor="w", pady=(3, 8))
+        suggestions = ttk.Frame(self.chat_tab)
+        self.quick_starts_frame = suggestions
+        suggestions.pack(fill="x", pady=(0, 14))
+        for index, (eyebrow, title, prompt, accent) in enumerate(
+            (
+                ("Valuation", "Find hidden value", RESEARCH_EXAMPLE_QUESTIONS[0], "#8291FF"),
+                ("Themes", "Follow infrastructure", RESEARCH_EXAMPLE_QUESTIONS[3], "#55C7B5"),
+                ("Technology", "Map the AI opportunity", RESEARCH_EXAMPLE_QUESTIONS[4], "#B68CFF"),
+            )
+        ):
+            card = ResearchSuggestionCard(
+                suggestions, eyebrow=eyebrow, title=title, prompt=prompt,
+                command=self._use_research_suggestion, font=self.ui_font,
+                background=self.BG, surface=self.SURFACE, hover=self.SURFACE_ALT,
+                text=self.TEXT, muted=self.MUTED, accent=accent,
+            )
+            card.pack(side="left", fill="x", expand=True, padx=(0 if index == 0 else 6, 0 if index == 2 else 6))
+
         transcript_frame = ttk.Frame(self.chat_tab)
+        transcript_header = ttk.Frame(transcript_frame)
+        transcript_header.pack(fill="x", pady=(0, 7))
+        ttk.Label(
+            transcript_header, text="Conversation", style="Section.TLabel"
+        ).pack(side="left")
+        symbol_directory = Path(__file__).resolve().parent / "assets" / "control-symbols"
+        self.copy_icon = tk.PhotoImage(file=str(symbol_directory / "copy.png"))
+        self.copied_icon = tk.PhotoImage(file=str(symbol_directory / "copied.png"))
         self.transcript = ScrolledText(
             transcript_frame,
             wrap="word",
-            font=(self.mono_font, 11),
+            font=(self.ui_font, 11),
             background=self.SURFACE,
             foreground=self.TEXT,
             insertbackground="#ffffff",
-            selectbackground="#285665",
+            selectbackground=self.ACCENT,
             relief="flat",
             borderwidth=0,
-            highlightthickness=1,
-            highlightbackground=self.BORDER,
-            highlightcolor=self.BORDER,
+            highlightthickness=0,
             padx=16,
             pady=14,
             spacing1=2,
             spacing3=3,
         )
         self.transcript.pack(fill="both", expand=True)
-        self.transcript.insert("end", "Results:\nApproved research results will appear here.\n\n")
+        # ScrolledText creates a classic Tk scrollbar whose bright Aqua trough
+        # clashes with macOS overlay scrollbars. Trackpad and mouse-wheel
+        # scrolling continue to work without the permanently visible gutter.
+        self.transcript.vbar.pack_forget()
+        self.transcript.bind("<ButtonPress-1>", self._begin_transcript_selection, add="+")
+        self.transcript.bind("<B1-Motion>", self._extend_transcript_selection, add="+")
+        self.transcript.bind("<ButtonRelease-1>", self._end_transcript_selection, add="+")
+        self.transcript.tag_configure(
+            "empty_title", foreground=self.TEXT, font=(self.display_font, 18, "bold"),
+            justify="center", spacing3=8,
+        )
+        self.transcript.tag_configure(
+            "empty_body", foreground=self.MUTED, font=(self.ui_font, 11), justify="center",
+        )
+        self.transcript.tag_configure(
+            "assistant_name", foreground=self.MUTED, font=(self.ui_font, 9, "bold"),
+            lmargin1=10, lmargin2=10, spacing1=10, spacing3=4,
+        )
+        self.transcript.tag_configure(
+            "assistant_text", foreground=self.TEXT, font=(self.ui_font, 11),
+            lmargin1=10, lmargin2=10, rmargin=70, spacing1=2, spacing3=5,
+        )
+        self.transcript.tag_configure(
+            "live_progress", foreground=self.MUTED, font=(self.ui_font, 10),
+            lmargin1=10, lmargin2=10, rmargin=70, spacing1=5, spacing3=5,
+        )
+        self.transcript.insert("end", "\nYour research library\n", ("empty_title",))
+        self.transcript.insert(
+            "end", "Approved reports and live progress will collect here.", ("empty_body",)
+        )
+        self.transcript_is_empty = True
         self.transcript.configure(state="disabled")
 
         self.progress_frame = ttk.Frame(
@@ -1367,6 +1902,7 @@ class StockAgentApp(tk.Tk):
         self.progress_elapsed.pack(side="right", anchor="e", padx=(12, 0))
 
         self.progress_frame.pack(side="bottom", fill="x", pady=(10, 0))
+        self.research_composer.pack(side="bottom", fill="x", pady=(10, 0))
         transcript_frame.pack(side="top", fill="both", expand=True)
 
     def _build_holdings_tab(self) -> None:
@@ -1540,7 +2076,7 @@ class StockAgentApp(tk.Tk):
         title_block = ttk.Frame(header)
         title_block.pack(side="left", fill="x", expand=True)
         ttk.Label(title_block, text="Market guide", style="Title.TLabel").pack(anchor="w")
-        self.market_status = tk.StringVar(value="Waiting for current macro observations")
+        self.market_status = tk.StringVar(value="Waiting for current market data")
         ttk.Label(title_block, textvariable=self.market_status, style="Muted.TLabel").pack(
             anchor="w", pady=(2, 0)
         )
@@ -1553,7 +2089,7 @@ class StockAgentApp(tk.Tk):
         self.market_refresh_button.pack(side="right")
         ttk.Button(
             header,
-            text="How signals work",
+            text="About these signals",
             command=self.show_macro_reference,
         ).pack(side="right", padx=(0, 8))
         ttk.Button(
@@ -1567,7 +2103,7 @@ class StockAgentApp(tk.Tk):
         overview.pack(fill="x", pady=(0, 14))
         self.market_regime_title = tk.StringVar(value="Regime not calculated")
         self.market_company_fit = tk.StringVar(
-            value="Stock profile to prioritize: waiting for a complete market regime."
+            value="What to look for: waiting for enough data to describe the current market."
         )
         ttk.Label(
             overview, textvariable=self.market_regime_title, style="SurfaceSection.TLabel"
@@ -1613,9 +2149,9 @@ class StockAgentApp(tk.Tk):
                 anchor="w" if column in {"indicator", "trend", "favored"} else "center",
             )
         self.market_tree.tag_configure("unavailable", foreground=self.MUTED)
-        self.market_tree.tag_configure("safe", foreground=self.POSITIVE)
-        self.market_tree.tag_configure("neutral", foreground=self.WARNING)
-        self.market_tree.tag_configure("risk_tolerant", foreground=self.NEGATIVE)
+        self.market_tree.tag_configure("safe", foreground=self.NEGATIVE)
+        self.market_tree.tag_configure("neutral", foreground=self.NEUTRAL)
+        self.market_tree.tag_configure("risk_tolerant", foreground=self.POSITIVE)
         self.market_tree.pack(fill="x")
 
     def _build_account_tab(self) -> None:
@@ -1656,11 +2192,14 @@ class StockAgentApp(tk.Tk):
         )
         self.supabase_key_entry = ttk.Entry(panel, textvariable=self.supabase_key, show="•")
         self.supabase_key_entry.grid(row=3, column=1, sticky="ew", pady=6)
-        ttk.Checkbutton(
+        MacChoice(
             panel,
             text="Show",
             variable=self.show_supabase_key,
             command=self._toggle_supabase_key,
+            background=self.BG,
+            font=self.ui_font,
+            width=92,
         ).grid(row=3, column=2, sticky="w", padx=(10, 0))
 
         self.save_supabase_button = ttk.Button(
@@ -1798,7 +2337,6 @@ class StockAgentApp(tk.Tk):
     def _start_position_risk_worker(
         self,
         tickers: list[str],
-        user_context: str | None = None,
     ) -> None:
         if self.is_busy:
             messagebox.showinfo("Research in progress", "Wait for the current research to finish or stop it.", parent=self)
@@ -1820,7 +2358,6 @@ class StockAgentApp(tk.Tk):
                     tickers=tickers,
                     progress_callback=progress_callback,
                     cancel_event=cancel_event,
-                    user_context=user_context,
                 )
                 result_kind = "message"
             except Exception as exc:
@@ -1871,6 +2408,109 @@ class StockAgentApp(tk.Tk):
         self.research_question.delete("1.0", "end")
         self.research_question.insert("1.0", dialog.result)
         self.research_question.focus_set()
+
+    def _use_research_suggestion(self, prompt: str) -> None:
+        self.research_question.delete("1.0", "end")
+        self.research_question.insert("1.0", prompt)
+        self.research_question.focus_set()
+
+    def _prepare_transcript_for_content(self) -> None:
+        if not getattr(self, "transcript_is_empty", False):
+            return
+        self.transcript.delete("1.0", "end")
+        self.transcript_is_empty = False
+        self.quick_starts_label.pack_forget()
+        self.quick_starts_frame.pack_forget()
+
+    def _copy_response(self, text: str, button: IconActionButton) -> None:
+        self.clipboard_clear()
+        self.clipboard_append(text.strip())
+        self.update_idletasks()
+        button.configure(image=self.copied_icon)
+        self.after(
+            1600,
+            lambda: button.configure(image=self.copy_icon) if button.winfo_exists() else None,
+        )
+
+    def _append_user_message(self, text: str) -> None:
+        host = tk.Frame(self.transcript, background=self.SURFACE)
+        bubble = ChatBubble(
+            host,
+            text=text.strip(),
+            background=self.SURFACE,
+            fill="#214B84",
+            foreground="#FFFFFF",
+            font=self.ui_font,
+        )
+        bubble.pack(side="right", padx=(180, 10), pady=(10, 8))
+        self.transcript.window_create("end", window=host, stretch=True)
+        self.transcript.insert("end", "\n")
+
+    def _append_assistant_message(self, text: str, *, label: str = "Stock Agent") -> None:
+        clean = text.strip()
+        self.transcript.insert("end", f"{label}\n", ("assistant_name",))
+        self.transcript.insert("end", clean + "\n", ("assistant_text",))
+        button_host = tk.Frame(self.transcript, background=self.SURFACE)
+        button: IconActionButton
+        button = IconActionButton(
+            button_host,
+            image=self.copy_icon,
+            command=lambda value=clean: self._copy_response(value, button),
+            background=self.SURFACE,
+            hover=self.SURFACE_ALT,
+        )
+        button.pack(side="left", padx=7)
+        self.transcript.window_create("end", window=button_host, stretch=True)
+        self.transcript.insert("end", "\n\n")
+
+    def _begin_transcript_selection(self, event: tk.Event) -> None:
+        self._stop_transcript_autoscroll()
+        self.transcript.mark_set("selection_anchor", f"@{event.x},{event.y}")
+
+    def _extend_transcript_selection(self, event: tk.Event) -> str | None:
+        height = self.transcript.winfo_height()
+        if 0 <= event.y < height:
+            self._select_transcript_to(event.x, event.y)
+            self._stop_transcript_autoscroll()
+            return "break"
+        self._selection_pointer_x = event.x
+        self._selection_scroll_direction = -1 if event.y < 0 else 1
+        if getattr(self, "_selection_scroll_job", None) is None:
+            self._scroll_transcript_selection()
+        return "break"
+
+    def _select_transcript_to(self, x: int, y: int) -> None:
+        anchor = self.transcript.index("selection_anchor")
+        current = self.transcript.index(f"@{x},{y}")
+        self.transcript.tag_remove("sel", "1.0", "end")
+        if self.transcript.compare(current, "<", anchor):
+            self.transcript.tag_add("sel", current, anchor)
+            self.transcript.mark_set("insert", current)
+        else:
+            self.transcript.tag_add("sel", anchor, current)
+            self.transcript.mark_set("insert", current)
+
+    def _scroll_transcript_selection(self) -> None:
+        direction = getattr(self, "_selection_scroll_direction", 0)
+        if not direction:
+            self._selection_scroll_job = None
+            return
+        self.transcript.yview_scroll(direction, "units")
+        boundary_y = 1 if direction < 0 else max(1, self.transcript.winfo_height() - 2)
+        self._select_transcript_to(
+            getattr(self, "_selection_pointer_x", 1), boundary_y
+        )
+        self._selection_scroll_job = self.after(42, self._scroll_transcript_selection)
+
+    def _stop_transcript_autoscroll(self) -> None:
+        self._selection_scroll_direction = 0
+        job = getattr(self, "_selection_scroll_job", None)
+        if job is not None:
+            self.after_cancel(job)
+            self._selection_scroll_job = None
+
+    def _end_transcript_selection(self, _event: tk.Event) -> None:
+        self._stop_transcript_autoscroll()
 
     def _show_method_window(
         self,
@@ -1957,9 +2597,6 @@ class StockAgentApp(tk.Tk):
                     "ticker history is labeled partial rather than silently substituted.",
                 ),
                 (
-                    "Decision context",
-                    "Position review can accept an optional objective, horizon, and exit conditions for that run. "
-                    "The context is labeled as user supplied and is not stored as an independently verified thesis.",
                 ),
             ),
         )
@@ -2169,7 +2806,12 @@ class StockAgentApp(tk.Tk):
 
     def _append(self, speaker: str, text: str) -> None:
         self.transcript.configure(state="normal")
-        self.transcript.insert("end", f"{speaker}:\n{text.strip()}\n\n")
+        self._prepare_transcript_for_content()
+        if speaker in {"Research request", "Research idea"}:
+            self._append_user_message(text)
+        else:
+            label = "Stock Agent" if speaker in {"Results", "Portfolio"} else speaker
+            self._append_assistant_message(text, label=label)
         self.transcript.see("end")
         self.transcript.configure(state="disabled")
 
@@ -2244,6 +2886,7 @@ class StockAgentApp(tk.Tk):
             + f"Elapsed: {elapsed}\n\n"
         )
         self.transcript.configure(state="normal")
+        self._prepare_transcript_for_content()
         ranges = self.transcript.tag_ranges("live_progress")
         if ranges:
             start = ranges[0]
@@ -2279,9 +2922,10 @@ class StockAgentApp(tk.Tk):
             self.progress_percent.configure(text="100%")
             self.progress_status.configure(text="Response status: complete")
             self.progress_detail.configure(text="The response is shown below.")
-        self._replace_live_progress_message()
         self.transcript.configure(state="normal")
-        self.transcript.tag_remove("live_progress", "1.0", "end")
+        ranges = self.transcript.tag_ranges("live_progress")
+        if ranges:
+            self.transcript.delete(ranges[0], ranges[1])
         self.transcript.configure(state="disabled")
 
     def _elapsed_text(self) -> str:
@@ -2394,8 +3038,7 @@ class StockAgentApp(tk.Tk):
         dialog = PositionRiskDialog(self, tickers)
         self.wait_window(dialog)
         if dialog.result is not None:
-            selected_tickers, user_context = dialog.result
-            self._start_position_risk_worker(selected_tickers, user_context)
+            self._start_position_risk_worker(dialog.result)
 
     def start_industry_research(self) -> None:
         dialog = IndustryResearchDialog(self, self.controller.industry_research_options())
@@ -2426,47 +3069,64 @@ class StockAgentApp(tk.Tk):
     def show_macro_reference(self) -> None:
         window = tk.Toplevel(self)
         window.title("How macro signals affect stocks")
-        window.geometry("1160x760")
-        window.minsize(960, 620)
+        window.geometry("1200x820")
+        window.minsize(1000, 700)
         window.transient(self)
 
-        content = ttk.Frame(window, padding=20)
-        content.pack(fill="both", expand=True)
-        ttk.Label(content, text="Core ideas to remember", style="Title.TLabel").pack(anchor="w")
-        tk.Label(
-            content,
-            text=(
-                '“Disproportionate” means the same market shock can cause a much larger percentage change '
-                "in some companies because of when their cash flows arrive or how their capital is structured."
-            ),
+        scroll_area = ttk.Frame(window)
+        scroll_area.pack(fill="both", expand=True)
+        canvas = tk.Canvas(
+            scroll_area,
             background=self.BG,
-            foreground=self.TEXT,
-            font=(self.ui_font, 10),
-            justify="left",
-            anchor="w",
-            wraplength=1100,
-        ).pack(fill="x", pady=(10, 0))
+            borderwidth=0,
+            highlightthickness=0,
+        )
+        scrollbar = ttk.Scrollbar(scroll_area, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        content = ttk.Frame(canvas, padding=20)
+        content_window = canvas.create_window((0, 0), window=content, anchor="nw")
+        content.bind(
+            "<Configure>",
+            lambda _event: canvas.configure(scrollregion=canvas.bbox("all")),
+        )
+        canvas.bind(
+            "<Configure>",
+            lambda event: canvas.itemconfigure(content_window, width=event.width),
+        )
+
+        def scroll_reference(event: tk.Event) -> str:
+            canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
+            return "break"
+
+        window.bind("<MouseWheel>", scroll_reference)
+        ttk.Label(content, text="How macro signals reach stocks", style="Title.TLabel").pack(anchor="w")
 
         impact_examples = ttk.Frame(content)
-        impact_examples.pack(fill="x", pady=(10, 16))
+        impact_examples.pack(fill="x", pady=(16, 16))
         impact_examples.columnconfigure((0, 1), weight=1, uniform="impact")
 
         examples = (
             (
-                "HIGH GROWTH — DURATION",
-                "PV = CF_t / (1 + r)^t",
-                "If volatility makes investors demand a higher return (r), a cash flow 10 years away is "
-                "discounted at that higher rate across 10 compounded periods; next year's cash flow is hit "
-                "only once. High-growth companies have more value concentrated far in the future, so they "
-                "have greater duration and a larger valuation response.",
+                "HIGH GROWTH",
+                "Future earnings are more sensitive to interest rates",
+                "Growth companies derive more of their value from profits expected far in the future. Higher "
+                "interest rates reduce the present value of those future profits (you can earn more risk-free "
+                "money easier), so valuations can fall disproportionately for growth companies even if the "
+                "company’s underlying outlook has not changed.",
             ),
             (
-                "HIGH LEVERAGE — EQUITY MAGNIFICATION",
-                "Equity value = Asset value − Debt",
-                "If assets are worth $120 and debt is $100, equity is $20. A 10% decline in asset value to "
-                "$108 reduces equity to $8—a 60% decline. Debt does not fall alongside asset value, so "
-                "leverage mechanically magnifies the change. Higher rates can also make borrowing and "
-                "refinancing more expensive.",
+                "HIGH LEVERAGE",
+                "Higher interest rates have a larger effect on stock value",
+                "Highly leveraged companies have more debt relative to their equity. When interest rates rise, "
+                "refinancing old debt or taking on new debt becomes more expensive, whether through bank loans "
+                "or bonds. More interest expense means less profit and cash ultimately available to shareholders, "
+                "which lowers equity value and therefore stock price. High leverage can also magnify the "
+                "stock-price decline because equity value = business value − net debt. When debt is large, "
+                "equity is relatively small, so a given decline in business value becomes a much larger "
+                "percentage decline in equity value and stock price.",
             ),
         )
         for column, (heading, formula, explanation) in enumerate(examples):
@@ -2501,16 +3161,21 @@ class StockAgentApp(tk.Tk):
                 font=(self.ui_font, 10),
                 justify="left",
                 anchor="nw",
-                wraplength=510,
+                wraplength=530,
             ).pack(fill="x")
 
         table = ttk.Frame(content, style="Panel.TFrame", padding=1)
-        table.pack(fill="both", expand=True)
-        column_widths = (170, 130, 235, 520)
+        table.pack(fill="x")
+        column_widths = (170, 145, 235, 570)
         for column, width in enumerate(column_widths):
             table.columnconfigure(column, weight=1 if column == 3 else 0, minsize=width)
         for column, heading in enumerate(
-            ("Metric", "Unfavorable signal", "What to favor", "Mechanical reason")
+            (
+                "Signal",
+                "When it is a concern",
+                "What tends to hold up better",
+                "Why it matters for stock price",
+            )
         ):
             tk.Label(
                 table,
@@ -2540,9 +3205,11 @@ class StockAgentApp(tk.Tk):
         ttk.Label(
             content,
             text=(
-                "Favorable signals are the opposite: low rates, expanding Fed assets, low high-yield "
-                "spreads, low VIX, and low or falling inflation. These conditions are more tolerant of "
-                "high-growth or leveraged companies; they do not make leverage or unprofitability desirable."
+                "Look at both the level and direction of each signal. High growth itself is good because faster "
+                "growth means larger expected future profits. The downside is that growth stocks are often more "
+                "sensitive to interest rates because more of their value depends on profits far in the future. "
+                "Debt is not automatically bad either, but having a lot of debt makes a company more sensitive "
+                "to higher borrowing costs and can magnify percentage changes in equity value and stock price."
             ),
             style="Muted.TLabel",
             wraplength=1080,
@@ -2551,7 +3218,7 @@ class StockAgentApp(tk.Tk):
 
     def _render_market_regime(self, snapshot: MarketRegimeSnapshot) -> None:
         self.market_regime_title.set(snapshot.regime)
-        self.market_company_fit.set(f"Stock profile to prioritize: {snapshot.company_fit}")
+        self.market_company_fit.set(f"What to look for: {snapshot.company_fit}")
         for item in self.market_tree.get_children():
             self.market_tree.delete(item)
         for indicator in snapshot.indicators:

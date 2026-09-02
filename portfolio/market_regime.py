@@ -21,33 +21,33 @@ TOLERANT_MACRO_TILT = "More tolerant of high-growth / high-leverage"
 MACRO_REFERENCE_ROWS = (
     (
         "Fed funds rate",
-        "High vs. 5Y history",
-        DEFENSIVE_MACRO_TILT,
-        "High Fed rates push borrowing rates and broader yields higher. That raises discount rates, hurts high-growth valuations, and makes new debt and refinancing more expensive.",
+        "High or rising",
+        "Profitable, low-leverage companies (less dependent on distant future profits or expensive refinancing)",
+        "Higher rates mean investors can earn more risk-free, so they are less willing to pay as much today for profits that arrive far in the future. This especially hurts high-growth companies because more of their value comes from distant future profits. Higher rates also make bank loans and corporate bonds more expensive, so high-leverage companies pay more interest when they refinance debt. That reduces expected profits and equity value. Both mechanisms can lower stock prices.",
     ),
     (
         "Fed assets / balance sheet",
         "Falling",
-        DEFENSIVE_MACRO_TILT,
-        "A shrinking balance sheet reduces downward pressure on Treasury yields. Higher yields raise discount rates and the interest companies must pay to borrow or refinance.",
+        "Profitable, low-leverage companies (less dependent on distant future profits or expensive refinancing)",
+        "The Fed owns a large amount of Treasury bonds. Normally, when those bonds mature, the Fed can use the repayment to buy replacement Treasuries. When the Fed shrinks its balance sheet, it stops replacing some of the bonds that mature. As a result, a larger share of Treasury debt must be held by investors other than the Fed. If investors will not hold that additional amount at existing prices, Treasury prices fall (and Treasury yields increase) until the higher yields make them attractive enough to buy. Higher Treasury yields then hurt high-growth companies because investors can earn more risk-free, so distant future profits are worth less today. They hurt high-leverage companies because corporate borrowing and refinancing rates also tend to rise, increasing interest expense and reducing expected profits. Both effects can reduce equity value and stock price.",
     ),
     (
         "High-yield credit spread",
-        "High vs. 5Y history",
-        DEFENSIVE_MACRO_TILT,
-        "Investors demand more interest above Treasuries to lend to risky companies. This directly raises borrowing and refinancing costs, especially for highly leveraged companies.",
+        "High or rising",
+        "Profitable, low-leverage companies (less debt exposed to expensive refinancing)",
+        "A high-yield spread is the extra interest rate risky companies must pay above the Treasury rate. For example, if Treasuries yield 4% and a company has a 4% credit spread, investors will demand roughly 8% to lend to it. If the spread rises, refinancing becomes more expensive even if Treasury rates do not change. Companies with lots of debt experience a larger increase in total interest expense, reducing expected profits and cash available to shareholders. That lowers equity value and stock price.",
     ),
     (
         "VIX",
-        "High vs. 5Y history",
-        DEFENSIVE_MACRO_TILT,
-        "High expected volatility usually increases the return investors require from risky stocks. Higher required returns reduce valuations, especially for speculative and high-growth companies.",
+        "High or rising sharply",
+        "Profitable, stable companies (less uncertainty about future profits)",
+        "The VIX is mainly a signal of how much volatility investors expect, rather than something that mechanically causes stock prices to fall. When uncertainty is high, investors generally require a higher expected return to take stock-market risk. If the company’s expected future profits are unchanged, investors must pay a lower price today to earn that higher expected return. That means lower equity value and stock price, particularly for companies investors consider risky or uncertain.",
     ),
     (
         "CPI inflation",
-        "High vs. 5Y / unusually fast rise",
-        DEFENSIVE_MACRO_TILT,
-        "High inflation gives the Fed less room to cut rates. Rates may stay higher, pressuring growth valuations and keeping loans and refinancing more expensive.",
+        "High or accelerating",
+        "Profitable companies with pricing power (can raise prices enough to offset higher costs)",
+        "Inflation can raise wages, materials, transportation, and other costs. If a company cannot raise the prices it charges customers enough to compensate, its profit margins shrink. Lower expected future profits mean lower equity value and therefore a lower stock price. High inflation can also cause interest rates to stay higher because the Fed may keep borrowing costs elevated to slow spending and investment, reduce demand in the economy, and bring inflation back down. Higher rates then create the additional high-growth and high-leverage effects described above.",
     ),
 )
 
@@ -62,13 +62,13 @@ class MacroResearchPolicy:
 
     def instruction_text(self) -> str:
         return (
-            f"Current regime: {self.regime}. Deterministic research rules: "
+            f"Current market setting: {self.regime}. Research rules: "
             + " ".join(self.rules)
-            + " Use only validated retrieved data, show missing coverage, and do not invent metrics."
+            + " Use retrieved data only, show missing data, and do not make up metrics."
         )
 
     def focus_summary(self) -> str:
-        return "Applied automatically: valuation first, then the regime checks below."
+        return "Applied automatically: check valuation first, then the market setting."
 
 
 def macro_default_policy(regime: str) -> MacroResearchPolicy:
@@ -534,7 +534,7 @@ def _indicator_meaning(
 ) -> str:
     messages = {
         "fed_funds": {
-            1: "Higher rates favor profitable, lower-debt companies.",
+            1: "Higher rates favor profitable, low-leverage companies.",
             0: "Rate pressure is unchanged; the current level still matters.",
             -1: "Lower rates can support growth-stock valuations.",
         },
@@ -549,7 +549,7 @@ def _indicator_meaning(
             -1: "Slower inflation gives the Fed more room to lower rates.",
         },
         "high_yield_spread": {
-            1: "Rising borrowing risk makes high debt less attractive.",
+            1: "Rising borrowing risk makes high leverage less attractive.",
             0: "Corporate borrowing stress is little changed.",
             -1: "Corporate borrowing stress is easing.",
         },
@@ -639,32 +639,32 @@ def _interpret(
     valid_tilts = {DEFENSIVE_MACRO_TILT, NEUTRAL_MACRO_TILT, TOLERANT_MACRO_TILT}
     if rate_tilt not in valid_tilts or balance_tilt not in valid_tilts:
         regime = "Regime incomplete"
-        summary = "Rate or Federal Reserve balance-sheet data is missing, so the app cannot choose a market environment yet."
-        emphasis = ("Refresh the missing data before changing what you look for in a stock.",)
-        company_fit = "No company type yet; wait for both Federal Reserve signals."
+        summary = "Some rate or Fed data is missing, so the app cannot set a market view yet."
+        emphasis = ("Refresh the missing data before changing your stock search.",)
+        company_fit = "No stock preference yet; wait for both core Fed signals."
     elif rate_tilt == TOLERANT_MACRO_TILT and balance_tilt == TOLERANT_MACRO_TILT:
         regime = "Easing and expanding liquidity"
-        summary = "Interest rates are falling and the Federal Reserve is adding liquidity. This is the most supportive environment for growth stocks."
+        summary = "Rates are falling and the Fed is adding liquidity. This usually helps growth stocks most."
         emphasis = (
             "Focus on companies growing revenue and earnings quickly.",
             "Still check cash flow and debt; easier money does not fix a weak business.",
         )
         company_fit = (
-            "Faster-growing companies, preferably with improving profits and manageable debt."
+            "Faster-growing companies, preferably with improving profits and manageable leverage."
         )
     elif rate_tilt == DEFENSIVE_MACRO_TILT and balance_tilt == DEFENSIVE_MACRO_TILT:
         regime = "Tightening and contracting liquidity"
-        summary = "Interest rates are rising and the Federal Reserve is removing liquidity. Expensive or debt-dependent growth stocks face more pressure."
+        summary = "Rates are rising and the Fed is removing liquidity. Expensive or high-leverage growth stocks face more pressure."
         emphasis = (
-            "Focus on current profits, cash flow, low debt, and a reasonable stock price.",
+            "Focus on current profits, cash flow, low leverage, and a reasonable stock price.",
             "Be cautious with companies that need cheap financing to survive or justify their valuation.",
         )
         company_fit = (
-            "Profitable, cash-generating, lower-debt companies trading at reasonable valuations."
+            "Profitable, cash-generating, low-leverage companies trading at reasonable valuations."
         )
     elif rate_tilt == NEUTRAL_MACRO_TILT and balance_tilt == NEUTRAL_MACRO_TILT:
         regime = "Neutral liquidity regime"
-        summary = "The policy rate and Federal Reserve balance sheet are both broadly stable. Neither a growth nor defensive tilt has clear support from the two core liquidity signals."
+        summary = "Rates and the Fed balance sheet are broadly stable. The market data does not favor growth or defense."
         emphasis = (
             "Use company fundamentals and peer-relative valuation as the primary filters.",
             "Treat inflation, credit spreads, and volatility as cautions rather than automatic stock-selection rules.",
@@ -672,18 +672,18 @@ def _interpret(
         company_fit = "No broad macro preference; prioritize company quality and valuation."
     else:
         regime = "Mixed liquidity regime"
-        summary = "Rates and Federal Reserve liquidity do not point the same way. Neither aggressive growth nor pure defense has a clear macro advantage."
+        summary = "Rates and Fed liquidity point in different directions. Neither growth nor defensive stocks has a clear advantage."
         emphasis = (
             "Look for companies that have both forward growth and current profitability.",
-            "Avoid high debt and do not pay a high valuation unless expected growth supports it.",
+            "Avoid high leverage, and do not pay a high valuation unless expected growth supports it.",
         )
         company_fit = (
-            "Profitable growth companies with manageable debt and valuations supported by expected earnings."
+            "Profitable growth companies with manageable leverage and valuations supported by expected earnings."
         )
 
     stress = [states.get("high_yield_spread"), states.get("vix")]
     if any(value == 1 for value in stress):
-        emphasis += ("Market stress is rising. Be stricter about debt and expect larger price swings.",)
+        emphasis += ("Market stress is rising. Be stricter about leverage and refinancing risk, and expect larger price swings.",)
     if states.get("cpi") == 1:
         emphasis += ("Inflation is speeding up, which can keep interest rates higher for longer.",)
     percentiles = {
@@ -706,5 +706,5 @@ def _interpret(
         emphasis += (
             "Interest rates are still high versus the last five years, even if they are stable or falling.",
         )
-        company_fit += " Continue checking debt and refinancing needs."
+        company_fit += " Continue checking leverage and refinancing needs."
     return regime, summary, emphasis, company_fit
