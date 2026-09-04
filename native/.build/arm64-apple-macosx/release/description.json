@@ -1,0 +1,1408 @@
+{
+  "builtTestProducts" : [
+    {
+      "binaryPath" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentNativePackageTests.xctest/Contents/MacOS/StockAgentNativePackageTests",
+      "packagePath" : "/Users/a../stock-agent/native",
+      "productName" : "StockAgentNativePackageTests"
+    }
+  ],
+  "copyCommands" : {
+
+  },
+  "explicitTargetDependencyImportCheckingMode" : {
+    "none" : {
+
+    }
+  },
+  "generatedSourceTargetSet" : [
+
+  ],
+  "pluginDescriptions" : [
+
+  ],
+  "swiftCommands" : {
+    "C.StockAgent-arm64-apple-macosx-release.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgent.build/sources",
+      "importPath" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgent/AccountView.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgent/AppModel.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgent/InlineProposalReview.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgent/MarketView.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgent/PortfolioView.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgent/ResearchView.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgent/RootView.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgent/StockAgentApp.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgent/Theme.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/Modules/StockAgentCore.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgent.build/sources"
+        }
+      ],
+      "isLibrary" : false,
+      "moduleName" : "StockAgent",
+      "moduleOutputPath" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/Modules/StockAgent.swiftmodule",
+      "objects" : [
+        "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgent.build/AccountView.swift.o",
+        "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgent.build/AppModel.swift.o",
+        "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgent.build/InlineProposalReview.swift.o",
+        "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgent.build/MarketView.swift.o",
+        "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgent.build/PortfolioView.swift.o",
+        "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgent.build/ResearchView.swift.o",
+        "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgent.build/RootView.swift.o",
+        "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgent.build/StockAgentApp.swift.o",
+        "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgent.build/Theme.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx26.0",
+        "-whole-module-optimization",
+        "-num-threads",
+        "8",
+        "-serialize-diagnostics",
+        "-O",
+        "-j8",
+        "-DSWIFT_PACKAGE",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-Xcc",
+        "-fmodule-map-file=/Users/a../stock-agent/native/Sources/CSQLite/module.modulemap",
+        "-module-cache-path",
+        "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/ModuleCache",
+        "-parseable-output",
+        "-Xfrontend",
+        "-entry-point-function-name",
+        "-Xfrontend",
+        "StockAgent_main",
+        "-swift-version",
+        "6",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "native"
+      ],
+      "outputFileMapPath" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgent.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgent.build/AccountView.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgent.build/AppModel.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgent.build/InlineProposalReview.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgent.build/MarketView.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgent.build/PortfolioView.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgent.build/ResearchView.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgent.build/RootView.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgent.build/StockAgentApp.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgent.build/Theme.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/Modules/StockAgent.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/a../stock-agent/native/Sources/StockAgent/AccountView.swift",
+        "/Users/a../stock-agent/native/Sources/StockAgent/AppModel.swift",
+        "/Users/a../stock-agent/native/Sources/StockAgent/InlineProposalReview.swift",
+        "/Users/a../stock-agent/native/Sources/StockAgent/MarketView.swift",
+        "/Users/a../stock-agent/native/Sources/StockAgent/PortfolioView.swift",
+        "/Users/a../stock-agent/native/Sources/StockAgent/ResearchView.swift",
+        "/Users/a../stock-agent/native/Sources/StockAgent/RootView.swift",
+        "/Users/a../stock-agent/native/Sources/StockAgent/StockAgentApp.swift",
+        "/Users/a../stock-agent/native/Sources/StockAgent/Theme.swift"
+      ],
+      "tempsPath" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgent.build",
+      "wholeModuleOptimization" : true
+    },
+    "C.StockAgentCore-arm64-apple-macosx-release.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/sources",
+      "importPath" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgentCore/AppConfiguration.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgentCore/Domain.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgentCore/LSEGWorkspaceService.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgentCore/MacroReference.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgentCore/MarketDataServices.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgentCore/PortfolioImport.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgentCore/PortfolioStore.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgentCore/ResearchEngine.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgentCore/ResearchPlanner.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgentCore/ResearchRegistry.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgentCore/SECService.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "StockAgentCore",
+      "moduleOutputPath" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/Modules/StockAgentCore.swiftmodule",
+      "objects" : [
+        "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/AppConfiguration.swift.o",
+        "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/Domain.swift.o",
+        "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/LSEGWorkspaceService.swift.o",
+        "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/MacroReference.swift.o",
+        "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/MarketDataServices.swift.o",
+        "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/PortfolioImport.swift.o",
+        "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/PortfolioStore.swift.o",
+        "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/ResearchEngine.swift.o",
+        "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/ResearchPlanner.swift.o",
+        "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/ResearchRegistry.swift.o",
+        "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/SECService.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx26.0",
+        "-whole-module-optimization",
+        "-num-threads",
+        "8",
+        "-serialize-diagnostics",
+        "-O",
+        "-j8",
+        "-DSWIFT_PACKAGE",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-Xcc",
+        "-fmodule-map-file=/Users/a../stock-agent/native/Sources/CSQLite/module.modulemap",
+        "-module-cache-path",
+        "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-emit-objc-header",
+        "-emit-objc-header-path",
+        "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/include/StockAgentCore-Swift.h",
+        "-swift-version",
+        "6",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "native"
+      ],
+      "outputFileMapPath" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/AppConfiguration.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/Domain.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/LSEGWorkspaceService.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/MacroReference.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/MarketDataServices.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/PortfolioImport.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/PortfolioStore.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/ResearchEngine.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/ResearchPlanner.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/ResearchRegistry.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/SECService.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/Modules/StockAgentCore.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/a../stock-agent/native/Sources/StockAgentCore/AppConfiguration.swift",
+        "/Users/a../stock-agent/native/Sources/StockAgentCore/Domain.swift",
+        "/Users/a../stock-agent/native/Sources/StockAgentCore/LSEGWorkspaceService.swift",
+        "/Users/a../stock-agent/native/Sources/StockAgentCore/MacroReference.swift",
+        "/Users/a../stock-agent/native/Sources/StockAgentCore/MarketDataServices.swift",
+        "/Users/a../stock-agent/native/Sources/StockAgentCore/PortfolioImport.swift",
+        "/Users/a../stock-agent/native/Sources/StockAgentCore/PortfolioStore.swift",
+        "/Users/a../stock-agent/native/Sources/StockAgentCore/ResearchEngine.swift",
+        "/Users/a../stock-agent/native/Sources/StockAgentCore/ResearchPlanner.swift",
+        "/Users/a../stock-agent/native/Sources/StockAgentCore/ResearchRegistry.swift",
+        "/Users/a../stock-agent/native/Sources/StockAgentCore/SECService.swift"
+      ],
+      "tempsPath" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build",
+      "wholeModuleOptimization" : true
+    },
+    "C.StockAgentCoreTests-arm64-apple-macosx-release.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCoreTests.build/sources",
+      "importPath" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Tests/StockAgentCoreTests/ResearchPlannerTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/Modules/StockAgentCore.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCoreTests.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "StockAgentCoreTests",
+      "moduleOutputPath" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/Modules/StockAgentCoreTests.swiftmodule",
+      "objects" : [
+        "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCoreTests.build/ResearchPlannerTests.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx26.0",
+        "-whole-module-optimization",
+        "-num-threads",
+        "8",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/index/store",
+        "-O",
+        "-enable-testing",
+        "-Xfrontend",
+        "-enable-cross-import-overlays",
+        "-j8",
+        "-DSWIFT_PACKAGE",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-Xcc",
+        "-fmodule-map-file=/Users/a../stock-agent/native/Sources/CSQLite/module.modulemap",
+        "-module-cache-path",
+        "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-swift-version",
+        "6",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "native"
+      ],
+      "outputFileMapPath" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCoreTests.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCoreTests.build/ResearchPlannerTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/Modules/StockAgentCoreTests.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/a../stock-agent/native/Tests/StockAgentCoreTests/ResearchPlannerTests.swift"
+      ],
+      "tempsPath" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCoreTests.build",
+      "wholeModuleOptimization" : true
+    },
+    "C.StockAgentDiagnostics-arm64-apple-macosx-release.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentDiagnostics.build/sources",
+      "importPath" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgentDiagnostics/main.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/Modules/StockAgentCore.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentDiagnostics.build/sources"
+        }
+      ],
+      "isLibrary" : false,
+      "moduleName" : "StockAgentDiagnostics",
+      "moduleOutputPath" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/Modules/StockAgentDiagnostics.swiftmodule",
+      "objects" : [
+        "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentDiagnostics.build/main.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx26.0",
+        "-whole-module-optimization",
+        "-num-threads",
+        "8",
+        "-serialize-diagnostics",
+        "-O",
+        "-j8",
+        "-DSWIFT_PACKAGE",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-Xcc",
+        "-fmodule-map-file=/Users/a../stock-agent/native/Sources/CSQLite/module.modulemap",
+        "-module-cache-path",
+        "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/ModuleCache",
+        "-parseable-output",
+        "-Xfrontend",
+        "-entry-point-function-name",
+        "-Xfrontend",
+        "StockAgentDiagnostics_main",
+        "-parse-as-library",
+        "-swift-version",
+        "6",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "native"
+      ],
+      "outputFileMapPath" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentDiagnostics.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentDiagnostics.build/main.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/Modules/StockAgentDiagnostics.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/a../stock-agent/native/Sources/StockAgentDiagnostics/main.swift"
+      ],
+      "tempsPath" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentDiagnostics.build",
+      "wholeModuleOptimization" : true
+    },
+    "C.StockAgentNativePackageTests-arm64-apple-macosx-release.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentNativePackageTests.build/sources",
+      "importPath" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentNativePackageTests.derived/runner.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/Modules/StockAgentCoreTests.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentNativePackageTests.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "StockAgentNativePackageTests",
+      "moduleOutputPath" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/Modules/StockAgentNativePackageTests.swiftmodule",
+      "objects" : [
+        "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentNativePackageTests.build/runner.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx26.0",
+        "-whole-module-optimization",
+        "-num-threads",
+        "8",
+        "-serialize-diagnostics",
+        "-O",
+        "-enable-testing",
+        "-Xfrontend",
+        "-enable-cross-import-overlays",
+        "-j8",
+        "-DSWIFT_PACKAGE",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-Xcc",
+        "-fmodule-map-file=/Users/a../stock-agent/native/Sources/CSQLite/module.modulemap",
+        "-module-cache-path",
+        "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-emit-objc-header",
+        "-emit-objc-header-path",
+        "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentNativePackageTests.build/include/StockAgentNativePackageTests-Swift.h",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "native"
+      ],
+      "outputFileMapPath" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentNativePackageTests.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentNativePackageTests.build/runner.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/Modules/StockAgentNativePackageTests.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentNativePackageTests.derived/runner.swift"
+      ],
+      "tempsPath" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentNativePackageTests.build",
+      "wholeModuleOptimization" : true
+    }
+  },
+  "swiftFrontendCommands" : {
+
+  },
+  "swiftTargetScanArgs" : {
+    "StockAgent" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "StockAgent",
+      "-package-name",
+      "native",
+      "-c",
+      "/Users/a../stock-agent/native/Sources/StockAgent/AccountView.swift",
+      "/Users/a../stock-agent/native/Sources/StockAgent/AppModel.swift",
+      "/Users/a../stock-agent/native/Sources/StockAgent/InlineProposalReview.swift",
+      "/Users/a../stock-agent/native/Sources/StockAgent/MarketView.swift",
+      "/Users/a../stock-agent/native/Sources/StockAgent/PortfolioView.swift",
+      "/Users/a../stock-agent/native/Sources/StockAgent/ResearchView.swift",
+      "/Users/a../stock-agent/native/Sources/StockAgent/RootView.swift",
+      "/Users/a../stock-agent/native/Sources/StockAgent/StockAgentApp.swift",
+      "/Users/a../stock-agent/native/Sources/StockAgent/Theme.swift",
+      "-I",
+      "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/Modules",
+      "-target",
+      "arm64-apple-macosx26.0",
+      "-whole-module-optimization",
+      "-num-threads",
+      "8",
+      "-serialize-diagnostics",
+      "-O",
+      "-j8",
+      "-DSWIFT_PACKAGE",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-Xcc",
+      "-fmodule-map-file=/Users/a../stock-agent/native/Sources/CSQLite/module.modulemap",
+      "-module-cache-path",
+      "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/ModuleCache",
+      "-parseable-output",
+      "-Xfrontend",
+      "-entry-point-function-name",
+      "-Xfrontend",
+      "StockAgent_main",
+      "-swift-version",
+      "6",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "native",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ],
+    "StockAgentCore" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "StockAgentCore",
+      "-package-name",
+      "native",
+      "-c",
+      "/Users/a../stock-agent/native/Sources/StockAgentCore/AppConfiguration.swift",
+      "/Users/a../stock-agent/native/Sources/StockAgentCore/Domain.swift",
+      "/Users/a../stock-agent/native/Sources/StockAgentCore/LSEGWorkspaceService.swift",
+      "/Users/a../stock-agent/native/Sources/StockAgentCore/MacroReference.swift",
+      "/Users/a../stock-agent/native/Sources/StockAgentCore/MarketDataServices.swift",
+      "/Users/a../stock-agent/native/Sources/StockAgentCore/PortfolioImport.swift",
+      "/Users/a../stock-agent/native/Sources/StockAgentCore/PortfolioStore.swift",
+      "/Users/a../stock-agent/native/Sources/StockAgentCore/ResearchEngine.swift",
+      "/Users/a../stock-agent/native/Sources/StockAgentCore/ResearchPlanner.swift",
+      "/Users/a../stock-agent/native/Sources/StockAgentCore/ResearchRegistry.swift",
+      "/Users/a../stock-agent/native/Sources/StockAgentCore/SECService.swift",
+      "-I",
+      "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/Modules",
+      "-target",
+      "arm64-apple-macosx26.0",
+      "-whole-module-optimization",
+      "-num-threads",
+      "8",
+      "-serialize-diagnostics",
+      "-O",
+      "-j8",
+      "-DSWIFT_PACKAGE",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-Xcc",
+      "-fmodule-map-file=/Users/a../stock-agent/native/Sources/CSQLite/module.modulemap",
+      "-module-cache-path",
+      "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-emit-objc-header",
+      "-emit-objc-header-path",
+      "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/include/StockAgentCore-Swift.h",
+      "-swift-version",
+      "6",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "native",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ],
+    "StockAgentCoreTests" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "StockAgentCoreTests",
+      "-package-name",
+      "native",
+      "-c",
+      "/Users/a../stock-agent/native/Tests/StockAgentCoreTests/ResearchPlannerTests.swift",
+      "-I",
+      "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/Modules",
+      "-target",
+      "arm64-apple-macosx26.0",
+      "-whole-module-optimization",
+      "-num-threads",
+      "8",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/index/store",
+      "-O",
+      "-enable-testing",
+      "-Xfrontend",
+      "-enable-cross-import-overlays",
+      "-j8",
+      "-DSWIFT_PACKAGE",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-Xcc",
+      "-fmodule-map-file=/Users/a../stock-agent/native/Sources/CSQLite/module.modulemap",
+      "-module-cache-path",
+      "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-swift-version",
+      "6",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "native",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ],
+    "StockAgentDiagnostics" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "StockAgentDiagnostics",
+      "-package-name",
+      "native",
+      "-c",
+      "/Users/a../stock-agent/native/Sources/StockAgentDiagnostics/main.swift",
+      "-I",
+      "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/Modules",
+      "-target",
+      "arm64-apple-macosx26.0",
+      "-whole-module-optimization",
+      "-num-threads",
+      "8",
+      "-serialize-diagnostics",
+      "-O",
+      "-j8",
+      "-DSWIFT_PACKAGE",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-Xcc",
+      "-fmodule-map-file=/Users/a../stock-agent/native/Sources/CSQLite/module.modulemap",
+      "-module-cache-path",
+      "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/ModuleCache",
+      "-parseable-output",
+      "-Xfrontend",
+      "-entry-point-function-name",
+      "-Xfrontend",
+      "StockAgentDiagnostics_main",
+      "-parse-as-library",
+      "-swift-version",
+      "6",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "native",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ],
+    "StockAgentNativePackageTests" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "StockAgentNativePackageTests",
+      "-package-name",
+      "native",
+      "-c",
+      "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentNativePackageTests.derived/runner.swift",
+      "-I",
+      "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/Modules",
+      "-target",
+      "arm64-apple-macosx26.0",
+      "-whole-module-optimization",
+      "-num-threads",
+      "8",
+      "-serialize-diagnostics",
+      "-O",
+      "-enable-testing",
+      "-Xfrontend",
+      "-enable-cross-import-overlays",
+      "-j8",
+      "-DSWIFT_PACKAGE",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-Xcc",
+      "-fmodule-map-file=/Users/a../stock-agent/native/Sources/CSQLite/module.modulemap",
+      "-module-cache-path",
+      "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-emit-objc-header",
+      "-emit-objc-header-path",
+      "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentNativePackageTests.build/include/StockAgentNativePackageTests-Swift.h",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "native",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ]
+  },
+  "targetDependencyMap" : {
+    "StockAgent" : [
+      "StockAgentCore",
+      "CSQLite"
+    ],
+    "StockAgentCore" : [
+      "CSQLite"
+    ],
+    "StockAgentCoreTests" : [
+      "StockAgentCore",
+      "CSQLite"
+    ],
+    "StockAgentDiagnostics" : [
+      "StockAgentCore",
+      "CSQLite"
+    ],
+    "StockAgentNativePackageTests" : [
+      "StockAgentCoreTests",
+      "StockAgentCore",
+      "CSQLite"
+    ]
+  },
+  "testDiscoveryCommands" : {
+
+  },
+  "testEntryPointCommands" : {
+    "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentNativePackageTests.derived/runner.swift" : {
+      "inputs" : [
+
+      ],
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentNativePackageTests.derived/runner.swift"
+        }
+      ]
+    }
+  },
+  "traitConfiguration" : {
+    "default" : {
+
+    }
+  },
+  "writeCommands" : {
+    "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgent.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgent/AccountView.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgent/AppModel.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgent/InlineProposalReview.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgent/MarketView.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgent/PortfolioView.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgent/ResearchView.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgent/RootView.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgent/StockAgentApp.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgent/Theme.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgent.build/sources"
+    },
+    "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgent.product/Objects.LinkFileList" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<link-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgent.build/AccountView.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgent.build/AppModel.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgent.build/InlineProposalReview.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgent.build/MarketView.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgent.build/PortfolioView.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgent.build/ResearchView.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgent.build/RootView.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgent.build/StockAgentApp.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgent.build/Theme.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/AppConfiguration.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/Domain.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/LSEGWorkspaceService.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/MacroReference.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/MarketDataServices.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/PortfolioImport.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/PortfolioStore.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/ResearchEngine.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/ResearchPlanner.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/ResearchRegistry.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/SECService.swift.o"
+        }
+      ],
+      "outputFilePath" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgent.product/Objects.LinkFileList"
+    },
+    "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgentCore/AppConfiguration.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgentCore/Domain.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgentCore/LSEGWorkspaceService.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgentCore/MacroReference.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgentCore/MarketDataServices.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgentCore/PortfolioImport.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgentCore/PortfolioStore.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgentCore/ResearchEngine.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgentCore/ResearchPlanner.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgentCore/ResearchRegistry.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgentCore/SECService.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/sources"
+    },
+    "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCoreTests.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Tests/StockAgentCoreTests/ResearchPlannerTests.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCoreTests.build/sources"
+    },
+    "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentDiagnostics.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/Sources/StockAgentDiagnostics/main.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentDiagnostics.build/sources"
+    },
+    "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentDiagnostics.product/Objects.LinkFileList" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<link-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/AppConfiguration.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/Domain.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/LSEGWorkspaceService.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/MacroReference.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/MarketDataServices.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/PortfolioImport.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/PortfolioStore.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/ResearchEngine.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/ResearchPlanner.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/ResearchRegistry.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/SECService.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentDiagnostics.build/main.swift.o"
+        }
+      ],
+      "outputFilePath" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentDiagnostics.product/Objects.LinkFileList"
+    },
+    "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentNativePackageTests.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentNativePackageTests.derived/runner.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentNativePackageTests.build/sources"
+    },
+    "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentNativePackageTests.product/Objects.LinkFileList" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<link-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/AppConfiguration.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/Domain.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/LSEGWorkspaceService.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/MacroReference.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/MarketDataServices.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/PortfolioImport.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/PortfolioStore.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/ResearchEngine.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/ResearchPlanner.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/ResearchRegistry.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/SECService.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCoreTests.build/ResearchPlannerTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentNativePackageTests.build/runner.swift.o"
+        }
+      ],
+      "outputFilePath" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentNativePackageTests.product/Objects.LinkFileList"
+    },
+    "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/swift-version--58304C5D6DBC2206.txt" : {
+      "alwaysOutOfDate" : true,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<swift-get-version>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+        }
+      ],
+      "outputFilePath" : "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/swift-version--58304C5D6DBC2206.txt"
+    }
+  }
+}

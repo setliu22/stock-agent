@@ -2,12 +2,12 @@ from types import SimpleNamespace
 from datetime import date, datetime
 
 from gui import (
-    RESEARCH_EXAMPLE_QUESTIONS,
     ResearchApprovalDialog,
     StockAgentApp,
     _performance_time_label,
     friendly_research_error,
     period_performance,
+    smooth_chart_path,
     sort_portfolio_rows,
     tab_drag_target,
 )
@@ -151,36 +151,26 @@ def test_research_approval_keeps_only_one_rate_measure_selected() -> None:
     assert not app.capability_vars["treasury_yield_history"].get()
 
 
-def test_research_examples_only_fill_the_input(monkeypatch) -> None:
-    calls: list[tuple[str, str]] = []
+def test_smoothed_chart_path_preserves_every_observation() -> None:
+    observations = [(0.0, 10.0), (1.0, 14.0), (2.0, 12.0), (3.0, 18.0)]
 
-    class Input:
-        def delete(self, start: str, end: str) -> None:
-            calls.append(("delete", f"{start}:{end}"))
+    path = smooth_chart_path(observations, samples_per_segment=8)
 
-        def insert(self, start: str, value: str) -> None:
-            calls.append(("insert", f"{start}:{value}"))
+    assert path[0] == observations[0]
+    assert path[-1] == observations[-1]
+    for observation in observations:
+        assert observation in path
 
-        def focus_set(self) -> None:
-            calls.append(("focus", ""))
 
-    class Dialog:
-        def __init__(self, _parent) -> None:
-            self.result = RESEARCH_EXAMPLE_QUESTIONS[0]
+def test_smoothed_chart_path_does_not_overshoot_source_segments() -> None:
+    observations = [(0.0, 10.0), (1.0, 20.0), (2.0, 12.0), (3.0, 16.0)]
 
-    monkeypatch.setattr("gui.ResearchExamplesDialog", Dialog)
-    app = SimpleNamespace(
-        research_question=Input(),
-        wait_window=lambda _dialog: None,
-    )
+    path = smooth_chart_path(observations, samples_per_segment=12)
 
-    StockAgentApp.show_research_examples(app)
-
-    assert calls == [
-        ("delete", "1.0:end"),
-        ("insert", f"1.0:{RESEARCH_EXAMPLE_QUESTIONS[0]}"),
-        ("focus", ""),
-    ]
+    for index, (left, right) in enumerate(zip(observations, observations[1:])):
+        segment = path[index * 12 : (index + 1) * 12 + 1]
+        low, high = sorted((left[1], right[1]))
+        assert all(low <= y <= high for _x, y in segment)
 
 
 def test_expected_research_errors_do_not_leak_internal_type_names() -> None:

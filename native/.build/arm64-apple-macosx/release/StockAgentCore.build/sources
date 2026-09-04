@@ -1,0 +1,11 @@
+/Users/a../stock-agent/native/Sources/StockAgentCore/AppConfiguration.swift
+/Users/a../stock-agent/native/Sources/StockAgentCore/Domain.swift
+/Users/a../stock-agent/native/Sources/StockAgentCore/LSEGWorkspaceService.swift
+/Users/a../stock-agent/native/Sources/StockAgentCore/MacroReference.swift
+/Users/a../stock-agent/native/Sources/StockAgentCore/MarketDataServices.swift
+/Users/a../stock-agent/native/Sources/StockAgentCore/PortfolioImport.swift
+/Users/a../stock-agent/native/Sources/StockAgentCore/PortfolioStore.swift
+/Users/a../stock-agent/native/Sources/StockAgentCore/ResearchEngine.swift
+/Users/a../stock-agent/native/Sources/StockAgentCore/ResearchPlanner.swift
+/Users/a../stock-agent/native/Sources/StockAgentCore/ResearchRegistry.swift
+/Users/a../stock-agent/native/Sources/StockAgentCore/SECService.swift

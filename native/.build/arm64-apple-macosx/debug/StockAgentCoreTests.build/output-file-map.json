@@ -1,0 +1,12 @@
+{
+  "": {
+    "swift-dependencies": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgentCoreTests.build/primary.swiftdeps"
+  },
+  "/Users/a../stock-agent/native/Tests/StockAgentCoreTests/ResearchPlannerTests.swift": {
+    "dependencies": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgentCoreTests.build/ResearchPlannerTests.d",
+    "object": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgentCoreTests.build/ResearchPlannerTests.swift.o",
+    "swiftmodule": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgentCoreTests.build/ResearchPlannerTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgentCoreTests.build/ResearchPlannerTests.swiftdeps",
+    "diagnostics": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgentCoreTests.build/ResearchPlannerTests.dia"
+  }
+}

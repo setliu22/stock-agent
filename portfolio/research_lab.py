@@ -55,18 +55,6 @@ PROFILE_CLASSIFIER_BATCH_SIZE = 5
 # allowed to walk that universe instead of stopping at an arbitrary top ten.
 PROFILE_CANDIDATES_PER_UNIVERSE = 200
 
-DATA_CENTER_CONCEPTS: tuple[str, ...] = (
-    "data centers",
-    "servers",
-    "hyperscale cloud",
-    "high-bandwidth memory (HBM)",
-    "server DRAM",
-    "enterprise SSDs",
-    "data-center networking",
-    "cooling infrastructure",
-    "power infrastructure",
-)
-
 
 def research_discovery_scope_options() -> tuple[tuple[str, str], ...]:
     """Return Research Lab universes without changing the industry workflow."""
@@ -439,6 +427,7 @@ class ResearchProposal:
     discovery_scope: str | None = None
     discovery_scopes: tuple[str, ...] = ()
     discovery_scope_reasons: tuple[ProposedItem, ...] = ()
+    planning_warning: str | None = None
     exchange_geography: str | None = None
     discovery_theme: str | None = None
     result_count: int = 5
@@ -1016,28 +1005,30 @@ def _audit_theme_scopes(
             for label, value in supported_universes
         ],
     }
-    text = invoke_text_groq(
+    payload = invoke_structured_groq(
         settings,
+        _theme_scope_schema(),
         [
             (
                 "system",
-                "Audit which supplied equity universes can contain companies with material business "
-                "exposure to the user's niche theme. Consider the full economic chain: upstream "
-                "inputs, equipment and enabling technology, physical infrastructure, operators, and "
-                "downstream beneficiaries. Return every materially plausible supported universe up "
-                "to the limit, not merely the first match. Give a concrete business-relationship "
-                "reason for each. Do not assess valuation, invent a universe, or use outside company facts. "
-                "Return only valid JSON in this form: "
-                '{"universes":[{"scope":"supported universe","reason":"short reason"}]}.',
+                "Semantically map the user's open-ended business theme to the supplied LSEG equity "
+                "taxonomy. The user's words do not need to match a taxonomy label. Infer the ordinary "
+                "commercial meaning of the theme, then reason from the primary end market through the "
+                "material value chain: products and operators first, followed by essential components, "
+                "enabling technology, and infrastructure. Order the most direct, specific supported "
+                "industry first. Include a broader sector only when it adds material companies not "
+                "already represented by a more specific supported industry. Treat initial_universes as "
+                "untrusted hints, not as a boundary. Return up to the limit and give a concrete "
+                "business-relationship reason for every selection. Do not assess valuation, choose "
+                "companies, invent a taxonomy value, or rely on keyword overlap.",
             ),
             ("human", json.dumps(request, sort_keys=True)),
         ],
         max_retries=0,
-        max_tokens=500,
-        rate_limit_retries=1,
+        max_tokens=900,
+        rate_limit_retries=2,
         preferred_model=GROQ_REASONING_MODEL,
     )
-    payload = _parse_json_object(text)
     if not isinstance(payload, dict) or set(payload) != {"universes"}:
         raise ResearchLabError("The theme-universe audit returned an invalid structure.")
     universes = payload.get("universes")
@@ -1104,11 +1095,16 @@ def propose_research(
                 try:
                     proposal = _audit_theme_scopes(proposal, settings)
                 except Exception:
-                    # The coverage audit is advisory. The proposal compiler has
-                    # already produced a validated, bounded set of universes, so
-                    # provider or formatting failures must not make the plan
-                    # unusable.
-                    pass
+                    # The first pass remains a safe, bounded proposal, but a
+                    # failed semantic coverage pass must never be invisible to
+                    # the person approving it.
+                    proposal = replace(
+                        proposal,
+                        planning_warning=(
+                            "The semantic universe check was unavailable. Review the proposed "
+                            "sectors and industries before running this research."
+                        ),
+                    )
             return proposal
         except ResearchLabError as exc:
             compiler_error = str(exc)
@@ -1705,7 +1701,9 @@ def _select_theme_candidates(
                         "supplies essential equipment, components, power, cooling, networking, memory, or storage for the theme; "
                         "meaningful means another explicit material business activity; adjacent means only a vague or indirect "
                         "relationship; unsupported means the evidence does not establish the relationship. Exposure need not use "
-                        "the exact query phrase when the retrieved description explicitly names a supplied business concept. "
+                        "the exact query phrase: interpret synonyms, industry terminology, components, and stated applications "
+                        "semantically. General business knowledge may bridge meanings, but every candidate-specific claim must "
+                        "come from the supplied description or classification. "
                         "Return each supplied candidate ID exactly once. Do not rank investment "
                         "quality, use outside knowledge, infer missing facts, or introduce another company. "
                         "Keep each reason to one short sentence.",
@@ -1715,11 +1713,6 @@ def _select_theme_candidates(
                         json.dumps(
                             {
                                 "business_exposure_query": approved.discovery_theme,
-                                "related_business_concepts": (
-                                    DATA_CENTER_CONCEPTS
-                                    if "data center" in (approved.discovery_theme or "").casefold()
-                                    else ()
-                                ),
                                 "candidates": classifier_batch,
                             },
                             sort_keys=True,

@@ -1,0 +1,13 @@
+{
+  "": {
+    "dependencies": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentNativePackageTests.build/StockAgentNativePackageTests.d",
+    "object": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentNativePackageTests.build/StockAgentNativePackageTests.o",
+    "swift-dependencies": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentNativePackageTests.build/primary.swiftdeps"
+  },
+  "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentNativePackageTests.derived/runner.swift": {
+    "object": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentNativePackageTests.build/runner.swift.o",
+    "swiftmodule": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentNativePackageTests.build/runner~partial.swiftmodule",
+    "swift-dependencies": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentNativePackageTests.build/runner.swiftdeps",
+    "diagnostics": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentNativePackageTests.build/runner.dia"
+  }
+}

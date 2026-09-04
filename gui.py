@@ -6,6 +6,7 @@ from datetime import date, datetime
 from pathlib import Path
 import ctypes
 import ctypes.util
+import math
 import sys
 import queue
 import re
@@ -49,15 +50,6 @@ EXPECTED_RESEARCH_ERRORS = (
     LSEGResearchError,
     ResearchLabError,
 )
-
-RESEARCH_EXAMPLE_QUESTIONS = (
-    "Find undervalued semiconductor stocks.",
-    "Find undervalued technology companies.",
-    "Find undervalued companies related to data centers.",
-    "Find undervalued companies related to power infrastructure.",
-    "Find undervalued companies related to artificial intelligence.",
-)
-
 
 def friendly_research_error(error: BaseException) -> str:
     """Keep actionable research failures readable while preserving unknown diagnostics."""
@@ -138,8 +130,190 @@ def _collapse_text_selection(widget: tk.Text, *, to_end: bool) -> str | None:
     return "break"
 
 
+def smooth_chart_path(
+    points: list[tuple[float, float]],
+    *,
+    samples_per_segment: int = 10,
+) -> list[tuple[float, float]]:
+    """Return a smooth, shape-preserving path through every observed point.
+
+    The monotone cubic interpolation keeps each segment inside the range of its
+    two observations. It therefore softens the chart without fabricating peaks,
+    troughs, or different endpoint values.
+    """
+    if len(points) < 3 or samples_per_segment < 2:
+        return list(points)
+    if any(right[0] <= left[0] for left, right in zip(points, points[1:])):
+        return list(points)
+
+    slopes = [
+        (right[1] - left[1]) / (right[0] - left[0])
+        for left, right in zip(points, points[1:])
+    ]
+    tangents = [slopes[0]]
+    for previous, following in zip(slopes, slopes[1:]):
+        if previous == 0.0 or following == 0.0 or previous * following <= 0.0:
+            tangents.append(0.0)
+        else:
+            tangents.append(2.0 * previous * following / (previous + following))
+    tangents.append(slopes[-1])
+
+    # Fritsch-Carlson limiting guarantees that a monotone source segment stays
+    # monotone after interpolation.
+    for index, slope in enumerate(slopes):
+        if slope == 0.0:
+            tangents[index] = 0.0
+            tangents[index + 1] = 0.0
+            continue
+        alpha = tangents[index] / slope
+        beta = tangents[index + 1] / slope
+        magnitude = alpha * alpha + beta * beta
+        if magnitude > 9.0:
+            scale = 3.0 / math.sqrt(magnitude)
+            tangents[index] = scale * alpha * slope
+            tangents[index + 1] = scale * beta * slope
+
+    smoothed: list[tuple[float, float]] = []
+    for index, ((x0, y0), (x1, y1)) in enumerate(zip(points, points[1:])):
+        width = x1 - x0
+        for sample in range(samples_per_segment):
+            t = sample / samples_per_segment
+            t2 = t * t
+            t3 = t2 * t
+            h00 = 2.0 * t3 - 3.0 * t2 + 1.0
+            h10 = t3 - 2.0 * t2 + t
+            h01 = -2.0 * t3 + 3.0 * t2
+            h11 = t3 - t2
+            smoothed.append(
+                (
+                    x0 + width * t,
+                    h00 * y0
+                    + h10 * width * tangents[index]
+                    + h01 * y1
+                    + h11 * width * tangents[index + 1],
+                )
+            )
+    smoothed.append(points[-1])
+    return smoothed
+
+
+def _rounded_polygon(
+    canvas: tk.Canvas,
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+    radius: float,
+    **kwargs: Any,
+) -> int:
+    radius = max(0.0, min(radius, (x2 - x1) / 2.0, (y2 - y1) / 2.0))
+    return canvas.create_polygon(
+        x1 + radius,
+        y1,
+        x2 - radius,
+        y1,
+        x2,
+        y1,
+        x2,
+        y1 + radius,
+        x2,
+        y2 - radius,
+        x2,
+        y2,
+        x2 - radius,
+        y2,
+        x1 + radius,
+        y2,
+        x1,
+        y2,
+        x1,
+        y2 - radius,
+        x1,
+        y1 + radius,
+        x1,
+        y1,
+        smooth=True,
+        splinesteps=36,
+        **kwargs,
+    )
+
+
+class LiquidPanel(tk.Frame):
+    """Rounded, layered surface that remains usable with ordinary Tk children."""
+
+    def __init__(
+        self,
+        parent: tk.Misc,
+        *,
+        background: str,
+        surface: str,
+        rim: str,
+        glow: str,
+        radius: int = 22,
+        padding: tuple[int, int] = (20, 17),
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(parent, background=background, borderwidth=0, **kwargs)
+        self._surface = surface
+        self._rim = rim
+        self._glow = glow
+        self._radius = radius
+        self._canvas = tk.Canvas(
+            self,
+            background=background,
+            highlightthickness=0,
+            borderwidth=0,
+        )
+        self._canvas.place(x=0, y=0, relwidth=1, relheight=1)
+        self.content = tk.Frame(self, background=surface, borderwidth=0)
+        self.content.pack(
+            fill="both",
+            expand=True,
+            padx=padding[0],
+            pady=padding[1],
+        )
+        self.bind("<Configure>", self._redraw, add="+")
+
+    def _redraw(self, _event: tk.Event | None = None) -> None:
+        width = self.winfo_width()
+        height = self.winfo_height()
+        if width < 8 or height < 8:
+            return
+        canvas = self._canvas
+        canvas.delete("all")
+        _rounded_polygon(
+            canvas,
+            3,
+            7,
+            width - 3,
+            height - 2,
+            self._radius,
+            fill="#111218",
+            outline="",
+        )
+        _rounded_polygon(
+            canvas,
+            2,
+            2,
+            width - 2,
+            height - 7,
+            self._radius,
+            fill=self._surface,
+            outline=self._rim,
+            width=1,
+        )
+        canvas.create_line(
+            self._radius + 4,
+            3,
+            width - self._radius - 4,
+            3,
+            fill=self._glow,
+            width=1,
+        )
+
+
 class MacChoice(tk.Canvas):
-    """Canvas-rendered checkbox/radio control with macOS-style geometry."""
+    """Retina-safe vector checkbox/radio control with wrapped labels."""
 
     def __init__(
         self,
@@ -156,11 +330,27 @@ class MacChoice(tk.Canvas):
         accent: str = "#8291FF",
         font: str = "Helvetica Neue",
         width: int | None = None,
+        wraplength: int | None = None,
     ) -> None:
         label_font = tkfont.Font(family=font, size=11)
-        measured_width = label_font.measure(text) + 52
+        requested_width = width or min(520, label_font.measure(text) + 52)
+        label_width = max(80, (wraplength or requested_width - 44))
+        words = text.split()
+        lines: list[str] = []
+        current = ""
+        for word in words:
+            candidate = f"{current} {word}".strip()
+            if current and label_font.measure(candidate) > label_width:
+                lines.append(current)
+                current = word
+            else:
+                current = candidate
+        if current or not lines:
+            lines.append(current)
+        self._display_label = "\n".join(lines)
+        requested_height = max(36, 14 + len(lines) * 18)
         super().__init__(
-            parent, width=width or measured_width, height=34,
+            parent, width=requested_width, height=requested_height,
             background=background, highlightthickness=0, borderwidth=0,
             cursor="pointinghand",
         )
@@ -174,18 +364,10 @@ class MacChoice(tk.Canvas):
         self._muted = muted
         self._accent = accent
         self._font = font
+        self._requested_width = requested_width
+        self._requested_height = requested_height
         self._control_state = "normal"
         self._hovered = False
-        symbol_directory = Path(__file__).resolve().parent / "assets" / "control-symbols"
-        prefix = "radio" if kind == "radio" else "checkbox"
-        self._symbols = {
-            "off": tk.PhotoImage(file=str(symbol_directory / f"{prefix}-off.png")),
-            "on": tk.PhotoImage(file=str(symbol_directory / f"{prefix}-on.png")),
-            "disabled": tk.PhotoImage(file=str(symbol_directory / f"{prefix}-disabled.png")),
-            "disabled-on": tk.PhotoImage(
-                file=str(symbol_directory / f"{prefix}-disabled-on.png")
-            ),
-        }
         self._trace = variable.trace_add("write", lambda *_args: self._draw())
         self.bind("<Enter>", lambda _event: self._set_hovered(True))
         self.bind("<Leave>", lambda _event: self._set_hovered(False))
@@ -197,7 +379,7 @@ class MacChoice(tk.Canvas):
         state = kwargs.pop("state", None)
         if state is not None:
             self._control_state = str(state)
-            self.configure(cursor="arrow" if state == "disabled" else "pointinghand")
+            super().configure(cursor="arrow" if state == "disabled" else "pointinghand")
             self._draw()
         if cnf is not None or kwargs:
             return super().configure(cnf, **kwargs)
@@ -233,16 +415,73 @@ class MacChoice(tk.Canvas):
         selected = self._selected()
         disabled = self._control_state == "disabled"
         if self._hovered and not disabled:
-            self.create_rectangle(0, 2, max(1, self.winfo_width()), 32, fill="#2A2B34", outline="")
-        symbol_state = (
-            "disabled-on" if disabled and selected
-            else "disabled" if disabled
-            else "on" if selected
-            else "off"
-        )
-        self.create_image(16, 17, image=self._symbols[symbol_state])
+            _rounded_polygon(
+                self,
+                0,
+                1,
+                max(1, self.winfo_width()),
+                self._requested_height - 1,
+                9,
+                fill="#2B2D36",
+                outline="",
+            )
+        outline = "#565966" if not disabled else "#3B3D46"
+        selected_fill = self._accent if not disabled else "#555B82"
+        if self._kind == "radio":
+            self.create_oval(
+                8,
+                self._requested_height / 2 - 9,
+                26,
+                self._requested_height / 2 + 9,
+                fill=selected_fill if selected else self._background,
+                outline=selected_fill if selected else outline,
+                width=2,
+            )
+            if selected:
+                self.create_oval(
+                    13,
+                    self._requested_height / 2 - 4,
+                    21,
+                    self._requested_height / 2 + 4,
+                    fill="#FFFFFF",
+                    outline="",
+                )
+        else:
+            top = self._requested_height / 2 - 9
+            _rounded_polygon(
+                self,
+                8,
+                top,
+                26,
+                top + 18,
+                5,
+                fill=selected_fill if selected else self._background,
+                outline=selected_fill if selected else outline,
+                width=2,
+            )
+            if selected:
+                self.create_line(
+                    12,
+                    top + 9,
+                    16,
+                    top + 13,
+                    23,
+                    top + 5,
+                    fill="#FFFFFF",
+                    width=2.3,
+                    capstyle=tk.ROUND,
+                    joinstyle=tk.ROUND,
+                )
         label_color = "#686A73" if disabled else self._foreground
-        self.create_text(38, 17, anchor="w", text=self._label, fill=label_color, font=(self._font, 11))
+        self.create_text(
+            38,
+            self._requested_height / 2,
+            anchor="w",
+            text=self._display_label,
+            fill=label_color,
+            font=(self._font, 11),
+            justify="left",
+        )
 
 
 class PurchaseDialog(tk.Toplevel):
@@ -252,6 +491,7 @@ class PurchaseDialog(tk.Toplevel):
         self.resizable(False, False)
         self.transient(parent)
         self.grab_set()
+        self.configure(background=StockAgentApp.BG)
         self.result: tuple[str, float, float, date, str] | None = None
 
         self.security = tk.StringVar()
@@ -260,28 +500,45 @@ class PurchaseDialog(tk.Toplevel):
         self.purchase_date = tk.StringVar(value=date.today().isoformat())
         self.note = tk.StringVar()
 
-        fields = [
+        fields = (
             ("Company or ticker", self.security),
             ("Shares", self.quantity),
             ("Price per share", self.price),
             ("Date (YYYY-MM-DD)", self.purchase_date),
             ("Note", self.note),
-        ]
-        frame = ttk.Frame(self, padding=18)
-        frame.grid(sticky="nsew")
+        )
+        frame = ttk.Frame(self, padding=24)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="Add a purchase", style="DialogTitle.TLabel").pack(anchor="w")
+        ttk.Label(
+            frame,
+            text="Record one open-position lot in your local portfolio.",
+            style="DialogMuted.TLabel",
+        ).pack(anchor="w", pady=(4, 16))
+        form = ttk.Frame(frame, style="Panel.TFrame", padding=(16, 12))
+        form.pack(fill="x")
+        form.columnconfigure(1, weight=1)
         for row, (label, variable) in enumerate(fields):
-            ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w", padx=(0, 12), pady=6)
-            entry = ttk.Entry(frame, textvariable=variable, width=34)
+            ttk.Label(form, text=label.upper(), style="DialogLabel.TLabel").grid(
+                row=row, column=0, sticky="w", padx=(0, 16), pady=7
+            )
+            entry = ttk.Entry(form, textvariable=variable, width=36)
             entry.grid(row=row, column=1, sticky="ew", pady=6)
             if row == 0:
                 entry.focus_set()
 
         buttons = ttk.Frame(frame)
-        buttons.grid(row=len(fields), column=0, columnspan=2, sticky="e", pady=(12, 0))
-        ttk.Button(buttons, text="Cancel", command=self.destroy).pack(side="right", padx=(8, 0))
-        ttk.Button(buttons, text="Save", command=self._save).pack(side="right")
+        buttons.pack(fill="x", pady=(16, 0))
+        ttk.Button(
+            buttons,
+            text="Save purchase",
+            style="Accent.TButton",
+            command=self._save,
+        ).pack(side="right")
+        ttk.Button(buttons, text="Cancel", command=self.destroy).pack(side="right", padx=(0, 8))
         self.bind("<Return>", lambda _event: self._save())
         self.bind("<Escape>", lambda _event: self.destroy())
+        self.after_idle(lambda: _center_dialog(self, parent))
 
     def _save(self) -> None:
         try:
@@ -302,39 +559,6 @@ class PurchaseDialog(tk.Toplevel):
         self.destroy()
 
 
-class PurchaseMethodDialog(tk.Toplevel):
-    def __init__(self, parent: tk.Misc) -> None:
-        super().__init__(parent)
-        self.title("Record purchase")
-        self.resizable(False, False)
-        self.transient(parent)
-        self.grab_set()
-        self.result: str | None = None
-
-        frame = ttk.Frame(self, padding=20)
-        frame.pack(fill="both", expand=True)
-        ttk.Label(frame, text="How would you like to add purchases?", style="Section.TLabel").pack(
-            anchor="w", pady=(0, 16)
-        )
-        ttk.Button(
-            frame,
-            text="Enter one purchase",
-            style="Accent.TButton",
-            command=lambda: self._choose("manual"),
-        ).pack(fill="x", pady=(0, 8))
-        ttk.Button(
-            frame,
-            text="Import bulk JSON (AI-assisted)",
-            command=lambda: self._choose("json"),
-        ).pack(fill="x")
-        ttk.Button(frame, text="Cancel", command=self.destroy).pack(anchor="e", pady=(16, 0))
-        self.bind("<Escape>", lambda _event: self.destroy())
-
-    def _choose(self, value: str) -> None:
-        self.result = value
-        self.destroy()
-
-
 class PortfolioJsonDialog(tk.Toplevel):
     def __init__(self, parent: tk.Misc) -> None:
         super().__init__(parent)
@@ -343,19 +567,25 @@ class PortfolioJsonDialog(tk.Toplevel):
         self.minsize(560, 360)
         self.transient(parent)
         self.grab_set()
+        self.configure(background=StockAgentApp.BG)
         self.result: str | None = None
 
-        frame = ttk.Frame(self, padding=20)
+        frame = ttk.Frame(self, padding=24)
         frame.pack(fill="both", expand=True)
-        ttk.Label(frame, text="Portfolio JSON", style="Section.TLabel").pack(anchor="w")
+        ttk.Label(frame, text="Import portfolio JSON", style="DialogTitle.TLabel").pack(anchor="w")
+        ttk.Label(
+            frame,
+            text="Paste a portfolio export. Every purchase is validated before it is saved.",
+            style="DialogMuted.TLabel",
+        ).pack(anchor="w", pady=(4, 14))
         self.editor = ScrolledText(
             frame,
             wrap="none",
             font=("TkFixedFont", 10),
-            background=StockAgentApp.SURFACE,
+            background=StockAgentApp.SURFACE_ALT,
             foreground=StockAgentApp.TEXT,
             insertbackground=StockAgentApp.TEXT,
-            selectbackground="#285665",
+            selectbackground=StockAgentApp.ACCENT,
             relief="flat",
             borderwidth=0,
             highlightthickness=1,
@@ -366,12 +596,13 @@ class PortfolioJsonDialog(tk.Toplevel):
         self.editor.pack(fill="both", expand=True, pady=(8, 14))
         buttons = ttk.Frame(frame)
         buttons.pack(fill="x")
-        ttk.Button(buttons, text="Cancel", command=self.destroy).pack(side="right", padx=(8, 0))
         ttk.Button(buttons, text="Import", style="Accent.TButton", command=self._submit).pack(
             side="right"
         )
+        ttk.Button(buttons, text="Cancel", command=self.destroy).pack(side="right", padx=(0, 8))
         self.editor.focus_set()
         self.bind("<Escape>", lambda _event: self.destroy())
+        self.after_idle(lambda: _center_dialog(self, parent))
 
     def _submit(self) -> None:
         value = self.editor.get("1.0", "end").strip()
@@ -454,70 +685,7 @@ class IndustryResearchDialog(tk.Toplevel):
         self.destroy()
 
 
-class ResearchExamplesDialog(tk.Toplevel):
-    def __init__(self, parent: tk.Misc) -> None:
-        super().__init__(parent)
-        self.title("Research examples")
-        self.resizable(False, False)
-        self.transient(parent)
-        self.configure(background=StockAgentApp.BG)
-        self.result: str | None = None
-
-        frame = ttk.Frame(self, padding=22)
-        frame.pack(fill="both", expand=True)
-        ttk.Label(frame, text="Example questions", style="DialogTitle.TLabel").pack(
-            anchor="w"
-        )
-        ttk.Label(
-            frame,
-            text="Choose a simple question to copy into the research box.",
-            style="DialogMuted.TLabel",
-        ).pack(anchor="w", pady=(4, 14))
-        self.examples = tk.Listbox(
-            frame,
-            width=108,
-            height=len(RESEARCH_EXAMPLE_QUESTIONS),
-            background=StockAgentApp.SURFACE_ALT,
-            foreground=StockAgentApp.TEXT,
-            selectbackground="#285665",
-            selectforeground=StockAgentApp.TEXT,
-            relief="flat",
-            highlightthickness=1,
-            highlightbackground=StockAgentApp.BORDER,
-            activestyle="none",
-            font=(getattr(parent, "ui_font", "TkDefaultFont"), 10),
-        )
-        for question in RESEARCH_EXAMPLE_QUESTIONS:
-            self.examples.insert("end", question)
-        self.examples.selection_set(0)
-        self.examples.pack(fill="x")
-        self.examples.bind("<Double-Button-1>", lambda _event: self._submit())
-
-        buttons = ttk.Frame(frame)
-        buttons.pack(fill="x", pady=(16, 0))
-        ttk.Button(
-            buttons,
-            text="Use example",
-            style="Accent.TButton",
-            command=self._submit,
-        ).pack(side="right")
-        ttk.Button(buttons, text="Cancel", command=self.destroy).pack(
-            side="right", padx=(0, 8)
-        )
-        self.bind("<Return>", lambda _event: self._submit())
-        self.bind("<Escape>", lambda _event: self.destroy())
-        self.grab_set()
-        self.after_idle(lambda: _center_dialog(self, parent))
-
-    def _submit(self) -> None:
-        selected = self.examples.curselection()
-        if not selected:
-            return
-        self.result = RESEARCH_EXAMPLE_QUESTIONS[selected[0]]
-        self.destroy()
-
-
-class ResearchApprovalDialog(tk.Toplevel):
+class _DetachedResearchApprovalDialog(tk.Toplevel):
     TIMEFRAMES = {
         "3 months": 90,
         "6 months": 180,
@@ -528,9 +696,9 @@ class ResearchApprovalDialog(tk.Toplevel):
 
     def __init__(self, parent: tk.Misc, proposal: ResearchProposal) -> None:
         super().__init__(parent)
-        self.title("Approve research plan")
-        self.geometry("1040x720")
-        self.minsize(940, 640)
+        self.title("Review research proposal")
+        self.geometry("920x590")
+        self.minsize(820, 540)
         self.transient(parent)
         self.configure(background=StockAgentApp.BG)
         self.result: ApprovedResearchPlan | None = None
@@ -611,33 +779,49 @@ class ResearchApprovalDialog(tk.Toplevel):
             item.analysis_id: tk.BooleanVar(value=item.analysis_id in selected_analyses)
             for item in ANALYSES
         }
+        self.details_visible = False
 
-        outer = ttk.Frame(self, padding=22)
+        outer = ttk.Frame(self, padding=24)
         outer.pack(fill="both", expand=True)
-        ttk.Label(outer, text="Approve research plan", style="DialogTitle.TLabel").pack(
+        ttk.Label(outer, text="Review research proposal", style="DialogTitle.TLabel").pack(
             anchor="w"
         )
         ttk.Label(
             outer,
-            text=proposal.question,
+            text="Check the scope and timing. No market-data request runs until you approve.",
             style="DialogMuted.TLabel",
-            wraplength=880,
+            wraplength=820,
             justify="left",
-        ).pack(anchor="w", fill="x", pady=(4, 14))
+        ).pack(anchor="w", fill="x", pady=(4, 16))
 
-        controls = ttk.Frame(outer)
+        question_card = ttk.Frame(outer, style="Panel.TFrame", padding=(16, 12))
+        question_card.pack(fill="x", pady=(0, 14))
+        ttk.Label(
+            question_card,
+            text="RESEARCH QUESTION",
+            style="DialogLabel.TLabel",
+        ).pack(anchor="w")
+        ttk.Label(
+            question_card,
+            text=proposal.question,
+            style="SurfaceSection.TLabel",
+            wraplength=820,
+            justify="left",
+        ).pack(anchor="w", fill="x", pady=(5, 0))
+
+        controls = ttk.Frame(outer, style="Panel.TFrame", padding=(16, 12))
         controls.pack(fill="x", pady=(0, 14))
         if self.discovery_mode:
-            ttk.Label(controls, text="Discovery universes", style="DialogMuted.TLabel").grid(
+            ttk.Label(controls, text="DISCOVERY UNIVERSES", style="DialogLabel.TLabel").grid(
                 row=0, column=0, sticky="w"
             )
-            ttk.Label(controls, text="Results", style="DialogMuted.TLabel").grid(
+            ttk.Label(controls, text="RESULTS", style="DialogLabel.TLabel").grid(
                 row=0, column=2, sticky="w", padx=(12, 0)
             )
             ttk.Label(
                 controls,
-                text="Exchange market",
-                style="DialogMuted.TLabel",
+                text="EXCHANGE MARKET",
+                style="DialogLabel.TLabel",
             ).grid(
                 row=0, column=1, sticky="w", padx=(12, 0)
             )
@@ -651,7 +835,7 @@ class ResearchApprovalDialog(tk.Toplevel):
                 height=4,
                 background=StockAgentApp.SURFACE_ALT,
                 foreground=StockAgentApp.TEXT,
-                selectbackground="#285665",
+                selectbackground=StockAgentApp.ACCENT,
                 selectforeground=StockAgentApp.TEXT,
                 relief="flat",
                 highlightthickness=1,
@@ -687,7 +871,7 @@ class ResearchApprovalDialog(tk.Toplevel):
             timeframe_column = 3
             benchmark_column = 4 if proposal.benchmark else None
         elif not self.market_news_mode:
-            ttk.Label(controls, text="Securities (separate with ;)", style="DialogMuted.TLabel").grid(
+            ttk.Label(controls, text="SECURITIES (SEPARATE WITH ;)", style="DialogLabel.TLabel").grid(
                 row=0, column=0, sticky="w"
             )
             ttk.Entry(controls, textvariable=self.securities).grid(
@@ -698,14 +882,14 @@ class ResearchApprovalDialog(tk.Toplevel):
         else:
             timeframe_column = 0
             benchmark_column = None
-        ttk.Label(controls, text="Timeframe", style="DialogMuted.TLabel").grid(
+        ttk.Label(controls, text="TIMEFRAME", style="DialogLabel.TLabel").grid(
             row=0, column=timeframe_column, sticky="w", padx=(12, 0)
         )
         if benchmark_column is not None:
             ttk.Label(
                 controls,
-                text="Comparison benchmark",
-                style="DialogMuted.TLabel",
+                text="COMPARISON BENCHMARK",
+                style="DialogLabel.TLabel",
             ).grid(
                 row=0, column=benchmark_column, sticky="w", padx=(12, 0)
             )
@@ -732,9 +916,17 @@ class ResearchApprovalDialog(tk.Toplevel):
             )
             ttk.Label(
                 outer,
-                text="Planner coverage: " + rationale,
+                text="Why these universes: " + rationale,
                 style="DialogMuted.TLabel",
                 wraplength=960,
+                justify="left",
+            ).pack(fill="x", anchor="w", pady=(0, 12))
+        if proposal.planning_warning:
+            ttk.Label(
+                outer,
+                text="⚠ " + proposal.planning_warning,
+                style="Warning.TLabel",
+                wraplength=860,
                 justify="left",
             ).pack(fill="x", anchor="w", pady=(0, 12))
         if proposal.selection_objectives:
@@ -751,8 +943,25 @@ class ResearchApprovalDialog(tk.Toplevel):
                 justify="left",
             ).pack(fill="x", anchor="w", pady=(0, 12))
 
+        selected_source_count = sum(variable.get() for variable in self.capability_vars.values())
+        selected_analysis_count = sum(variable.get() for variable in self.analysis_vars.values())
+        selection_summary = f"{selected_source_count} data sources selected"
+        if selected_analysis_count:
+            selection_summary += f" • {selected_analysis_count} calculations selected"
+        ttk.Label(
+            outer,
+            text=selection_summary,
+            style="DialogMuted.TLabel",
+        ).pack(anchor="w")
+        self.details_toggle = ttk.Button(
+            outer,
+            text="Customize data & calculations",
+            command=self._toggle_plan_details,
+        )
+        self.details_toggle.pack(anchor="w", pady=(7, 0))
+
         body = ttk.Frame(outer)
-        body.pack(fill="both", expand=True)
+        self.details_frame = body
         data_frame = ttk.Frame(body)
         data_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 18))
         analysis_frame = ttk.Frame(body)
@@ -844,10 +1053,11 @@ class ResearchApprovalDialog(tk.Toplevel):
                 ).pack(anchor="w", padx=(24, 0))
 
         buttons = ttk.Frame(outer)
+        self.dialog_buttons = buttons
         buttons.pack(fill="x", pady=(16, 0))
         ttk.Button(
             buttons,
-            text="Run approved plan",
+            text="Approve & run research",
             style="Accent.TButton",
             command=self._submit,
         ).pack(side="right")
@@ -855,8 +1065,26 @@ class ResearchApprovalDialog(tk.Toplevel):
             side="right", padx=(0, 8)
         )
         self.bind("<Escape>", lambda _event: self.destroy())
+        self.bind("<Command-Return>", lambda _event: self._submit())
         self.grab_set()
         self.after_idle(lambda: _center_dialog(self, parent))
+
+    def _toggle_plan_details(self) -> None:
+        self.details_visible = not self.details_visible
+        if self.details_visible:
+            self.details_frame.pack(
+                fill="both",
+                expand=True,
+                pady=(12, 0),
+                before=self.dialog_buttons,
+            )
+            self.details_toggle.configure(text="Hide data & calculations")
+            self.geometry("1040x720")
+        else:
+            self.details_frame.pack_forget()
+            self.details_toggle.configure(text="Customize data & calculations")
+            self.geometry("920x590")
+        self.after_idle(lambda: _center_dialog(self, self.master))
 
     def _enforce_exclusive_capability(self, selected_id: str) -> None:
         if not self.capability_vars[selected_id].get():
@@ -930,6 +1158,671 @@ class ResearchApprovalDialog(tk.Toplevel):
             messagebox.showerror("Incomplete research plan", str(exc), parent=self)
             return
         self.destroy()
+
+
+class ResearchApprovalDialog(tk.Frame):
+    """In-window proposal review sheet.
+
+    The class keeps the historical name so callers and tests retain a stable
+    interface, but it is deliberately a child frame rather than a Toplevel.
+    """
+
+    TIMEFRAMES = _DetachedResearchApprovalDialog.TIMEFRAMES
+
+    def __init__(
+        self,
+        parent: tk.Misc,
+        proposal: ResearchProposal,
+        *,
+        on_decision: Any = None,
+    ) -> None:
+        super().__init__(
+            parent,
+            background=StockAgentApp.BG,
+            borderwidth=0,
+            highlightthickness=0,
+        )
+        self.result: ApprovedResearchPlan | None = None
+        self.proposal = proposal
+        self._on_decision = on_decision
+        self._page = "plan"
+        self.details_visible = False
+        app = parent.winfo_toplevel()
+        self.ui_font = getattr(app, "ui_font", "TkDefaultFont")
+        self.discovery_mode = proposal.mode == "discovery"
+        self.market_news_mode = proposal.mode == "market_news"
+        self.securities = tk.StringVar(value="; ".join(proposal.securities))
+        self.proposed_discovery_scopes = proposal.discovery_scopes or (
+            (proposal.discovery_scope,) if proposal.discovery_scope else ()
+        )
+        self.discovery_scope_reasons = {
+            item.item_id: item.reason for item in proposal.discovery_scope_reasons
+        }
+        self.exchange_geography = tk.StringVar(
+            value=proposal.exchange_geography or "All exchanges"
+        )
+        self.result_count = tk.IntVar(value=proposal.result_count)
+        self.benchmark = tk.StringVar(value=proposal.benchmark or "")
+        timeframe_label = next(
+            (
+                label
+                for label, days in self.TIMEFRAMES.items()
+                if days == proposal.lookback_days
+            ),
+            f"{proposal.lookback_days} days",
+        )
+        self.timeframe = tk.StringVar(value=timeframe_label)
+        self._timeframe_values = list(self.TIMEFRAMES)
+        if timeframe_label not in self._timeframe_values:
+            self._timeframe_values.append(timeframe_label)
+
+        selected_capabilities = {item.item_id for item in proposal.capabilities}
+        selected_analyses = {item.item_id for item in proposal.analyses}
+        self.required_capabilities = {
+            item.capability_id
+            for item in CAPABILITIES
+            if item.required
+            or (
+                self.discovery_mode
+                and item.capability_id in DISCOVERY_CORE_CAPABILITY_IDS
+            )
+            or (self.market_news_mode and item.capability_id == "market_news")
+        }
+        capability_order = {
+            capability_id: index
+            for index, capability_id in enumerate(DISCOVERY_CORE_CAPABILITY_IDS)
+        }
+        visible_capabilities = [
+            item
+            for item in CAPABILITIES
+            if proposal.mode in item.modes
+            and (
+                item.capability_id != "benchmark_prices"
+                or proposal.benchmark is not None
+            )
+        ]
+        self.visible_capabilities = tuple(
+            sorted(
+                visible_capabilities,
+                key=lambda item: (
+                    item.capability_id not in capability_order,
+                    capability_order.get(item.capability_id, len(CAPABILITIES)),
+                    CAPABILITIES.index(item),
+                ),
+            )
+        )
+        visible_capability_ids = {
+            item.capability_id for item in self.visible_capabilities
+        }
+        self.visible_analyses = tuple(
+            item
+            for item in ANALYSES
+            if set(item.required_capabilities) <= visible_capability_ids
+        )
+        self.capability_vars = {
+            item.capability_id: tk.BooleanVar(
+                value=item.capability_id in self.required_capabilities
+                or item.capability_id in selected_capabilities
+            )
+            for item in CAPABILITIES
+        }
+        self.analysis_vars = {
+            item.analysis_id: tk.BooleanVar(
+                value=item.analysis_id in selected_analyses
+            )
+            for item in ANALYSES
+        }
+        self.selection_summary = tk.StringVar()
+
+        options = [value for _label, value in research_discovery_scope_options()]
+        self.discovery_scope_values = [
+            *[scope for scope in self.proposed_discovery_scopes if scope in options],
+            *[scope for scope in options if scope not in self.proposed_discovery_scopes],
+        ]
+
+        self.place(x=0, y=0, relwidth=1, relheight=1)
+        self.lift()
+        self._build_sheet()
+        self._update_selection_summary()
+        self.after_idle(self.focus_set)
+
+    def _build_sheet(self) -> None:
+        panel = LiquidPanel(
+            self,
+            background=StockAgentApp.BG,
+            surface=StockAgentApp.SURFACE,
+            rim="#454957",
+            glow="#62687A",
+            radius=26,
+            padding=(26, 20),
+        )
+        panel.pack(fill="both", expand=True, padx=18, pady=14)
+        outer = panel.content
+        outer.grid_columnconfigure(0, weight=1)
+        outer.grid_rowconfigure(2, weight=1)
+
+        header = tk.Frame(outer, background=StockAgentApp.SURFACE)
+        header.grid(row=0, column=0, sticky="ew")
+        title_block = tk.Frame(header, background=StockAgentApp.SURFACE)
+        title_block.pack(side="left", fill="x", expand=True)
+        ttk.Label(
+            title_block,
+            text="Research proposal",
+            style="SheetTitle.TLabel",
+        ).pack(anchor="w")
+        ttk.Label(
+            title_block,
+            text="Review the plan before any market-data request runs.",
+            style="SheetMuted.TLabel",
+        ).pack(anchor="w", pady=(2, 0))
+        ttk.Button(
+            header,
+            text="Close",
+            command=self._cancel,
+        ).pack(side="right", anchor="n")
+
+        navigation = tk.Frame(outer, background=StockAgentApp.SURFACE)
+        navigation.grid(row=1, column=0, sticky="ew", pady=(14, 10))
+        self.plan_tab_button = ttk.Button(
+            navigation,
+            text="Plan",
+            style="Selected.Segment.TButton",
+            command=lambda: self._show_page("plan"),
+        )
+        self.plan_tab_button.pack(side="left")
+        self.details_tab_button = ttk.Button(
+            navigation,
+            text="Data & calculations",
+            style="Segment.TButton",
+            command=lambda: self._show_page("details"),
+        )
+        self.details_tab_button.pack(side="left", padx=(6, 0))
+        ttk.Label(
+            navigation,
+            textvariable=self.selection_summary,
+            style="SheetMuted.TLabel",
+        ).pack(side="right")
+
+        page_host = tk.Frame(outer, background=StockAgentApp.SURFACE)
+        page_host.grid(row=2, column=0, sticky="nsew")
+        page_host.grid_columnconfigure(0, weight=1)
+        page_host.grid_rowconfigure(0, weight=1)
+        self.plan_page, plan_body = self._scroll_page(page_host)
+        self.details_page, details_body = self._scroll_page(page_host)
+        self._build_plan_page(plan_body)
+        self._build_details_page(details_body)
+        self.plan_page.grid(row=0, column=0, sticky="nsew")
+
+        footer = tk.Frame(outer, background=StockAgentApp.SURFACE)
+        footer.grid(row=3, column=0, sticky="ew", pady=(14, 0))
+        ttk.Label(
+            footer,
+            text="⌘↩ approves this proposal",
+            style="SheetMuted.TLabel",
+        ).pack(side="left")
+        ttk.Button(footer, text="Cancel", command=self._cancel).pack(
+            side="right", padx=(8, 0)
+        )
+        ttk.Button(
+            footer,
+            text="Approve & run research",
+            style="Accent.TButton",
+            command=self._submit,
+        ).pack(side="right")
+
+        top = self.winfo_toplevel()
+        self._escape_binding = top.bind("<Escape>", lambda _event: self._cancel(), add="+")
+        self._submit_binding = top.bind(
+            "<Command-Return>", lambda _event: self._submit(), add="+"
+        )
+
+    def _scroll_page(self, parent: tk.Misc) -> tuple[tk.Frame, tk.Frame]:
+        page = tk.Frame(parent, background=StockAgentApp.SURFACE)
+        page.grid_columnconfigure(0, weight=1)
+        page.grid_rowconfigure(0, weight=1)
+        canvas = tk.Canvas(
+            page,
+            background=StockAgentApp.SURFACE,
+            highlightthickness=0,
+            borderwidth=0,
+        )
+        scrollbar = ttk.Scrollbar(page, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns", padx=(8, 0))
+        body = tk.Frame(canvas, background=StockAgentApp.SURFACE)
+        window = canvas.create_window((0, 0), window=body, anchor="nw")
+        body.bind(
+            "<Configure>",
+            lambda _event: canvas.configure(scrollregion=canvas.bbox("all")),
+            add="+",
+        )
+        canvas.bind(
+            "<Configure>",
+            lambda event: canvas.itemconfigure(window, width=max(1, event.width)),
+            add="+",
+        )
+        canvas.bind(
+            "<MouseWheel>",
+            lambda event: canvas.yview_scroll(-1 if event.delta > 0 else 1, "units"),
+            add="+",
+        )
+        return page, body
+
+    def _section_heading(self, parent: tk.Misc, text: str) -> None:
+        ttk.Label(parent, text=text, style="SheetSection.TLabel").pack(anchor="w")
+
+    def _build_plan_page(self, body: tk.Frame) -> None:
+        question = tk.Frame(body, background=StockAgentApp.SURFACE)
+        question.pack(fill="x", pady=(6, 16))
+        self._section_heading(question, "Research question")
+        ttk.Label(
+            question,
+            text=self.proposal.question,
+            style="SheetQuestion.TLabel",
+            wraplength=790,
+            justify="left",
+        ).pack(fill="x", anchor="w", pady=(6, 0))
+        ttk.Separator(body).pack(fill="x", pady=(0, 16))
+
+        if self.discovery_mode:
+            scope = tk.Frame(body, background=StockAgentApp.SURFACE)
+            scope.pack(fill="x")
+            scope.grid_columnconfigure(0, weight=3)
+            scope.grid_columnconfigure(1, weight=2)
+            left = tk.Frame(scope, background=StockAgentApp.SURFACE)
+            left.grid(row=0, column=0, sticky="nsew", padx=(0, 24))
+            self._section_heading(left, "Industries and sectors")
+            ttk.Label(
+                left,
+                text="The semantic planner selected these first. Add or remove universes before running.",
+                style="SheetMuted.TLabel",
+                wraplength=450,
+                justify="left",
+            ).pack(fill="x", anchor="w", pady=(3, 8))
+            self.discovery_scope_list = tk.Listbox(
+                left,
+                selectmode="multiple",
+                exportselection=False,
+                height=6,
+                background=StockAgentApp.SURFACE_ALT,
+                foreground=StockAgentApp.TEXT,
+                selectbackground="#4B557D",
+                selectforeground="#FFFFFF",
+                relief="flat",
+                borderwidth=0,
+                highlightthickness=0,
+                activestyle="none",
+                font=(self.ui_font, 10),
+            )
+            for index, value in enumerate(self.discovery_scope_values):
+                self.discovery_scope_list.insert("end", value)
+                if value in self.proposed_discovery_scopes:
+                    self.discovery_scope_list.selection_set(index)
+            self.discovery_scope_list.pack(fill="both", expand=True)
+
+            settings = tk.Frame(scope, background=StockAgentApp.SURFACE)
+            settings.grid(row=0, column=1, sticky="nsew")
+            self._labeled_control(
+                settings,
+                "Exchange market",
+                ttk.Combobox(
+                    settings,
+                    textvariable=self.exchange_geography,
+                    values=[
+                        "All exchanges",
+                        *[label for label, _value in exchange_geography_options()],
+                    ],
+                    state="readonly",
+                ),
+            )
+            self._labeled_control(
+                settings,
+                "Results",
+                ttk.Spinbox(
+                    settings,
+                    from_=1,
+                    to=8,
+                    textvariable=self.result_count,
+                    width=8,
+                ),
+            )
+            self._labeled_control(
+                settings,
+                "Timeframe",
+                ttk.Combobox(
+                    settings,
+                    textvariable=self.timeframe,
+                    values=self._timeframe_values,
+                    state="readonly",
+                ),
+                last=self.proposal.benchmark is None,
+            )
+            if self.proposal.benchmark:
+                self._labeled_control(
+                    settings,
+                    "Comparison benchmark",
+                    ttk.Entry(settings, textvariable=self.benchmark),
+                    last=True,
+                )
+        else:
+            settings = tk.Frame(body, background=StockAgentApp.SURFACE)
+            settings.pack(fill="x")
+            if not self.market_news_mode:
+                self._labeled_control(
+                    settings,
+                    "Securities (separate with ;)",
+                    ttk.Entry(settings, textvariable=self.securities),
+                )
+            self._labeled_control(
+                settings,
+                "Timeframe",
+                ttk.Combobox(
+                    settings,
+                    textvariable=self.timeframe,
+                    values=self._timeframe_values,
+                    state="readonly",
+                    width=18,
+                ),
+                last=self.proposal.benchmark is None,
+            )
+            if self.proposal.benchmark:
+                self._labeled_control(
+                    settings,
+                    "Comparison benchmark",
+                    ttk.Entry(settings, textvariable=self.benchmark),
+                    last=True,
+                )
+
+        if self.discovery_scope_reasons:
+            ttk.Separator(body).pack(fill="x", pady=16)
+            self._section_heading(body, "Why these universes")
+            for selected_scope in self.proposed_discovery_scopes:
+                reason = self.discovery_scope_reasons.get(selected_scope)
+                if not reason:
+                    continue
+                row = tk.Frame(body, background=StockAgentApp.SURFACE)
+                row.pack(fill="x", pady=(7, 0))
+                ttk.Label(
+                    row,
+                    text=selected_scope,
+                    style="SheetBodyStrong.TLabel",
+                ).pack(anchor="w")
+                ttk.Label(
+                    row,
+                    text=reason,
+                    style="SheetMuted.TLabel",
+                    wraplength=790,
+                    justify="left",
+                ).pack(fill="x", anchor="w", pady=(2, 0))
+
+        if self.proposal.selection_objectives:
+            ttk.Separator(body).pack(fill="x", pady=16)
+            self._section_heading(body, "Candidate rules")
+            labels = {
+                "relative_value": "Require peer-relative value evidence",
+                "positive_signals": "Require positive evidence from multiple families",
+            }
+            for objective in self.proposal.selection_objectives:
+                ttk.Label(
+                    body,
+                    text="• " + labels[objective],
+                    style="SheetBody.TLabel",
+                ).pack(fill="x", anchor="w", pady=(5, 0))
+
+        if self.proposal.planning_warning:
+            ttk.Label(
+                body,
+                text="⚠  " + self.proposal.planning_warning,
+                style="SheetWarning.TLabel",
+                wraplength=790,
+                justify="left",
+            ).pack(fill="x", anchor="w", pady=(16, 0))
+
+        ttk.Button(
+            body,
+            text="Review data & calculations",
+            command=lambda: self._show_page("details"),
+        ).pack(anchor="w", pady=(18, 10))
+
+    def _labeled_control(
+        self,
+        parent: tk.Misc,
+        label: str,
+        control: tk.Widget,
+        *,
+        last: bool = False,
+    ) -> None:
+        ttk.Label(parent, text=label.upper(), style="SheetLabel.TLabel").pack(
+            anchor="w"
+        )
+        control.pack(fill="x", pady=(5, 12 if not last else 0))
+
+    def _build_details_page(self, body: tk.Frame) -> None:
+        heading = tk.Frame(body, background=StockAgentApp.SURFACE)
+        heading.pack(fill="x", pady=(6, 14))
+        self._section_heading(heading, "Data & calculations")
+        ttk.Label(
+            heading,
+            text="Core evidence is locked on. Optional sources can be tailored to this question.",
+            style="SheetMuted.TLabel",
+            wraplength=790,
+            justify="left",
+        ).pack(fill="x", anchor="w", pady=(3, 0))
+
+        reasons = {item.item_id: item.reason for item in self.proposal.capabilities}
+        columns = tk.Frame(body, background=StockAgentApp.SURFACE)
+        columns.pack(fill="x")
+        columns.grid_columnconfigure(0, weight=1, uniform="source")
+        columns.grid_columnconfigure(1, weight=1, uniform="source")
+        split = (len(self.visible_capabilities) + 1) // 2
+        for index, capability in enumerate(self.visible_capabilities):
+            column = index // split
+            row_index = index % split
+            row = tk.Frame(columns, background=StockAgentApp.SURFACE)
+            row.grid(
+                row=row_index,
+                column=column,
+                sticky="new",
+                padx=(0, 18) if column == 0 else (18, 0),
+                pady=(0, 8),
+            )
+            label = f"{capability.label} · {capability.source}"
+            if capability.capability_id in self.required_capabilities:
+                label += " · Required"
+            choice = MacChoice(
+                row,
+                text=label,
+                variable=self.capability_vars[capability.capability_id],
+                command=lambda capability_id=capability.capability_id: self._capability_changed(
+                    capability_id
+                ),
+                background=StockAgentApp.SURFACE,
+                foreground=StockAgentApp.TEXT,
+                muted=StockAgentApp.MUTED,
+                accent=StockAgentApp.ACCENT,
+                font=self.ui_font,
+                width=350,
+                wraplength=304,
+            )
+            choice.pack(fill="x", anchor="w")
+            if capability.capability_id in self.required_capabilities:
+                choice.configure(state="disabled")
+            reason = reasons.get(capability.capability_id)
+            if reason and capability.capability_id not in self.required_capabilities:
+                ttk.Label(
+                    row,
+                    text=reason,
+                    style="SheetMuted.TLabel",
+                    wraplength=306,
+                    justify="left",
+                ).pack(fill="x", anchor="w", padx=(38, 0), pady=(0, 3))
+
+        if self.visible_analyses:
+            ttk.Separator(body).pack(fill="x", pady=(12, 16))
+            self._section_heading(body, "Optional calculations")
+            analysis_reasons = {
+                item.item_id: item.reason for item in self.proposal.analyses
+            }
+            analysis_grid = tk.Frame(body, background=StockAgentApp.SURFACE)
+            analysis_grid.pack(fill="x", pady=(7, 12))
+            analysis_grid.grid_columnconfigure(0, weight=1, uniform="analysis")
+            analysis_grid.grid_columnconfigure(1, weight=1, uniform="analysis")
+            for index, analysis in enumerate(self.visible_analyses):
+                row = tk.Frame(analysis_grid, background=StockAgentApp.SURFACE)
+                row.grid(
+                    row=index // 2,
+                    column=index % 2,
+                    sticky="new",
+                    padx=(0, 18) if index % 2 == 0 else (18, 0),
+                    pady=(0, 8),
+                )
+                MacChoice(
+                    row,
+                    text=analysis.label,
+                    variable=self.analysis_vars[analysis.analysis_id],
+                    command=self._update_selection_summary,
+                    background=StockAgentApp.SURFACE,
+                    foreground=StockAgentApp.TEXT,
+                    muted=StockAgentApp.MUTED,
+                    accent=StockAgentApp.ACCENT,
+                    font=self.ui_font,
+                    width=350,
+                    wraplength=304,
+                ).pack(fill="x", anchor="w")
+                reason = analysis_reasons.get(analysis.analysis_id)
+                if reason:
+                    ttk.Label(
+                        row,
+                        text=reason,
+                        style="SheetMuted.TLabel",
+                        wraplength=306,
+                        justify="left",
+                    ).pack(fill="x", anchor="w", padx=(38, 0), pady=(0, 3))
+
+    def _capability_changed(self, selected_id: str) -> None:
+        self._enforce_exclusive_capability(selected_id)
+        self._update_selection_summary()
+
+    def _update_selection_summary(self) -> None:
+        sources = sum(variable.get() for variable in self.capability_vars.values())
+        analyses = sum(variable.get() for variable in self.analysis_vars.values())
+        label = f"{sources} data sources"
+        if analyses:
+            label += f"  •  {analyses} calculations"
+        self.selection_summary.set(label)
+
+    def _show_page(self, page: str) -> None:
+        self._page = page
+        self.details_visible = page == "details"
+        if page == "details":
+            self.plan_page.grid_remove()
+            self.details_page.grid()
+        else:
+            self.details_page.grid_remove()
+            self.plan_page.grid()
+        self.plan_tab_button.configure(
+            style="Selected.Segment.TButton" if page == "plan" else "Segment.TButton"
+        )
+        self.details_tab_button.configure(
+            style="Selected.Segment.TButton" if page == "details" else "Segment.TButton"
+        )
+
+    def _toggle_plan_details(self) -> None:
+        self._show_page("plan" if self.details_visible else "details")
+
+    def _enforce_exclusive_capability(self, selected_id: str) -> None:
+        if not self.capability_vars[selected_id].get():
+            return
+        for analysis in ANALYSES:
+            if selected_id not in analysis.exactly_one_capability:
+                continue
+            for capability_id in analysis.exactly_one_capability:
+                if capability_id != selected_id:
+                    self.capability_vars[capability_id].set(False)
+
+    def _cancel(self) -> None:
+        self._finish(None)
+
+    def _finish(self, result: ApprovedResearchPlan | None) -> None:
+        self.result = result
+        callback = self._on_decision
+        parent = self.master
+        top = self.winfo_toplevel()
+        if self._escape_binding:
+            top.unbind("<Escape>", self._escape_binding)
+        if self._submit_binding:
+            top.unbind("<Command-Return>", self._submit_binding)
+        self.destroy()
+        if callback is not None:
+            parent.after_idle(lambda: callback(result))
+
+    def _submit(self) -> None:
+        securities = tuple(
+            item.strip()
+            for item in re.split(r"[;\n]", self.securities.get())
+            if item.strip()
+        )
+        timeframe_text = self.timeframe.get().strip()
+        if timeframe_text in self.TIMEFRAMES:
+            lookback_days = self.TIMEFRAMES[timeframe_text]
+        else:
+            match = re.fullmatch(r"(\d+)\s+days", timeframe_text)
+            lookback_days = int(match.group(1)) if match else 0
+        try:
+            result_count = int(self.result_count.get()) if self.discovery_mode else 5
+        except (TypeError, ValueError, tk.TclError):
+            messagebox.showerror(
+                "Invalid result count",
+                "Choose between one and eight discovery results.",
+                parent=self.winfo_toplevel(),
+            )
+            return
+        selected_scopes = (
+            tuple(
+                self.discovery_scope_values[index]
+                for index in self.discovery_scope_list.curselection()
+            )
+            if self.discovery_mode
+            else ()
+        )
+        approved = ApprovedResearchPlan(
+            question=self.proposal.question,
+            securities=() if self.discovery_mode else securities,
+            lookback_days=lookback_days,
+            benchmark=self.benchmark.get().strip() or None,
+            capability_ids=tuple(
+                item.capability_id
+                for item in CAPABILITIES
+                if self.capability_vars[item.capability_id].get()
+            ),
+            analysis_ids=tuple(
+                item.analysis_id
+                for item in ANALYSES
+                if self.analysis_vars[item.analysis_id].get()
+            ),
+            mode=self.proposal.mode,
+            discovery_scope=(selected_scopes[0] if selected_scopes else None),
+            discovery_scopes=selected_scopes,
+            exchange_geography=(
+                self.exchange_geography.get().strip()
+                if self.exchange_geography.get().strip() != "All exchanges"
+                else None
+            ),
+            discovery_theme=self.proposal.discovery_theme,
+            result_count=result_count,
+            selection_objectives=self.proposal.selection_objectives,
+        )
+        try:
+            validated = approved.validated()
+        except ResearchLabError as exc:
+            messagebox.showerror(
+                "Incomplete research plan",
+                str(exc),
+                parent=self.winfo_toplevel(),
+            )
+            return
+        self._finish(validated)
 
 
 class PositionRiskDialog(tk.Toplevel):
@@ -1056,7 +1949,7 @@ class SidebarButton(tk.Canvas):
         accent: str,
     ) -> None:
         super().__init__(
-            parent, width=1, height=48, background=background, highlightthickness=0,
+            parent, width=1, height=44, background=background, highlightthickness=0,
             borderwidth=0, cursor="pointinghand",
         )
         self._icon = icon
@@ -1088,76 +1981,19 @@ class SidebarButton(tk.Canvas):
         width = max(1, self.winfo_width())
         if self._selected or self._hovered:
             fill = self._selection if self._selected else "#252A37"
-            radius = 11
+            radius = 9
             self.create_polygon(
                 1 + radius, 2, width - 1 - radius, 2,
                 width - 1, 2, width - 1, 2 + radius,
-                width - 1, 46 - radius, width - 1, 46,
-                width - 1 - radius, 46, 1 + radius, 46,
-                1, 46, 1, 46 - radius,
+                width - 1, 42 - radius, width - 1, 42,
+                width - 1 - radius, 42, 1 + radius, 42,
+                1, 42, 1, 42 - radius,
                 1, 2 + radius, 1, 2,
                 smooth=True, splinesteps=24, fill=fill, outline="",
             )
         color = self._accent if self._selected else (self._text if self._hovered else self._muted)
-        self.create_text(18, 24, anchor="w", text=self._icon, fill=color, font=(self._font, 16))
-        self.create_text(52, 24, anchor="w", text=self._label, fill=color, font=(self._font, 13, "bold"))
-
-
-class ResearchSuggestionCard(tk.Canvas):
-    """Compact editorial card used to avoid an empty utility-style landing page."""
-
-    def __init__(
-        self,
-        parent: tk.Misc,
-        *,
-        eyebrow: str,
-        title: str,
-        prompt: str,
-        command: Any,
-        font: str,
-        background: str,
-        surface: str,
-        hover: str,
-        text: str,
-        muted: str,
-        accent: str,
-    ) -> None:
-        super().__init__(parent, width=1, height=116, background=background, highlightthickness=0, cursor="pointinghand")
-        self._eyebrow = eyebrow
-        self._title = title
-        self._prompt = prompt
-        self._command = command
-        self._font = font
-        self._surface = surface
-        self._hover = hover
-        self._text = text
-        self._muted = muted
-        self._accent = accent
-        self._hovered = False
-        self.bind("<Configure>", lambda _event: self._draw())
-        self.bind("<Enter>", lambda _event: self._set_hovered(True))
-        self.bind("<Leave>", lambda _event: self._set_hovered(False))
-        self.bind("<ButtonRelease-1>", lambda _event: self._command(self._prompt))
-
-    def _set_hovered(self, hovered: bool) -> None:
-        self._hovered = hovered
-        self._draw()
-
-    def _draw(self) -> None:
-        self.delete("all")
-        width = max(1, self.winfo_width())
-        fill = self._hover if self._hovered else self._surface
-        radius = 14
-        self.create_polygon(
-            radius, 1, width - radius, 1, width - 1, 1, width - 1, radius,
-            width - 1, 115 - radius, width - 1, 115, width - radius, 115,
-            radius, 115, 1, 115, 1, 115 - radius, 1, radius, 1, 1,
-            smooth=True, splinesteps=28, fill=fill, outline="",
-        )
-        self.create_rectangle(17, 19, 21, 96, fill=self._accent, outline="")
-        self.create_text(37, 25, anchor="w", text=self._eyebrow.upper(), fill=self._accent, font=(self._font, 9, "bold"))
-        self.create_text(37, 54, anchor="w", text=self._title, fill=self._text, font=(self._font, 14, "bold"))
-        self.create_text(37, 84, anchor="w", text="Use this prompt  →", fill=self._muted, font=(self._font, 10))
+        self.create_text(17, 22, anchor="w", text=self._icon, fill=color, font=(self._font, 15))
+        self.create_text(48, 22, anchor="w", text=self._label, fill=color, font=(self._font, 12, "bold"))
 
 
 class IconActionButton(tk.Canvas):
@@ -1312,6 +2148,7 @@ class StockAgentApp(tk.Tk):
         self.current_task_cancellable = False
         self.stop_requested = False
         self.cancel_event: threading.Event | None = None
+        self.research_approval_sheet: ResearchApprovalDialog | None = None
         self.market_refresh_busy = False
         self.portfolio_refresh_busy = False
         self.portfolio_refresh_generation = 0
@@ -1393,14 +2230,15 @@ class StockAgentApp(tk.Tk):
         style.configure("TFrame", background=self.BG)
         style.configure("Sidebar.TFrame", background=self.SIDEBAR)
         style.configure("Sidebar.TLabel", background=self.SIDEBAR, foreground=self.TEXT)
-        style.configure("Brand.TLabel", background=self.SIDEBAR, foreground=self.TEXT, font=(self.display_font, 19, "bold"))
+        style.configure("Brand.TLabel", background=self.SIDEBAR, foreground=self.TEXT, font=(self.display_font, 17, "bold"))
         style.configure("SidebarMuted.TLabel", background=self.SIDEBAR, foreground=self.MUTED, font=(self.ui_font, 9))
         style.configure("TLabel", background=self.BG, foreground=self.TEXT, font=(self.ui_font, 11))
         style.configure("AppTitle.TLabel", background=self.BG, foreground=self.TEXT, font=(self.ui_font, 15, "bold"))
-        style.configure("Title.TLabel", background=self.BG, foreground=self.TEXT, font=(self.display_font, 38, "bold"))
-        style.configure("Section.TLabel", background=self.BG, foreground=self.TEXT, font=(self.ui_font, 13, "bold"))
-        style.configure("SurfaceSection.TLabel", background=self.SURFACE, foreground=self.TEXT, font=(self.ui_font, 13, "bold"))
+        style.configure("Title.TLabel", background=self.BG, foreground=self.TEXT, font=(self.display_font, 36, "bold"))
+        style.configure("Section.TLabel", background=self.BG, foreground=self.TEXT, font=(self.ui_font, 12, "bold"))
+        style.configure("SurfaceSection.TLabel", background=self.SURFACE, foreground=self.TEXT, font=(self.ui_font, 12, "bold"))
         style.configure("Muted.TLabel", background=self.BG, foreground=self.MUTED, font=(self.ui_font, 10))
+        style.configure("PageSubtitle.TLabel", background=self.BG, foreground=self.MUTED, font=(self.ui_font, 11))
         style.configure(
             "DialogTitle.TLabel",
             background=self.BG,
@@ -1418,6 +2256,66 @@ class StockAgentApp(tk.Tk):
             background=self.SURFACE,
             foreground=self.MUTED,
             font=(self.ui_font, 10),
+        )
+        style.configure(
+            "SheetTitle.TLabel",
+            background=self.SURFACE,
+            foreground=self.TEXT,
+            font=(self.display_font, 24, "bold"),
+        )
+        style.configure(
+            "SheetSection.TLabel",
+            background=self.SURFACE,
+            foreground=self.TEXT,
+            font=(self.ui_font, 12, "bold"),
+        )
+        style.configure(
+            "SheetQuestion.TLabel",
+            background=self.SURFACE,
+            foreground=self.TEXT,
+            font=(self.ui_font, 15, "bold"),
+        )
+        style.configure(
+            "SheetBodyStrong.TLabel",
+            background=self.SURFACE,
+            foreground=self.TEXT,
+            font=(self.ui_font, 10, "bold"),
+        )
+        style.configure(
+            "SheetBody.TLabel",
+            background=self.SURFACE,
+            foreground=self.TEXT,
+            font=(self.ui_font, 10),
+        )
+        style.configure(
+            "SheetMuted.TLabel",
+            background=self.SURFACE,
+            foreground=self.MUTED,
+            font=(self.ui_font, 10),
+        )
+        style.configure(
+            "SheetLabel.TLabel",
+            background=self.SURFACE,
+            foreground=self.MUTED,
+            font=(self.ui_font, 9, "bold"),
+        )
+        style.configure(
+            "SheetWarning.TLabel",
+            background=self.SURFACE,
+            foreground="#FFB340",
+            font=(self.ui_font, 10, "bold"),
+        )
+        style.configure(
+            "ComposerHint.TLabel",
+            background=self.SURFACE,
+            foreground=self.MUTED,
+            font=(self.ui_font, 9),
+        )
+        style.configure(
+            "Warning.TLabel",
+            background=self.BG,
+            foreground="#FFB340",
+            font=(self.ui_font, 10, "bold"),
         )
         style.configure(
             "DialogLabel.TLabel",
@@ -1453,7 +2351,7 @@ class StockAgentApp(tk.Tk):
             focuscolor=self.SURFACE_ALT,
         )
         style.map("TButton", background=[("active", "#3A3A3C"), ("pressed", "#48484A")], foreground=[("disabled", "#636366")])
-        style.configure("Toolbar.TButton", padding=(14, 9), font=(self.ui_font, 10, "bold"))
+        style.configure("Toolbar.TButton", padding=(12, 8), font=(self.ui_font, 10, "bold"))
         style.configure(
             "Copy.TButton", background=self.BG, foreground=self.MUTED,
             borderwidth=0, padding=(9, 5), font=(self.ui_font, 9, "bold"),
@@ -1463,8 +2361,18 @@ class StockAgentApp(tk.Tk):
             background=[("active", self.SURFACE_ALT)],
             foreground=[("active", self.TEXT), ("disabled", "#63656F")],
         )
-        style.configure("Accent.TButton", background=self.ACCENT, foreground="#FFFFFF", bordercolor=self.ACCENT, lightcolor=self.ACCENT, darkcolor=self.ACCENT, font=(self.ui_font, 10, "bold"))
-        style.map("Accent.TButton", background=[("active", self.ACCENT_ACTIVE), ("pressed", "#D91E39")])
+        style.configure("Accent.TButton", background=self.ACCENT, foreground="#FFFFFF", bordercolor=self.ACCENT, lightcolor=self.ACCENT, darkcolor=self.ACCENT, padding=(16, 9), font=(self.ui_font, 10, "bold"))
+        style.map("Accent.TButton", background=[("active", self.ACCENT_ACTIVE), ("pressed", "#6875DB")])
+        style.configure(
+            "TMenubutton",
+            background=self.SURFACE_ALT,
+            foreground=self.TEXT,
+            borderwidth=0,
+            relief="flat",
+            padding=(12, 8),
+            font=(self.ui_font, 10, "bold"),
+        )
+        style.map("TMenubutton", background=[("active", "#3A3A47"), ("pressed", "#444452")])
         style.configure(
             "Nav.TButton", background=self.SIDEBAR, foreground=self.MUTED,
             padding=(17, 13), anchor="w", font=(self.ui_font, 13, "bold"),
@@ -1515,7 +2423,7 @@ class StockAgentApp(tk.Tk):
         for button_style in (
             "TButton", "Accent.TButton", "Toolbar.TButton", "Segment.TButton",
             "Selected.Segment.TButton", "DeleteIcon.TButton", "Nav.TButton",
-            "Selected.Nav.TButton", "Copy.TButton",
+            "Selected.Nav.TButton", "Copy.TButton", "TMenubutton",
         ):
             try:
                 style.layout(button_style, without_button_focus(style.layout(button_style)))
@@ -1616,17 +2524,18 @@ class StockAgentApp(tk.Tk):
         shell = ttk.Frame(self)
         shell.pack(fill="both", expand=True)
 
-        sidebar = ttk.Frame(shell, style="Sidebar.TFrame", width=272, padding=(20, 28, 20, 20))
+        sidebar = ttk.Frame(shell, style="Sidebar.TFrame", width=236, padding=(14, 24, 14, 18))
         sidebar.pack(side="left", fill="y")
         sidebar.pack_propagate(False)
         brand = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        brand.pack(fill="x", padx=7, pady=(0, 34))
-        ttk.Label(brand, text="◉", foreground=self.ACCENT, background=self.SIDEBAR, font=(self.ui_font, 25, "bold")).pack(side="left")
-        ttk.Label(brand, text="Stock Agent", style="Brand.TLabel").pack(side="left", padx=(9, 0))
-        ttk.Label(sidebar, text="LIBRARY", style="SidebarMuted.TLabel").pack(anchor="w", padx=12, pady=(0, 7))
+        brand.pack(fill="x", padx=10, pady=(0, 30))
+        ttk.Label(brand, text="●", foreground=self.ACCENT, background=self.SIDEBAR, font=(self.ui_font, 16, "bold")).pack(side="left")
+        ttk.Label(brand, text="Stock Agent", style="Brand.TLabel").pack(side="left", padx=(10, 0))
+        ttk.Label(sidebar, text="WORKSPACE", style="SidebarMuted.TLabel").pack(anchor="w", padx=12, pady=(0, 7))
 
-        content = ttk.Frame(shell, padding=(42, 28, 42, 34))
+        content = ttk.Frame(shell, padding=(32, 24, 32, 28))
         content.pack(side="left", fill="both", expand=True)
+        self.content = content
         notebook = ttk.Notebook(content, style="App.TNotebook")
         notebook.pack(fill="both", expand=True)
         self.notebook = notebook
@@ -1640,10 +2549,10 @@ class StockAgentApp(tk.Tk):
         notebook.add(self.account_tab, text="Account")
         self.nav_buttons: dict[str, SidebarButton] = {}
         for page, icon, label in (
-            (self.chat_tab, "⌕", "Research Lab"),
-            (self.holdings_tab, "▥", "Portfolio"),
-            (self.market_tab, "⌁", "Market"),
-            (self.account_tab, "●", "Account"),
+            (self.chat_tab, "⌕", "Research"),
+            (self.holdings_tab, "▤", "Portfolio"),
+            (self.market_tab, "∿", "Market"),
+            (self.account_tab, "○", "Account"),
         ):
             button = SidebarButton(
                 sidebar,
@@ -1659,13 +2568,30 @@ class StockAgentApp(tk.Tk):
             )
             button.pack(fill="x", pady=2)
             self.nav_buttons[str(page)] = button
-        ttk.Label(sidebar, text="Private • Local-first", style="SidebarMuted.TLabel").pack(side="bottom", anchor="w", padx=12)
+        ttk.Label(sidebar, text="Private • On this Mac", style="SidebarMuted.TLabel").pack(side="bottom", anchor="w", padx=12)
         self._build_chat_tab()
         self._build_holdings_tab()
         self._build_market_tab()
         self._build_account_tab()
         notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed, add="+")
         self._sync_navigation()
+
+    def _liquid_panel(
+        self,
+        parent: tk.Misc,
+        *,
+        padding: tuple[int, int] = (20, 16),
+        radius: int = 20,
+    ) -> LiquidPanel:
+        return LiquidPanel(
+            parent,
+            background=self.BG,
+            surface=self.SURFACE,
+            rim="#414450",
+            glow="#575C6A",
+            radius=radius,
+            padding=padding,
+        )
 
     def _sync_navigation(self) -> None:
         selected = self.notebook.select()
@@ -1706,8 +2632,15 @@ class StockAgentApp(tk.Tk):
 
     def _build_chat_tab(self) -> None:
         header = ttk.Frame(self.chat_tab)
-        header.pack(fill="x", pady=(0, 12))
-        ttk.Label(header, text="Research Lab", style="Title.TLabel").pack(side="left")
+        header.pack(fill="x", pady=(0, 14))
+        title_block = ttk.Frame(header)
+        title_block.pack(side="left", fill="x", expand=True)
+        ttk.Label(title_block, text="Research", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(
+            title_block,
+            text="Turn any company, industry, or market trend into an evidence-backed plan.",
+            style="PageSubtitle.TLabel",
+        ).pack(anchor="w", pady=(2, 0))
         self.stop_button = ttk.Button(
             header,
             text="Stop",
@@ -1715,30 +2648,119 @@ class StockAgentApp(tk.Tk):
             command=self._request_stop,
             state="disabled",
         )
-        self.stop_button.pack(side="right")
         ttk.Button(
             header,
-            text="Example questions",
-            style="Toolbar.TButton",
-            command=self.show_research_examples,
-        ).pack(side="right", padx=(0, 8))
-        ttk.Button(
-            header,
-            text="Method",
+            text="Methodology",
             style="Toolbar.TButton",
             command=self.show_research_methodology,
-        ).pack(side="right", padx=(0, 8))
+        ).pack(side="right")
 
-        composer = ttk.Frame(self.chat_tab, style="Panel.TFrame", padding=12)
-        self.research_composer = composer
-        ttk.Label(composer, text="Ask a research question", style="SurfaceSection.TLabel").pack(
-            anchor="w", pady=(0, 7)
+        transcript_frame = ttk.Frame(self.chat_tab)
+        symbol_directory = Path(__file__).resolve().parent / "assets" / "control-symbols"
+        self.copy_icon = tk.PhotoImage(file=str(symbol_directory / "copy.png"))
+        self.copied_icon = tk.PhotoImage(file=str(symbol_directory / "copied.png"))
+        self.transcript = ScrolledText(
+            transcript_frame,
+            wrap="word",
+            font=(self.ui_font, 11),
+            background=self.BG,
+            foreground=self.TEXT,
+            insertbackground="#ffffff",
+            selectbackground=self.ACCENT,
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=0,
+            padx=18,
+            pady=16,
+            spacing1=2,
+            spacing3=3,
         )
+        self.transcript.pack(fill="both", expand=True)
+        self.transcript.vbar.pack_forget()
+        self.transcript.bind("<ButtonPress-1>", self._begin_transcript_selection, add="+")
+        self.transcript.bind("<B1-Motion>", self._extend_transcript_selection, add="+")
+        self.transcript.bind("<ButtonRelease-1>", self._end_transcript_selection, add="+")
+        self.transcript.tag_configure(
+            "empty_title", foreground=self.TEXT, font=(self.display_font, 22, "bold"),
+            justify="center", spacing3=9,
+        )
+        self.transcript.tag_configure(
+            "empty_body", foreground=self.MUTED, font=(self.ui_font, 11), justify="center",
+        )
+        self.transcript.tag_configure(
+            "assistant_name", foreground=self.MUTED, font=(self.ui_font, 9, "bold"),
+            lmargin1=10, lmargin2=10, spacing1=10, spacing3=4,
+        )
+        self.transcript.tag_configure(
+            "assistant_text", foreground=self.TEXT, font=(self.ui_font, 11),
+            lmargin1=10, lmargin2=10, rmargin=70, spacing1=2, spacing3=5,
+        )
+        self.transcript.tag_configure(
+            "live_progress", foreground=self.MUTED, font=(self.ui_font, 10),
+            lmargin1=10, lmargin2=10, rmargin=70, spacing1=5, spacing3=5,
+        )
+        self.transcript.insert("end", "\n\n\n\nWhat would you like to research?\n", ("empty_title",))
+        self.transcript.insert(
+            "end",
+            "Name a company, compare stocks, or describe an open-ended market trend.",
+            ("empty_body",),
+        )
+        self.transcript_is_empty = True
+        self.transcript.configure(state="disabled")
+
+        self.progress_frame = self._liquid_panel(
+            self.chat_tab, padding=(17, 13), radius=17
+        )
+        progress_content = self.progress_frame.content
+        progress_header = ttk.Frame(progress_content, style="Surface.TFrame")
+        progress_header.pack(fill="x")
+        self.progress_status = ttk.Label(
+            progress_header,
+            text="Preparing research",
+            style="ProgressTitle.TLabel",
+        )
+        self.progress_status.pack(side="left", anchor="w")
+        self.progress_percent = ttk.Label(
+            progress_header, text="0%", style="ProgressTitle.TLabel"
+        )
+        self.progress_percent.pack(side="right", anchor="e")
+        self.progress_bar = ttk.Progressbar(
+            progress_content,
+            orient="horizontal",
+            mode="determinate",
+            maximum=100,
+            value=0,
+        )
+        self.progress_bar.pack(fill="x", pady=(7, 5))
+        progress_footer = ttk.Frame(progress_content, style="Surface.TFrame")
+        progress_footer.pack(fill="x")
+        self.progress_detail = ttk.Label(
+            progress_footer,
+            text="",
+            style="ProgressDetail.TLabel",
+        )
+        self.progress_detail.pack(side="left", fill="x", expand=True, anchor="w")
+        self.progress_elapsed = ttk.Label(
+            progress_footer, text="", style="ProgressDetail.TLabel"
+        )
+        self.progress_elapsed.pack(side="right", anchor="e", padx=(12, 0))
+
+        self.research_composer = self._liquid_panel(
+            self.chat_tab, padding=(20, 16), radius=22
+        )
+        composer = self.research_composer.content
+        composer_header = ttk.Frame(composer, style="Surface.TFrame")
+        composer_header.pack(fill="x", pady=(0, 8))
         ttk.Label(
-            composer,
-            text="Try: “Find undervalued companies related to data centers” or “Find undervalued semiconductor stocks.”",
-            style="SurfaceMuted.TLabel",
-        ).pack(anchor="w", pady=(0, 8))
+            composer_header,
+            text="New research proposal",
+            style="SurfaceSection.TLabel",
+        ).pack(side="left")
+        ttk.Label(
+            composer_header,
+            text="Nothing runs until you review it",
+            style="ComposerHint.TLabel",
+        ).pack(side="right")
         input_row = ttk.Frame(composer, style="Surface.TFrame")
         input_row.pack(fill="x")
         self.research_question = tk.Text(
@@ -1752,18 +2774,20 @@ class StockAgentApp(tk.Tk):
             selectbackground=self.ACCENT,
             relief="flat",
             borderwidth=0,
-            highlightthickness=0,
-            padx=10,
-            pady=8,
+            highlightthickness=1,
+            highlightbackground=self.BORDER,
+            highlightcolor=self.ACCENT,
+            padx=12,
+            pady=10,
         )
         self.research_question.pack(side="left", fill="x", expand=True)
         self.propose_research_button = ttk.Button(
             input_row,
-            text="Build plan",
+            text="Review proposal",
             style="Accent.TButton",
             command=self.start_research_proposal,
         )
-        self.propose_research_button.pack(side="right", anchor="s", padx=(10, 0))
+        self.propose_research_button.pack(side="right", fill="y", padx=(10, 0))
         self.research_question.bind(
             "<Control-Return>", lambda _event: self.start_research_proposal()
         )
@@ -1784,173 +2808,66 @@ class StockAgentApp(tk.Tk):
             "<Right>",
             lambda _event: _collapse_text_selection(self.research_question, to_end=True),
         )
-
-        self.quick_starts_label = ttk.Label(
-            self.chat_tab, text="Quick starts", style="Section.TLabel"
-        )
-        self.quick_starts_label.pack(anchor="w", pady=(3, 8))
-        suggestions = ttk.Frame(self.chat_tab)
-        self.quick_starts_frame = suggestions
-        suggestions.pack(fill="x", pady=(0, 14))
-        for index, (eyebrow, title, prompt, accent) in enumerate(
-            (
-                ("Valuation", "Find hidden value", RESEARCH_EXAMPLE_QUESTIONS[0], "#8291FF"),
-                ("Themes", "Follow infrastructure", RESEARCH_EXAMPLE_QUESTIONS[3], "#55C7B5"),
-                ("Technology", "Map the AI opportunity", RESEARCH_EXAMPLE_QUESTIONS[4], "#B68CFF"),
-            )
-        ):
-            card = ResearchSuggestionCard(
-                suggestions, eyebrow=eyebrow, title=title, prompt=prompt,
-                command=self._use_research_suggestion, font=self.ui_font,
-                background=self.BG, surface=self.SURFACE, hover=self.SURFACE_ALT,
-                text=self.TEXT, muted=self.MUTED, accent=accent,
-            )
-            card.pack(side="left", fill="x", expand=True, padx=(0 if index == 0 else 6, 0 if index == 2 else 6))
-
-        transcript_frame = ttk.Frame(self.chat_tab)
-        transcript_header = ttk.Frame(transcript_frame)
-        transcript_header.pack(fill="x", pady=(0, 7))
         ttk.Label(
-            transcript_header, text="Conversation", style="Section.TLabel"
-        ).pack(side="left")
-        symbol_directory = Path(__file__).resolve().parent / "assets" / "control-symbols"
-        self.copy_icon = tk.PhotoImage(file=str(symbol_directory / "copy.png"))
-        self.copied_icon = tk.PhotoImage(file=str(symbol_directory / "copied.png"))
-        self.transcript = ScrolledText(
-            transcript_frame,
-            wrap="word",
-            font=(self.ui_font, 11),
-            background=self.SURFACE,
-            foreground=self.TEXT,
-            insertbackground="#ffffff",
-            selectbackground=self.ACCENT,
-            relief="flat",
-            borderwidth=0,
-            highlightthickness=0,
-            padx=16,
-            pady=14,
-            spacing1=2,
-            spacing3=3,
-        )
-        self.transcript.pack(fill="both", expand=True)
-        # ScrolledText creates a classic Tk scrollbar whose bright Aqua trough
-        # clashes with macOS overlay scrollbars. Trackpad and mouse-wheel
-        # scrolling continue to work without the permanently visible gutter.
-        self.transcript.vbar.pack_forget()
-        self.transcript.bind("<ButtonPress-1>", self._begin_transcript_selection, add="+")
-        self.transcript.bind("<B1-Motion>", self._extend_transcript_selection, add="+")
-        self.transcript.bind("<ButtonRelease-1>", self._end_transcript_selection, add="+")
-        self.transcript.tag_configure(
-            "empty_title", foreground=self.TEXT, font=(self.display_font, 18, "bold"),
-            justify="center", spacing3=8,
-        )
-        self.transcript.tag_configure(
-            "empty_body", foreground=self.MUTED, font=(self.ui_font, 11), justify="center",
-        )
-        self.transcript.tag_configure(
-            "assistant_name", foreground=self.MUTED, font=(self.ui_font, 9, "bold"),
-            lmargin1=10, lmargin2=10, spacing1=10, spacing3=4,
-        )
-        self.transcript.tag_configure(
-            "assistant_text", foreground=self.TEXT, font=(self.ui_font, 11),
-            lmargin1=10, lmargin2=10, rmargin=70, spacing1=2, spacing3=5,
-        )
-        self.transcript.tag_configure(
-            "live_progress", foreground=self.MUTED, font=(self.ui_font, 10),
-            lmargin1=10, lmargin2=10, rmargin=70, spacing1=5, spacing3=5,
-        )
-        self.transcript.insert("end", "\nYour research library\n", ("empty_title",))
-        self.transcript.insert(
-            "end", "Approved reports and live progress will collect here.", ("empty_body",)
-        )
-        self.transcript_is_empty = True
-        self.transcript.configure(state="disabled")
+            composer,
+            text="Press ⌘↩ to review the proposed sources, universe, and calculations.",
+            style="ComposerHint.TLabel",
+        ).pack(anchor="w", pady=(8, 0))
 
-        self.progress_frame = ttk.Frame(
-            self.chat_tab, style="Panel.TFrame", padding=(12, 9)
-        )
-        progress_header = ttk.Frame(self.progress_frame, style="Surface.TFrame")
-        progress_header.pack(fill="x")
-        self.progress_status = ttk.Label(
-            progress_header,
-            text="Research status: idle",
-            style="ProgressTitle.TLabel",
-        )
-        self.progress_status.pack(side="left", anchor="w")
-        self.progress_percent = ttk.Label(
-            progress_header, text="0%", style="ProgressTitle.TLabel"
-        )
-        self.progress_percent.pack(side="right", anchor="e")
-        self.progress_bar = ttk.Progressbar(
-            self.progress_frame,
-            orient="horizontal",
-            mode="determinate",
-            maximum=100,
-            value=0,
-        )
-        self.progress_bar.pack(fill="x", pady=(6, 4))
-        progress_footer = ttk.Frame(self.progress_frame, style="Surface.TFrame")
-        progress_footer.pack(fill="x")
-        self.progress_detail = ttk.Label(
-            progress_footer,
-            text="Progress updates will appear here during deep research.",
-            style="ProgressDetail.TLabel",
-        )
-        self.progress_detail.pack(side="left", fill="x", expand=True, anchor="w")
-        self.progress_elapsed = ttk.Label(progress_footer, text="")
-        self.progress_elapsed.configure(style="ProgressDetail.TLabel")
-        self.progress_elapsed.pack(side="right", anchor="e", padx=(12, 0))
-
-        self.progress_frame.pack(side="bottom", fill="x", pady=(10, 0))
-        self.research_composer.pack(side="bottom", fill="x", pady=(10, 0))
+        self.research_composer.pack(side="bottom", fill="x", pady=(12, 0))
         transcript_frame.pack(side="top", fill="both", expand=True)
+        self.after(150, self.research_question.focus_set)
 
     def _build_holdings_tab(self) -> None:
         header = ttk.Frame(self.holdings_tab)
         header.pack(fill="x", pady=(0, 14))
         title_block = ttk.Frame(header)
-        title_block.pack(side="left")
+        title_block.pack(side="left", fill="x", expand=True)
         ttk.Label(title_block, text="Portfolio", style="Title.TLabel").pack(anchor="w")
         self.portfolio_status = tk.StringVar(value="Live prices have not been refreshed")
-        ttk.Label(title_block, textvariable=self.portfolio_status, style="Muted.TLabel").pack(anchor="w", pady=(2, 0))
+        ttk.Label(title_block, textvariable=self.portfolio_status, style="PageSubtitle.TLabel").pack(anchor="w", pady=(2, 0))
 
         toolbar = ttk.Frame(header)
         toolbar.pack(side="right", anchor="e")
         ttk.Button(
-            toolbar, text="Record purchase", style="Toolbar.TButton", command=self.record_purchase
+            toolbar, text="Add purchase", style="Accent.TButton", command=self.record_purchase
         ).pack(side="left")
         ttk.Button(
             toolbar,
-            text="Review position risk",
+            text="Review risk",
             style="Toolbar.TButton",
             command=self.start_position_risk_review,
         ).pack(side="left", padx=8)
-        ttk.Button(
-            toolbar,
-            text="Reset portfolio",
-            style="Toolbar.TButton",
-            command=self.reset_portfolio,
-        ).pack(side="left", padx=(0, 8))
-        ttk.Button(
-            toolbar,
-            text="Model",
-            style="Toolbar.TButton",
-            command=self.show_portfolio_model,
-        ).pack(side="left", padx=(0, 8))
         self.portfolio_refresh_button = ttk.Button(
             toolbar,
             text="Refresh prices",
-            style="Accent.TButton",
+            style="Toolbar.TButton",
             command=self.refresh_holdings,
         )
-        self.portfolio_refresh_button.pack(side="left")
+        self.portfolio_refresh_button.pack(side="left", padx=(0, 8))
+        self.portfolio_menu = tk.Menu(self, tearoff=False)
+        self.portfolio_menu.add_command(
+            label="Import portfolio JSON…",
+            command=self._import_portfolio_json,
+        )
+        self.portfolio_menu.add_command(label="Portfolio model…", command=self.show_portfolio_model)
+        self.portfolio_menu.add_separator()
+        self.portfolio_menu.add_command(label="Reset portfolio…", command=self.reset_portfolio)
+        ttk.Menubutton(
+            toolbar,
+            text="•••",
+            menu=self.portfolio_menu,
+        ).pack(side="left")
 
         self.portfolio_value = tk.StringVar(value="—")
         self.portfolio_cost = tk.StringVar(value="—")
         self.portfolio_gain = tk.StringVar(value="—")
         self.portfolio_return = tk.StringVar(value="—")
-        summary = ttk.Frame(self.holdings_tab, style="Panel.TFrame", padding=(20, 15))
-        summary.pack(fill="x", pady=(0, 14))
+        summary_panel = self._liquid_panel(
+            self.holdings_tab, padding=(22, 17), radius=20
+        )
+        summary_panel.pack(fill="x", pady=(0, 14))
+        summary = summary_panel.content
         for column in range(4):
             summary.columnconfigure(column, weight=1, uniform="metric")
         self._metric(summary, 0, "Portfolio value", self.portfolio_value)
@@ -1958,8 +2875,11 @@ class StockAgentApp(tk.Tk):
         self.portfolio_gain_label = self._metric(summary, 2, "Total gain", self.portfolio_gain)
         self.portfolio_return_label = self._metric(summary, 3, "Total return", self.portfolio_return)
 
-        performance = ttk.Frame(self.holdings_tab, style="Panel.TFrame", padding=(18, 13))
-        performance.pack(fill="x", pady=(0, 14))
+        performance_panel = self._liquid_panel(
+            self.holdings_tab, padding=(20, 15), radius=20
+        )
+        performance_panel.pack(fill="x", pady=(0, 14))
+        performance = performance_panel.content
         performance_header = ttk.Frame(performance, style="Surface.TFrame")
         performance_header.pack(fill="x", pady=(0, 8))
         self.performance_title = tk.StringVar(value="Portfolio performance")
@@ -1975,13 +2895,13 @@ class StockAgentApp(tk.Tk):
         segment.pack(side="right")
         self.period_buttons: dict[int, ttk.Button] = {}
         for sessions, label in (
-            (1, "1 day"),
-            (3, "3 days"),
-            (5, "1 week"),
-            (10, "2 weeks"),
-            (15, "3 weeks"),
-            (20, "4 weeks"),
-            (0, "All time"),
+            (1, "1D"),
+            (3, "3D"),
+            (5, "1W"),
+            (10, "2W"),
+            (15, "3W"),
+            (20, "1M"),
+            (0, "All"),
         ):
             button = ttk.Button(segment, text=label, style="Segment.TButton", command=lambda value=sessions: self._set_performance_period(value))
             button.pack(side="left", padx=(6, 0))
@@ -2062,7 +2982,7 @@ class StockAgentApp(tk.Tk):
         self.holdings_scrollbar.pack(side="right", fill="y")
         self.refresh_holdings(refresh_prices=False)
 
-    def _metric(self, parent: ttk.Frame, column: int, title: str, variable: tk.StringVar) -> ttk.Label:
+    def _metric(self, parent: tk.Misc, column: int, title: str, variable: tk.StringVar) -> ttk.Label:
         cell = ttk.Frame(parent, style="Surface.TFrame", padding=(12, 0))
         cell.grid(row=0, column=column, sticky="nsew")
         ttk.Label(cell, text=title, style="MetricLabel.TLabel").pack(anchor="w")
@@ -2075,32 +2995,38 @@ class StockAgentApp(tk.Tk):
         header.pack(fill="x", pady=(0, 14))
         title_block = ttk.Frame(header)
         title_block.pack(side="left", fill="x", expand=True)
-        ttk.Label(title_block, text="Market guide", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(title_block, text="Market", style="Title.TLabel").pack(anchor="w")
         self.market_status = tk.StringVar(value="Waiting for current market data")
-        ttk.Label(title_block, textvariable=self.market_status, style="Muted.TLabel").pack(
+        ttk.Label(title_block, textvariable=self.market_status, style="PageSubtitle.TLabel").pack(
             anchor="w", pady=(2, 0)
         )
+        toolbar = ttk.Frame(header)
+        toolbar.pack(side="right", anchor="e")
         self.market_refresh_button = ttk.Button(
-            header,
+            toolbar,
             text="Refresh data",
-            style="Accent.TButton",
+            style="Toolbar.TButton",
             command=self.refresh_market_regime,
         )
-        self.market_refresh_button.pack(side="right")
+        self.market_refresh_button.pack(side="left")
         ttk.Button(
-            header,
-            text="About these signals",
+            toolbar,
+            text="About signals",
+            style="Toolbar.TButton",
             command=self.show_macro_reference,
-        ).pack(side="right", padx=(0, 8))
+        ).pack(side="left", padx=8)
         ttk.Button(
-            header,
+            toolbar,
             text="Start research",
             style="Accent.TButton",
             command=self.start_industry_research,
-        ).pack(side="right", padx=(0, 8))
+        ).pack(side="left")
 
-        overview = ttk.Frame(self.market_tab, style="Panel.TFrame", padding=(20, 15))
-        overview.pack(fill="x", pady=(0, 14))
+        overview_panel = self._liquid_panel(
+            self.market_tab, padding=(22, 17), radius=20
+        )
+        overview_panel.pack(fill="x", pady=(0, 14))
+        overview = overview_panel.content
         self.market_regime_title = tk.StringVar(value="Regime not calculated")
         self.market_company_fit = tk.StringVar(
             value="What to look for: waiting for enough data to describe the current market."
@@ -2165,11 +3091,23 @@ class StockAgentApp(tk.Tk):
             value="Enter your Supabase project settings, then create an account or sign in."
         )
 
-        panel = ttk.Frame(self.account_tab, padding=20)
-        panel.pack(fill="both", expand=True)
+        header = ttk.Frame(self.account_tab)
+        header.pack(fill="x", pady=(0, 18))
+        ttk.Label(header, text="Account", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(
+            header,
+            text="Optional private cloud sync for your portfolio.",
+            style="PageSubtitle.TLabel",
+        ).pack(anchor="w", pady=(2, 0))
+
+        panel_shell = self._liquid_panel(
+            self.account_tab, padding=(26, 22), radius=22
+        )
+        panel_shell.pack(fill="x")
+        panel = panel_shell.content
         panel.columnconfigure(1, weight=1)
 
-        ttk.Label(panel, text="Supabase account", style="Title.TLabel").grid(
+        ttk.Label(panel, text="Supabase sync", style="SurfaceSection.TLabel").grid(
             row=0, column=0, columnspan=3, sticky="w", pady=(0, 8)
         )
         ttk.Label(
@@ -2179,15 +3117,16 @@ class StockAgentApp(tk.Tk):
                 "The publishable key is safe for a desktop client; never paste a secret "
                 "or service-role key here."
             ),
+            style="SurfaceMuted.TLabel",
             wraplength=850,
             justify="left",
         ).grid(row=1, column=0, columnspan=3, sticky="ew", pady=(0, 20))
 
-        ttk.Label(panel, text="Project URL").grid(row=2, column=0, sticky="w", padx=(0, 12), pady=6)
+        ttk.Label(panel, text="PROJECT URL", style="DialogLabel.TLabel").grid(row=2, column=0, sticky="w", padx=(0, 12), pady=6)
         self.supabase_url_entry = ttk.Entry(panel, textvariable=self.supabase_url)
         self.supabase_url_entry.grid(row=2, column=1, columnspan=2, sticky="ew", pady=6)
 
-        ttk.Label(panel, text="Publishable key").grid(
+        ttk.Label(panel, text="PUBLISHABLE KEY", style="DialogLabel.TLabel").grid(
             row=3, column=0, sticky="w", padx=(0, 12), pady=6
         )
         self.supabase_key_entry = ttk.Entry(panel, textvariable=self.supabase_key, show="•")
@@ -2197,7 +3136,7 @@ class StockAgentApp(tk.Tk):
             text="Show",
             variable=self.show_supabase_key,
             command=self._toggle_supabase_key,
-            background=self.BG,
+            background=self.SURFACE,
             font=self.ui_font,
             width=92,
         ).grid(row=3, column=2, sticky="w", padx=(10, 0))
@@ -2209,16 +3148,16 @@ class StockAgentApp(tk.Tk):
 
         ttk.Separator(panel).grid(row=5, column=0, columnspan=3, sticky="ew", pady=(0, 18))
 
-        ttk.Label(panel, text="Email").grid(row=6, column=0, sticky="w", padx=(0, 12), pady=6)
+        ttk.Label(panel, text="EMAIL", style="DialogLabel.TLabel").grid(row=6, column=0, sticky="w", padx=(0, 12), pady=6)
         ttk.Entry(panel, textvariable=self.auth_email).grid(
             row=6, column=1, columnspan=2, sticky="ew", pady=6
         )
-        ttk.Label(panel, text="Password").grid(row=7, column=0, sticky="w", padx=(0, 12), pady=6)
+        ttk.Label(panel, text="PASSWORD", style="DialogLabel.TLabel").grid(row=7, column=0, sticky="w", padx=(0, 12), pady=6)
         password_entry = ttk.Entry(panel, textvariable=self.auth_password, show="•")
         password_entry.grid(row=7, column=1, columnspan=2, sticky="ew", pady=6)
         password_entry.bind("<Return>", lambda _event: self._start_auth("sign_in"))
 
-        buttons = ttk.Frame(panel)
+        buttons = ttk.Frame(panel, style="Surface.TFrame")
         buttons.grid(row=8, column=1, columnspan=2, sticky="w", pady=(12, 16))
         self.create_account_button = ttk.Button(
             buttons, text="Create account", command=lambda: self._start_auth("sign_up")
@@ -2236,6 +3175,7 @@ class StockAgentApp(tk.Tk):
         self.account_status_label = ttk.Label(
             panel,
             textvariable=self.account_status,
+            style="SurfaceMuted.TLabel",
             wraplength=850,
             justify="left",
         )
@@ -2400,27 +3340,11 @@ class StockAgentApp(tk.Tk):
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def show_research_examples(self) -> None:
-        dialog = ResearchExamplesDialog(self)
-        self.wait_window(dialog)
-        if dialog.result is None:
-            return
-        self.research_question.delete("1.0", "end")
-        self.research_question.insert("1.0", dialog.result)
-        self.research_question.focus_set()
-
-    def _use_research_suggestion(self, prompt: str) -> None:
-        self.research_question.delete("1.0", "end")
-        self.research_question.insert("1.0", prompt)
-        self.research_question.focus_set()
-
     def _prepare_transcript_for_content(self) -> None:
         if not getattr(self, "transcript_is_empty", False):
             return
         self.transcript.delete("1.0", "end")
         self.transcript_is_empty = False
-        self.quick_starts_label.pack_forget()
-        self.quick_starts_frame.pack_forget()
 
     def _copy_response(self, text: str, button: IconActionButton) -> None:
         self.clipboard_clear()
@@ -2433,11 +3357,11 @@ class StockAgentApp(tk.Tk):
         )
 
     def _append_user_message(self, text: str) -> None:
-        host = tk.Frame(self.transcript, background=self.SURFACE)
+        host = tk.Frame(self.transcript, background=self.BG)
         bubble = ChatBubble(
             host,
             text=text.strip(),
-            background=self.SURFACE,
+            background=self.BG,
             fill="#214B84",
             foreground="#FFFFFF",
             font=self.ui_font,
@@ -2450,13 +3374,13 @@ class StockAgentApp(tk.Tk):
         clean = text.strip()
         self.transcript.insert("end", f"{label}\n", ("assistant_name",))
         self.transcript.insert("end", clean + "\n", ("assistant_text",))
-        button_host = tk.Frame(self.transcript, background=self.SURFACE)
+        button_host = tk.Frame(self.transcript, background=self.BG)
         button: IconActionButton
         button = IconActionButton(
             button_host,
             image=self.copy_icon,
             command=lambda value=clean: self._copy_response(value, button),
-            background=self.SURFACE,
+            background=self.BG,
             hover=self.SURFACE_ALT,
         )
         button.pack(side="left", padx=7)
@@ -2715,6 +3639,15 @@ class StockAgentApp(tk.Tk):
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def _resolve_research_proposal(
+        self, approved: ApprovedResearchPlan | None
+    ) -> None:
+        self.research_approval_sheet = None
+        if approved is not None:
+            self._start_research_lab_worker(approved)
+        else:
+            self.research_question.focus_set()
+
     def _poll_results(self) -> None:
         try:
             while True:
@@ -2737,10 +3670,16 @@ class StockAgentApp(tk.Tk):
                     if not isinstance(proposal, ResearchProposal):
                         self._append("Results", "The proposal model returned an invalid result.")
                         continue
-                    dialog = ResearchApprovalDialog(self, proposal)
-                    self.wait_window(dialog)
-                    if dialog.result is not None:
-                        self._start_research_lab_worker(dialog.result)
+                    if (
+                        self.research_approval_sheet is not None
+                        and self.research_approval_sheet.winfo_exists()
+                    ):
+                        self.research_approval_sheet.destroy()
+                    self.research_approval_sheet = ResearchApprovalDialog(
+                        self.content,
+                        proposal,
+                        on_decision=self._resolve_research_proposal,
+                    )
                     continue
                 if kind == "research_proposal_error":
                     response = str(payload)
@@ -2818,9 +3757,20 @@ class StockAgentApp(tk.Tk):
     def _set_busy(self, busy: bool, *, cancellable: bool = True) -> None:
         self.is_busy = busy
         if hasattr(self, "propose_research_button"):
-            self.propose_research_button.configure(state="disabled" if busy else "normal")
+            self.propose_research_button.configure(
+                state="disabled" if busy else "normal",
+                text="Preparing proposal…" if busy and not cancellable else "Review proposal",
+            )
+            self.research_question.configure(state="disabled" if busy else "normal")
         self.current_task_cancellable = busy and cancellable
         if busy:
+            if not self.progress_frame.winfo_manager():
+                self.progress_frame.pack(
+                    side="bottom",
+                    fill="x",
+                    pady=(10, 0),
+                    before=self.research_composer,
+                )
             self.stop_requested = False
             self.stop_button.configure(state="normal" if cancellable else "disabled")
             self.research_started_at = time.monotonic()
@@ -2832,23 +3782,29 @@ class StockAgentApp(tk.Tk):
             self.research_progress_seen = False
             self._update_progress(0, self.current_stage, self.current_detail)
         else:
+            self.progress_frame.pack_forget()
             self.research_started_at = None
             self.current_step_started_at = None
             self.current_task_cancellable = False
             self.stop_requested = False
             self.cancel_event = None
             self.stop_button.configure(state="disabled", text="Stop")
+            self.stop_button.pack_forget()
 
     def _refresh_stop_button(self) -> None:
         if not self.is_busy:
             self.stop_button.configure(text="Stop", state="disabled")
+            self.stop_button.pack_forget()
             return
         if self.stop_requested:
             self.stop_button.configure(text="Stopping...", state="disabled")
         elif self.current_task_cancellable:
             self.stop_button.configure(text="Stop research", state="normal")
+            if not self.stop_button.winfo_manager():
+                self.stop_button.pack(side="right", padx=(8, 0))
         else:
             self.stop_button.configure(text="Stop", state="disabled")
+            self.stop_button.pack_forget()
 
     def _update_progress(self, percent: int | None, stage: str, detail: str = "") -> None:
         if percent is not None:
@@ -2950,12 +3906,7 @@ class StockAgentApp(tk.Tk):
         self._replace_live_progress_message()
 
     def record_purchase(self) -> None:
-        method = PurchaseMethodDialog(self)
-        self.wait_window(method)
-        if method.result == "manual":
-            self._record_manual_purchase()
-        elif method.result == "json":
-            self._import_portfolio_json()
+        self._record_manual_purchase()
 
     def _record_manual_purchase(self) -> None:
         dialog = PurchaseDialog(self)
@@ -3654,13 +4605,39 @@ class StockAgentApp(tk.Tk):
         for fraction in (0.0, 0.5, 1.0):
             y = top + (bottom - top) * fraction
             canvas.create_line(left, y, right, y, fill=self.BORDER, width=1)
-        coordinates: list[float] = []
+        observations: list[tuple[float, float]] = []
         for index, value in enumerate(values):
             x = left + (right - left) * index / max(1, len(values) - 1)
             y = bottom - (value - low) / span * (bottom - top)
-            coordinates.extend((x, y))
-        canvas.create_line(*coordinates, fill=color, width=2, smooth=True)
-        canvas.create_oval(coordinates[-2] - 3, coordinates[-1] - 3, coordinates[-2] + 3, coordinates[-1] + 3, fill=color, outline=color)
+            observations.append((x, y))
+        display_path = smooth_chart_path(observations, samples_per_segment=12)
+        coordinates = [coordinate for point in display_path for coordinate in point]
+        canvas.create_line(
+            *coordinates,
+            fill="#12131A",
+            width=7,
+            smooth=False,
+            capstyle=tk.ROUND,
+            joinstyle=tk.ROUND,
+        )
+        canvas.create_line(
+            *coordinates,
+            fill=color,
+            width=3,
+            smooth=False,
+            capstyle=tk.ROUND,
+            joinstyle=tk.ROUND,
+        )
+        end_x, end_y = observations[-1]
+        canvas.create_oval(
+            end_x - 4,
+            end_y - 4,
+            end_x + 4,
+            end_y + 4,
+            fill=color,
+            outline=self.SURFACE,
+            width=2,
+        )
         canvas.create_text(left, height - 8, anchor="w", text=start_label, fill=self.MUTED, font=(self.ui_font, 8))
         canvas.create_text(right, height - 8, anchor="e", text=end_label, fill=self.MUTED, font=(self.ui_font, 8))
 

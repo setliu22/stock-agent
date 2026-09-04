@@ -36,6 +36,6 @@ fi
 print "${GREEN}No GitHub or Git operations will be performed.${RESET}"
 print
 print "Using the files currently in this local project folder."
-print "Refreshing Python packages, running tests, rebuilding, and opening the app."
+print "Testing Swift logic, rebuilding the native macOS app, and opening it."
 print
 exec /bin/zsh "$REFRESHER"

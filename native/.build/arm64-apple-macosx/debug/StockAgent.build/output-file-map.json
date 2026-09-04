@@ -1,0 +1,68 @@
+{
+  "": {
+    "swift-dependencies": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/primary.swiftdeps"
+  },
+  "/Users/a../stock-agent/native/Sources/StockAgent/AccountView.swift": {
+    "dependencies": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/AccountView.d",
+    "object": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/AccountView.swift.o",
+    "swiftmodule": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/AccountView~partial.swiftmodule",
+    "swift-dependencies": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/AccountView.swiftdeps",
+    "diagnostics": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/AccountView.dia"
+  },
+  "/Users/a../stock-agent/native/Sources/StockAgent/AppModel.swift": {
+    "dependencies": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/AppModel.d",
+    "object": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/AppModel.swift.o",
+    "swiftmodule": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/AppModel~partial.swiftmodule",
+    "swift-dependencies": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/AppModel.swiftdeps",
+    "diagnostics": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/AppModel.dia"
+  },
+  "/Users/a../stock-agent/native/Sources/StockAgent/InlineProposalReview.swift": {
+    "dependencies": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/InlineProposalReview.d",
+    "object": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/InlineProposalReview.swift.o",
+    "swiftmodule": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/InlineProposalReview~partial.swiftmodule",
+    "swift-dependencies": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/InlineProposalReview.swiftdeps",
+    "diagnostics": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/InlineProposalReview.dia"
+  },
+  "/Users/a../stock-agent/native/Sources/StockAgent/MarketView.swift": {
+    "dependencies": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/MarketView.d",
+    "object": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/MarketView.swift.o",
+    "swiftmodule": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/MarketView~partial.swiftmodule",
+    "swift-dependencies": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/MarketView.swiftdeps",
+    "diagnostics": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/MarketView.dia"
+  },
+  "/Users/a../stock-agent/native/Sources/StockAgent/PortfolioView.swift": {
+    "dependencies": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/PortfolioView.d",
+    "object": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/PortfolioView.swift.o",
+    "swiftmodule": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/PortfolioView~partial.swiftmodule",
+    "swift-dependencies": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/PortfolioView.swiftdeps",
+    "diagnostics": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/PortfolioView.dia"
+  },
+  "/Users/a../stock-agent/native/Sources/StockAgent/ResearchView.swift": {
+    "dependencies": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/ResearchView.d",
+    "object": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/ResearchView.swift.o",
+    "swiftmodule": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/ResearchView~partial.swiftmodule",
+    "swift-dependencies": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/ResearchView.swiftdeps",
+    "diagnostics": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/ResearchView.dia"
+  },
+  "/Users/a../stock-agent/native/Sources/StockAgent/RootView.swift": {
+    "dependencies": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/RootView.d",
+    "object": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/RootView.swift.o",
+    "swiftmodule": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/RootView~partial.swiftmodule",
+    "swift-dependencies": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/RootView.swiftdeps",
+    "diagnostics": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/RootView.dia"
+  },
+  "/Users/a../stock-agent/native/Sources/StockAgent/StockAgentApp.swift": {
+    "dependencies": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/StockAgentApp.d",
+    "object": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/StockAgentApp.swift.o",
+    "swiftmodule": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/StockAgentApp~partial.swiftmodule",
+    "swift-dependencies": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/StockAgentApp.swiftdeps",
+    "diagnostics": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/StockAgentApp.dia"
+  },
+  "/Users/a../stock-agent/native/Sources/StockAgent/Theme.swift": {
+    "dependencies": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/Theme.d",
+    "object": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/Theme.swift.o",
+    "swiftmodule": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/Theme~partial.swiftmodule",
+    "swift-dependencies": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/Theme.swiftdeps",
+    "diagnostics": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/debug/StockAgent.build/Theme.dia"
+  }
+}

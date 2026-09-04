@@ -1,0 +1,13 @@
+{
+  "": {
+    "dependencies": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentDiagnostics.build/StockAgentDiagnostics.d",
+    "object": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentDiagnostics.build/StockAgentDiagnostics.o",
+    "swift-dependencies": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentDiagnostics.build/primary.swiftdeps"
+  },
+  "/Users/a../stock-agent/native/Sources/StockAgentDiagnostics/main.swift": {
+    "object": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentDiagnostics.build/main.swift.o",
+    "swiftmodule": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentDiagnostics.build/main~partial.swiftmodule",
+    "swift-dependencies": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentDiagnostics.build/main.swiftdeps",
+    "diagnostics": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentDiagnostics.build/main.dia"
+  }
+}

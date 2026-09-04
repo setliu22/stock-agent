@@ -618,31 +618,37 @@ def test_exact_open_ended_question_can_propose_discovery(tmp_path, monkeypatch) 
 
     def fake_text(_settings, _messages, **kwargs):
         assert kwargs["preferred_model"] == "openai/gpt-oss-120b"
-        if not calls:
-            calls.append("plain_json_proposal")
-            return json.dumps(_payload(
-                mode="discovery",
-                securities=[],
-                discovery_scope="Technology",
-                discovery_theme="AI revolution",
-                result_count=5,
-                capabilities=[
-                    {"id": "candidate_discovery", "reason": "Discover supported matches."},
-                    {"id": "company_profile", "reason": "Validate thematic exposure."},
-                    {"id": "valuation_snapshot", "reason": "Compare valuations."},
-                ],
-                analyses=[],
-            ))
-        calls.append("plain_json_theme_audit")
-        return json.dumps({
+        calls.append("plain_json_proposal")
+        return json.dumps(_payload(
+            mode="discovery",
+            securities=[],
+            discovery_scope="Technology",
+            discovery_theme="AI revolution",
+            result_count=5,
+            capabilities=[
+                {"id": "candidate_discovery", "reason": "Discover supported matches."},
+                {"id": "company_profile", "reason": "Validate thematic exposure."},
+                {"id": "valuation_snapshot", "reason": "Compare valuations."},
+            ],
+            analyses=[],
+        ))
+
+    def fake_structured(_settings, schema, messages, **kwargs):
+        assert schema["title"] == "ThemeUniverseAudit"
+        assert kwargs["preferred_model"] == "openai/gpt-oss-120b"
+        assert kwargs["max_tokens"] == 900
+        assert "semantic" in messages[0][1].casefold()
+        calls.append("structured_theme_audit")
+        return {
             "universes": [
                 {"scope": "Technology", "reason": "Enabling products."},
                 {"scope": "Industrials", "reason": "Physical infrastructure."},
                 {"scope": "Energy", "reason": "Energy inputs."},
             ]
-        })
+        }
 
     monkeypatch.setattr("portfolio.research_lab.invoke_text_groq", fake_text)
+    monkeypatch.setattr("portfolio.research_lab.invoke_structured_groq", fake_structured)
     settings = Settings(tmp_path, tmp_path / "db.sqlite", "key", "test-model", "desktop.workspace")
 
     proposal = propose_research(question, settings)
@@ -652,7 +658,7 @@ def test_exact_open_ended_question_can_propose_discovery(tmp_path, monkeypatch) 
     assert proposal.discovery_scopes == ("Technology", "Industrials", "Energy")
     assert len(proposal.discovery_scope_reasons) == 3
     assert proposal.securities == ()
-    assert calls == ["plain_json_proposal", "plain_json_theme_audit"]
+    assert calls == ["plain_json_proposal", "structured_theme_audit"]
 
 
 def test_undervalued_theme_audit_cannot_replace_peer_universes_with_all_equities(
@@ -665,27 +671,31 @@ def test_undervalued_theme_audit_cannot_replace_peer_universes_with_all_equities
     def fake_text(_settings, messages, **_kwargs):
         request = json.loads(messages[-1][1])
         requests.append(request)
-        if len(requests) == 1:
-            return json.dumps(_payload(
-                mode="discovery",
-                securities=[],
-                discovery_scopes=["Technology", "Industrials", "Utilities"],
-                discovery_theme="data centers",
-                selection_objectives=["relative_value"],
-                capabilities=[
-                    {"id": "candidate_discovery", "reason": "Discover candidates."},
-                    {"id": "company_profile", "reason": "Validate exposure."},
-                    {"id": "valuation_snapshot", "reason": "Compare valuations."},
-                ],
-                analyses=[],
-            ))
-        return json.dumps({
+        return json.dumps(_payload(
+            mode="discovery",
+            securities=[],
+            discovery_scopes=["Technology", "Industrials", "Utilities"],
+            discovery_theme="data centers",
+            selection_objectives=["relative_value"],
+            capabilities=[
+                {"id": "candidate_discovery", "reason": "Discover candidates."},
+                {"id": "company_profile", "reason": "Validate exposure."},
+                {"id": "valuation_snapshot", "reason": "Compare valuations."},
+            ],
+            analyses=[],
+        ))
+
+    def fake_structured(_settings, _schema, messages, **_kwargs):
+        request = json.loads(messages[-1][1])
+        requests.append(request)
+        return {
             "universes": [
                 {"scope": "All public equities", "reason": "Broad coverage."},
             ]
-        })
+        }
 
     monkeypatch.setattr("portfolio.research_lab.invoke_text_groq", fake_text)
+    monkeypatch.setattr("portfolio.research_lab.invoke_structured_groq", fake_structured)
     settings = Settings(tmp_path, tmp_path / "db.sqlite", "key", "test-model", "desktop.workspace")
 
     proposal = propose_research(question, settings)
@@ -703,8 +713,7 @@ def test_theme_audit_format_error_does_not_discard_valid_proposal(
     monkeypatch,
 ) -> None:
     question = "what are some undervalued stocks related to data centers?"
-    responses = [
-        json.dumps(_payload(
+    response = json.dumps(_payload(
             mode="discovery",
             securities=[],
             discovery_scopes=["Technology", "Industrials"],
@@ -716,12 +725,14 @@ def test_theme_audit_format_error_does_not_discard_valid_proposal(
                 {"id": "valuation_snapshot", "reason": "Compare valuations."},
             ],
             analyses=[],
-        )),
-        "The relevant universes are technology and industrials.",
-    ]
+        ))
     monkeypatch.setattr(
         "portfolio.research_lab.invoke_text_groq",
-        lambda *_args, **_kwargs: responses.pop(0),
+        lambda *_args, **_kwargs: response,
+    )
+    monkeypatch.setattr(
+        "portfolio.research_lab.invoke_structured_groq",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("format error")),
     )
     settings = Settings(tmp_path, tmp_path / "db.sqlite", "key", "test-model", "desktop.workspace")
 
@@ -729,6 +740,64 @@ def test_theme_audit_format_error_does_not_discard_valid_proposal(
 
     assert proposal.discovery_scopes == ("Technology", "Industrials")
     assert proposal.selection_objectives == ("relative_value",)
+    assert proposal.planning_warning is not None
+
+
+def test_autonomous_drone_theme_semantically_expands_to_defense(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    question = "Which public companies are best positioned for the autonomous drone trend?"
+
+    monkeypatch.setattr(
+        "portfolio.research_lab.invoke_text_groq",
+        lambda *_args, **_kwargs: json.dumps(_payload(
+            mode="discovery",
+            securities=[],
+            discovery_scopes=["Technology", "Industrials"],
+            discovery_theme="autonomous drone trend",
+            selection_objectives=["positive_signals"],
+            capabilities=[
+                {"id": "candidate_discovery", "reason": "Discover candidates."},
+                {"id": "company_profile", "reason": "Validate exposure."},
+            ],
+            analyses=[],
+        )),
+    )
+
+    def fake_structured(_settings, schema, messages, **_kwargs):
+        request = json.loads(messages[-1][1])
+        supported = {item["value"] for item in request["supported_universes"]}
+        assert "Aerospace & Defense" in supported
+        assert request["business_theme"] == "autonomous drone trend"
+        assert schema["properties"]["universes"]["items"]["properties"]["scope"]["enum"]
+        return {
+            "universes": [
+                {
+                    "scope": "Aerospace & Defense",
+                    "reason": "Defense is a primary end market for autonomous drone systems.",
+                },
+                {
+                    "scope": "Software",
+                    "reason": "Autonomy and mission software enable unmanned systems.",
+                },
+            ]
+        }
+
+    monkeypatch.setattr("portfolio.research_lab.invoke_structured_groq", fake_structured)
+    settings = Settings(
+        tmp_path,
+        tmp_path / "db.sqlite",
+        "key",
+        "test-model",
+        "desktop.workspace",
+    )
+
+    proposal = propose_research(question, settings)
+
+    assert proposal.discovery_scopes[0] == "Aerospace & Defense"
+    assert proposal.discovery_scopes == ("Aerospace & Defense", "Software")
+    assert proposal.planning_warning is None
 
 
 def test_plain_proposal_extracts_fenced_json_and_defaults_missing_analyses(
