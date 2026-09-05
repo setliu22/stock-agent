@@ -16,6 +16,12 @@
     "swift-dependencies": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/Domain.swiftdeps",
     "diagnostics": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/Domain.dia"
   },
+  "/Users/a../stock-agent/native/Sources/StockAgentCore/InvestmentCase.swift": {
+    "object": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/InvestmentCase.swift.o",
+    "swiftmodule": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/InvestmentCase~partial.swiftmodule",
+    "swift-dependencies": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/InvestmentCase.swiftdeps",
+    "diagnostics": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/InvestmentCase.dia"
+  },
   "/Users/a../stock-agent/native/Sources/StockAgentCore/LSEGWorkspaceService.swift": {
     "object": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/LSEGWorkspaceService.swift.o",
     "swiftmodule": "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/LSEGWorkspaceService~partial.swiftmodule",

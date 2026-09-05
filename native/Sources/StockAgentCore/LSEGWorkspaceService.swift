@@ -14,6 +14,7 @@ public struct LSEGCompanyRecord: Codable, Hashable, Sendable {
     public let businessSummary: String
     public let marketCap: Double?
     public let facts: [LSEGProviderFact]
+    public let universe: String?
 }
 
 public protocol LSEGResearchProviding: Sendable {

@@ -47,73 +47,6 @@ private enum SemanticEvidence {
         }.min() ?? 2
     }
 
-    static func quote(
-        _ quote: String,
-        isGroundedIn evidence: String,
-        for theme: String,
-        aliases: [String]
-    ) -> Bool {
-        func normalized(_ value: String) -> String {
-            value.lowercased()
-                .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
-                .joined(separator: " ")
-        }
-        let needle = normalized(quote)
-        guard needle.count >= 12, normalized(evidence).contains(needle) else { return false }
-        let queryTokens = ResearchThemeLanguage.tokenSet(in: [theme] + aliases)
-        let quoteTokens = ResearchThemeLanguage.tokenSet(in: quote)
-        return !queryTokens.intersection(quoteTokens).isEmpty
-    }
-}
-
-@Generable
-enum GeneratedExposure {
-    case direct
-    case enabling
-    case adjacent
-    case incidental
-
-    var value: ExposureStrength {
-        switch self {
-        case .direct: .direct
-        case .enabling: .enabling
-        case .adjacent: .adjacent
-        case .incidental: .incidental
-        }
-    }
-}
-
-@Generable
-struct GeneratedCompanyFit {
-    @Guide(description: "How materially the company participates in the trend")
-    var exposure: GeneratedExposure
-
-    @Guide(description: "One or two evidence-bounded sentences explaining the commercial connection")
-    var thesis: String
-
-    @Guide(description: "An exact short contiguous quote from the evidence that proves the connection, or empty if none")
-    var supportingQuote: String
-}
-
-@Generable
-struct GeneratedCompanyFitRow {
-    @Guide(description: "Copy the supplied company identifier exactly")
-    var identifier: String
-
-    @Guide(description: "How materially the company participates in the trend")
-    var exposure: GeneratedExposure
-
-    @Guide(description: "One or two evidence-bounded sentences explaining the commercial connection")
-    var thesis: String
-
-    @Guide(description: "An exact short contiguous quote from the evidence that proves the connection, or empty if none")
-    var supportingQuote: String
-}
-
-@Generable
-struct GeneratedCompanyFitBatch {
-    @Guide(description: "One assessment for every supplied company, in the supplied order", .minimumCount(1), .maximumCount(5))
-    var companies: [GeneratedCompanyFitRow]
 }
 
 @Generable
@@ -184,17 +117,8 @@ public extension CompanyFitEvaluating {
     }
 }
 
-public struct OnDeviceCompanyFitEvaluator: CompanyFitEvaluating {
+public struct GroundedCompanyFitEvaluator: CompanyFitEvaluating {
     public init() {}
-
-    private static func groundedThesis(
-        company: CompanyCandidate,
-        exposure: ExposureStrength,
-        quote: String
-    ) -> String {
-        let excerpt = String(quote.trimmingCharacters(in: .whitespacesAndNewlines).prefix(420))
-        return "\(company.name) is marked \(exposure.rawValue.lowercased()) from this source description: “\(excerpt)”"
-    }
 
     public func evaluate(
         company: CompanyCandidate,
@@ -203,129 +127,107 @@ public struct OnDeviceCompanyFitEvaluator: CompanyFitEvaluating {
         evidence: [String],
         snapshot: CompanySnapshot?
     ) async throws -> (ExposureStrength, String) {
-        guard SystemLanguageModel.default.isAvailable else {
-            throw StockAgentError.unavailable("Apple Intelligence is unavailable for semantic company review.")
+        let aliases = ([theme] + searchTerms)
+            .map(ResearchThemeLanguage.normalizedPhrase)
+            .filter { !$0.isEmpty }
+        let queryTokens = ResearchThemeLanguage.tokenSet(in: [theme] + searchTerms)
+        guard !queryTokens.isEmpty else {
+            return (.incidental, "The research theme did not contain enough product language to verify exposure.")
         }
-        let session = LanguageModelSession(
-            model: .default,
-            instructions: """
-            Judge whether a public company has a commercially meaningful relationship to an open-ended
-            trend. Use only the supplied source evidence. A product, end market, or material enabling input
-            can qualify. A generic word match, customer example, risk disclosure, or incidental mention
-            does not. Do not infer products, contracts, revenue, valuation, or quality beyond the evidence.
-            """
-        )
-        let evidenceText = evidence.isEmpty
-            ? "No contextual source excerpt was recovered."
-            : evidence.enumerated().map { "Excerpt \($0.offset + 1): \($0.element)" }.joined(separator: "\n")
-        let prompt = """
-        Trend: \(theme)
-        Product-language aliases: \(searchTerms.joined(separator: ", "))
-        Company: \(company.name) (\(company.ticker))
-        Industry: \(snapshot?.description ?? "Unavailable")
-        \(evidenceText)
-        Classify the exposure and explain the evidence. If evidence is insufficient, use incidental.
-        """
-        let response = try await session.respond(to: prompt, generating: GeneratedCompanyFit.self)
-        let evidenceSource = evidence.joined(separator: " ")
-        if response.content.exposure.value == .incidental {
-            return (.incidental, "The retrieved description does not state a concrete commercial connection to the theme.")
-        }
-        guard SemanticEvidence.quote(
-                    response.content.supportingQuote,
-                    isGroundedIn: evidenceSource,
-                    for: theme,
-                    aliases: searchTerms
-                ) else {
-            return (.incidental, "The retrieved description does not state a concrete commercial connection to the theme.")
-        }
-        return (
-            response.content.exposure.value,
-            Self.groundedThesis(
-                company: company,
-                exposure: response.content.exposure.value,
-                quote: response.content.supportingQuote
-            )
-        )
-    }
 
-    public func evaluateBatch(
-        _ inputs: [CompanyFitInput],
-        theme: String,
-        searchTerms: [String]
-    ) async throws -> [String: CompanyFitAssessment] {
-        guard SystemLanguageModel.default.isAvailable else {
-            throw StockAgentError.unavailable("Apple Intelligence is unavailable for semantic company review.")
+        let scored = evidence.map { excerpt -> (String, Int, Int) in
+            let normalized = ResearchThemeLanguage.normalizedPhrase(excerpt)
+            let phraseMatches = aliases.filter { normalized.contains($0) }.count
+            let tokenMatches = ResearchThemeLanguage.tokenSet(in: excerpt).intersection(queryTokens).count
+            return (excerpt, phraseMatches, tokenMatches)
+        }.sorted { left, right in
+            let leftScore = left.1 * 10 + left.2
+            let rightScore = right.1 * 10 + right.2
+            return leftScore > rightScore
         }
-        var output = [String: CompanyFitAssessment]()
-        for offset in stride(from: 0, to: inputs.count, by: 5) {
-            let group = Array(inputs[offset..<min(offset + 5, inputs.count)])
-            let session = LanguageModelSession(
-                model: .default,
-                instructions: """
-                Judge how materially each public company participates in the stated trend. Use only the
-                supplied source evidence. A product, end market, or material enabling input can qualify.
-                Direct means the company explicitly designs, makes, sells, or operates the named end
-                product. Enabling means it explicitly supplies a component, propulsion, software, or
-                infrastructure for that product. Adjacent means it is in the broad industry without an
-                explicit product-level connection.
-                Generic technology similarity or an incidental mention does not. A positive classification
-                requires a short exact contiguous quote that explicitly supports the commercial connection;
-                otherwise classify it as incidental and leave the quote empty. Return one row per company,
-                copy each identifier exactly, and do not infer products, contracts, revenue, or quality.
-                """
-            )
-            let companyText = group.enumerated().map { index, input in
-                let evidence = input.evidence.joined(separator: " ")
-                return """
-                Company \(index + 1)
-                Identifier: \(input.company.id)
-                Name: \(input.company.name) (\(input.company.ticker))
-                Industry: \(input.snapshot?.description ?? "Unavailable")
-                Evidence: \(String(evidence.prefix(1_500)))
-                """
-            }.joined(separator: "\n\n")
-            let response = try await session.respond(
-                to: "Trend: \(theme)\nProduct-language aliases: \(searchTerms.joined(separator: ", "))\n\n\(companyText)",
-                generating: GeneratedCompanyFitBatch.self
-            )
-            for (index, row) in response.content.companies.enumerated() {
-                guard let input = group.first(where: { $0.company.id == row.identifier })
-                        ?? (group.indices.contains(index) ? group[index] : nil) else { continue }
-                let evidence = input.evidence.joined(separator: " ")
-                if ProcessInfo.processInfo.environment["STOCK_AGENT_DEBUG_FIT"] == "1" {
-                    print("FIT \(input.company.ticker) id=\(row.identifier) exposure=\(row.exposure) quote=\(row.supportingQuote)")
-                }
-                let exposure: ExposureStrength
-                let thesis: String
-                if row.exposure.value == .incidental {
-                    exposure = .incidental
-                    thesis = "The retrieved description does not state a concrete commercial connection to the theme."
-                } else if SemanticEvidence.quote(
-                        row.supportingQuote,
-                        isGroundedIn: evidence,
-                        for: theme,
-                        aliases: searchTerms
-                    ) {
-                    exposure = row.exposure.value
-                    thesis = Self.groundedThesis(
-                        company: input.company,
-                        exposure: exposure,
-                        quote: row.supportingQuote
-                    )
-                } else {
-                    exposure = .incidental
-                    thesis = "The retrieved description does not state a concrete commercial connection to the theme."
-                }
-                output[input.company.id] = .init(
-                    exposure: exposure,
-                    thesis: thesis
-                )
+        guard let best = scored.first, best.1 > 0 || best.2 >= 2 else {
+            return (.incidental, "The retrieved description does not state a concrete commercial connection to the theme.")
+        }
+        if best.0.hasPrefix("SEC filing excerpt:"),
+           !Self.secExcerptNamesFiler(best.0, company: company) {
+            return (.incidental, "The filing language did not clearly describe the filer’s own business.")
+        }
+
+        let words = ResearchThemeLanguage.normalizedPhrase(best.0).split(separator: " ").map(String.init)
+        let matchIndexes = words.indices.filter { queryTokens.contains(words[$0]) }
+        let enablingPrefixes = [
+            "component", "engine", "infrastructure", "material", "propulsion", "semiconductor",
+            "sensor", "software", "suppl", "power", "communication",
+        ]
+        let actionPrefixes = [
+            "build", "deliver", "design", "develop", "engag", "manufactur", "operat", "offer",
+            "produc", "provid", "sell",
+        ]
+        func hasNearbyPrefix(_ prefixes: [String], distance: Int) -> Bool {
+            words.indices.contains { index in
+                prefixes.contains(where: { words[index].hasPrefix($0) })
+                    && matchIndexes.contains(where: { abs($0 - index) <= distance })
             }
         }
-        return output
+        let hasEnablingLanguage = hasNearbyPrefix(enablingPrefixes, distance: 10)
+        let hasCommercialAction = hasNearbyPrefix(actionPrefixes + ["focus", "specializ"], distance: 14)
+        let exposure: ExposureStrength
+        if hasEnablingLanguage && hasCommercialAction {
+            exposure = .enabling
+        } else if hasCommercialAction {
+            exposure = .direct
+        } else {
+            exposure = .adjacent
+        }
+        let excerpt = Self.focusedExcerpt(
+            best.0,
+            terms: [theme] + searchTerms + Array(queryTokens)
+        )
+        return (
+            exposure,
+            "\(company.name) is marked \(exposure.rawValue.lowercased()) from this source description: “\(excerpt)”"
+        )
     }
 
+    private static func focusedExcerpt(_ rawText: String, terms: [String]) -> String {
+        var text = rawText
+            .replacingOccurrences(of: "LSEG business description:", with: "")
+            .replacingOccurrences(of: "SEC filing excerpt:", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        while let first = text.first, ["“", "”", "\"", ":", ";"].contains(first) {
+            text.removeFirst()
+            text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let candidates = terms
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.count >= 3 }
+            .sorted { $0.count > $1.count }
+        guard let match = candidates.lazy.compactMap({ text.range(of: $0, options: .caseInsensitive) }).first else {
+            return String(text.prefix(420))
+        }
+        let rawStart = text.index(match.lowerBound, offsetBy: -130, limitedBy: text.startIndex) ?? text.startIndex
+        let rawEnd = text.index(match.upperBound, offsetBy: 270, limitedBy: text.endIndex) ?? text.endIndex
+        let before = text[rawStart..<match.lowerBound]
+        let start = before.lastIndex(where: { ".!?•".contains($0) })
+            .map { text.index(after: $0) } ?? rawStart
+        let after = text[match.upperBound..<rawEnd]
+        let end = after.firstIndex(where: { ".!?•".contains($0) })
+            .map { text.index(after: $0) } ?? rawEnd
+        return String(text[start..<end])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func secExcerptNamesFiler(_ excerpt: String, company: CompanyCandidate) -> Bool {
+        let normalized = ResearchThemeLanguage.normalizedPhrase(excerpt)
+        let identityWords = company.name.lowercased()
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .map(String.init)
+            .filter { $0.count >= 4 && !["company", "corporation", "holdings", "incorporated"].contains($0) }
+        if identityWords.contains(where: normalized.contains) { return true }
+        let rawWords = Set(excerpt.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
+        return rawWords.contains("we") || rawWords.contains("our")
+            || rawWords.contains(company.ticker.lowercased())
+    }
 }
 
 public protocol CompanyQuestionAnswering: Sendable {
@@ -441,6 +343,35 @@ public enum NamedResearchQuery {
         The filing presents these as a summary and does not rank their probability or financial impact.
         """
     }
+
+    public static func companyDataFallback(
+        companyName: String,
+        evidence: [String],
+        snapshot: CompanySnapshot
+    ) -> String {
+        var parts = ["\(companyName) is classified as \(snapshot.description)."]
+        if let description = evidence.first(where: { $0.hasPrefix("LSEG business description:") }) {
+            let cleaned = description
+                .replacingOccurrences(of: "LSEG business description:", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !cleaned.isEmpty { parts.append(String(cleaned.prefix(520))) }
+        }
+        let facts = snapshot.facts.prefix(5).map { fact in
+            let value: String
+            if fact.unit.uppercased() == "USD" {
+                value = fact.value.formatted(
+                    .currency(code: "USD").notation(.compactName).precision(.fractionLength(0...2))
+                )
+            } else {
+                value = fact.value.formatted(
+                    .number.notation(.compactName).precision(.fractionLength(0...2))
+                ) + " " + fact.unit
+            }
+            return "\(fact.label): \(value)"
+        }
+        if !facts.isEmpty { parts.append("Reported facts include \(facts.joined(separator: "; ")).") }
+        return parts.joined(separator: "\n\n")
+    }
 }
 
 public struct ResearchEngine: Sendable {
@@ -448,17 +379,19 @@ public struct ResearchEngine: Sendable {
     private let lseg: (any LSEGResearchProviding)?
     private let evaluator: any CompanyFitEvaluating
     private let companyAnswerer: any CompanyQuestionAnswering
+    private let investmentCaseGenerator: any InvestmentCaseGenerating
 
     public init(
         sec: SECService,
         lseg: (any LSEGResearchProviding)? = nil,
-        evaluator: any CompanyFitEvaluating = OnDeviceCompanyFitEvaluator(),
+        evaluator: any CompanyFitEvaluating = GroundedCompanyFitEvaluator(),
         companyAnswerer: any CompanyQuestionAnswering = OnDeviceCompanyQuestionAnswerer()
     ) {
         self.sec = sec
         self.lseg = lseg
         self.evaluator = evaluator
         self.companyAnswerer = companyAnswerer
+        self.investmentCaseGenerator = OnDeviceInvestmentCaseGenerator()
     }
 
     public func run(_ rawProposal: ResearchProposal) async throws -> ResearchReport {
@@ -468,15 +401,6 @@ public struct ResearchEngine: Sendable {
             return try await discovery(proposal)
         case .named:
             return try await named(proposal)
-        case .marketNews:
-            return ResearchReport(
-                question: proposal.question,
-                title: "Market research proposal",
-                companies: [],
-                notes: [
-                    "Broad real-time news is not available from the current sources. Company filings, financial facts, portfolio tools, and macro data remain available."
-                ]
-            )
         }
     }
 
@@ -499,23 +423,39 @@ public struct ResearchEngine: Sendable {
         }
 
         if inputs.isEmpty {
-            let candidates = try await sec.searchFilings(query: theme, limit: candidateLimit)
+            let secCandidateLimit = max(proposal.resultCount * 3, 9)
+            let candidates = try await sec.searchFilings(query: theme, limit: secCandidateLimit)
             for candidate in candidates {
-                let snapshot = try? await sec.snapshot(for: candidate)
-                let evidence: [String]
-                if let url = candidate.filingURL {
-                    evidence = (try? await sec.filingEvidence(url: url, query: theme)) ?? []
-                } else {
-                    evidence = []
+                guard let snapshot = try? await sec.snapshot(for: candidate),
+                      let annualFiling = snapshot.recentFilings.first(where: { $0.form == "10-K" }),
+                      let annualURL = SECService.filingURL(cik: candidate.cik, filing: annualFiling) else {
+                    continue
                 }
+                let verificationQuery = ([theme] + proposal.searchTerms).joined(separator: " ")
+                let excerpts = (try? await sec.filingEvidence(
+                    url: annualURL,
+                    query: verificationQuery,
+                    limit: 4
+                )) ?? []
+                guard !excerpts.isEmpty else { continue }
+                let verifiedCandidate = CompanyCandidate(
+                    cik: candidate.cik,
+                    ticker: candidate.ticker,
+                    name: snapshot.name,
+                    filingDate: annualFiling.filedAt,
+                    filingURL: annualURL,
+                    relevance: candidate.relevance
+                )
                 inputs.append(
                     DiscoveryInput(
-                        candidate: candidate,
+                        candidate: verifiedCandidate,
                         snapshot: snapshot,
-                        evidence: evidence,
-                        sources: ["SEC EDGAR"]
+                        evidence: excerpts.map { "SEC filing excerpt: \($0)" },
+                        sources: ["SEC EDGAR"],
+                        universe: nil
                     )
                 )
+                if inputs.count >= max(proposal.resultCount * 2, 6) { break }
             }
         }
 
@@ -527,26 +467,28 @@ public struct ResearchEngine: Sendable {
                 notes: ["Try a broader theme phrase or edit the proposal before running it again."]
             )
         }
-        let reviewLimit = min(candidateLimit, max(proposal.resultCount, 5))
+        let reviewLimit = min(candidateLimit, max(proposal.resultCount, 3))
         let reviewInputs = Self.semanticPrefilter(
             inputs,
             theme: theme,
             searchTerms: proposal.searchTerms,
             limit: reviewLimit
         )
-        let distinctiveTerms = Self.distinctiveEvidenceTerms(
-            in: inputs,
-            theme: theme,
-            searchTerms: proposal.searchTerms
-        )
         let fitInputs = reviewInputs.map {
             let source = $0.evidence.joined(separator: " ")
-            let passages = SemanticEvidence.passages(
+            var passages = SemanticEvidence.passages(
                 in: source,
                 closestTo: theme,
-                aliases: distinctiveTerms,
+                aliases: proposal.searchTerms,
                 limit: 3
             )
+            if $0.sources.contains("SEC EDGAR") {
+                passages = passages.map { passage in
+                    passage.hasPrefix("SEC filing excerpt:")
+                        ? passage
+                        : "SEC filing excerpt: \(passage)"
+                }
+            }
             return CompanyFitInput(company: $0.candidate, evidence: passages, snapshot: $0.snapshot)
         }
         let assessments: [String: CompanyFitAssessment]
@@ -554,7 +496,7 @@ public struct ResearchEngine: Sendable {
             assessments = try await evaluator.evaluateBatch(
                 fitInputs,
                 theme: theme,
-                searchTerms: distinctiveTerms
+                searchTerms: proposal.searchTerms
             )
         } catch {
             assessments = [:]
@@ -601,21 +543,48 @@ public struct ResearchEngine: Sendable {
             ? strongMatches
             : (reviewedMatches.isEmpty ? ranked : reviewedMatches)
         let selected = Array(selectionPool.prefix(proposal.resultCount))
-        var notes = [
-            "Candidates came from the selected industry screens; semantic review used retrieved company descriptions to distinguish commercial exposure from incidental wording.",
-            "This is research assistance, not investment advice. Verify material claims in the linked filings.",
-        ]
+        let caseInputs = selected.map { result -> InvestmentCaseInput in
+            let matchedInput = inputs.first { $0.candidate.id == result.candidate.id }
+            let sameUniverse = inputs.filter { candidate in
+                guard let universe = matchedInput?.universe else { return true }
+                return candidate.universe == universe
+            }.compactMap(\.snapshot)
+            let peers = sameUniverse.count >= 3 ? sameUniverse : inputs.compactMap(\.snapshot)
+            return InvestmentCaseEvidence.makeInput(for: result, peerSnapshots: peers)
+        }
+        let generatedCases: [String: InvestmentCase]
+        if selected.contains(where: { $0.sources.contains("LSEG Workspace") }) {
+            do {
+            generatedCases = try await investmentCaseGenerator.generate(caseInputs)
+            } catch {
+                generatedCases = [:]
+            }
+        } else {
+            generatedCases = [:]
+        }
+        let enriched = zip(selected, caseInputs).map { result, input in
+            ResearchCompanyResult(
+                candidate: result.candidate,
+                exposure: result.exposure,
+                thesis: result.thesis,
+                evidence: result.evidence,
+                snapshot: result.snapshot,
+                sources: result.sources,
+                investmentCase: generatedCases[result.candidate.id] ?? input.fallback
+            )
+        }
+        var notes = [String]()
         if let providerNote { notes.insert(providerNote, at: 0) }
         if selected.contains(where: { $0.exposure == .unreviewed }) {
             notes.insert(
-                "On-device semantic review was unavailable, so filing matches are marked Needs review instead of being presented as conclusions.",
+                "Some company evidence could not be verified, so those matches are marked Needs review.",
                 at: 0
             )
         }
         return ResearchReport(
             question: proposal.question,
             title: "Companies connected to \(theme)",
-            companies: selected,
+            companies: enriched,
             notes: notes
         )
     }
@@ -699,11 +668,18 @@ public struct ResearchEngine: Sendable {
                         question: proposal.question,
                         companyName: candidate.name,
                         evidence: evidence
-                    ) ?? "Company data loaded, but the on-device answer was unavailable: \(error.localizedDescription)"
+                    ) ?? NamedResearchQuery.companyDataFallback(
+                        companyName: candidate.name,
+                        evidence: evidence,
+                        snapshot: snapshot
+                    )
                 }
                 var sources = [String]()
                 if lsegRecord != nil { sources.append("LSEG Workspace") }
                 if secSnapshot != nil { sources.append("SEC EDGAR") }
+                if lsegRecord == nil, lsegFailure != nil, secSnapshot != nil {
+                    notes.append("\(ticker): LSEG Workspace was unavailable, so this result uses SEC EDGAR.")
+                }
                 results.append(
                     ResearchCompanyResult(
                         candidate: candidate,
@@ -718,11 +694,38 @@ public struct ResearchEngine: Sendable {
                 notes.append("\(ticker): \(error.localizedDescription)")
             }
         }
+        let caseInputs = results.map {
+            InvestmentCaseEvidence.makeInput(
+                for: $0,
+                peerSnapshots: results.compactMap(\.snapshot)
+            )
+        }
+        let generatedCases: [String: InvestmentCase]
+        if results.contains(where: { $0.sources.contains("LSEG Workspace") }) {
+            do {
+                generatedCases = try await investmentCaseGenerator.generate(caseInputs)
+            } catch {
+                generatedCases = [:]
+            }
+        } else {
+            generatedCases = [:]
+        }
+        let enriched = zip(results, caseInputs).map { result, input in
+            ResearchCompanyResult(
+                candidate: result.candidate,
+                exposure: result.exposure,
+                thesis: result.thesis,
+                evidence: result.evidence,
+                snapshot: result.snapshot,
+                sources: result.sources,
+                investmentCase: generatedCases[result.candidate.id] ?? input.fallback
+            )
+        }
         return ResearchReport(
             question: proposal.question,
-            title: results.count == 1 ? "\(results[0].candidate.name) research" : "Company research",
-            companies: results,
-            notes: notes + ["Values retain their source context: LSEG fields reflect the active Workspace session; SEC facts may cover different reporting periods."]
+            title: enriched.count == 1 ? "\(enriched[0].candidate.name) research" : "Company research",
+            companies: enriched,
+            notes: notes + ["LSEG and SEC values can cover different reporting periods."]
         )
     }
 
@@ -731,6 +734,7 @@ public struct ResearchEngine: Sendable {
         let snapshot: CompanySnapshot?
         let evidence: [String]
         let sources: [String]
+        let universe: String?
     }
 
     private static func discoveryInput(_ record: LSEGCompanyRecord) -> DiscoveryInput {
@@ -750,7 +754,8 @@ public struct ResearchEngine: Sendable {
             candidate: candidate,
             snapshot: snapshot,
             evidence: evidence,
-            sources: ["LSEG Workspace"]
+            sources: ["LSEG Workspace"],
+            universe: record.universe
         )
     }
 
@@ -808,26 +813,6 @@ public struct ResearchEngine: Sendable {
         }
         .prefix(limit)
         .map(\.input)
-    }
-
-    private static func distinctiveEvidenceTerms(
-        in inputs: [DiscoveryInput],
-        theme: String,
-        searchTerms: [String]
-    ) -> [String] {
-        let requestedTokens = ResearchThemeLanguage.tokenSet(in: [theme] + searchTerms)
-        guard !requestedTokens.isEmpty else { return [] }
-        var documentFrequency = [String: Int]()
-        for input in inputs {
-            let tokens = ResearchThemeLanguage.tokenSet(in: input.evidence)
-            for token in tokens.intersection(requestedTokens) {
-                documentFrequency[token, default: 0] += 1
-            }
-        }
-        let maximumCommonCount = max(2, Int((Double(inputs.count) * 0.4).rounded(.up)))
-        return requestedTokens
-            .filter { documentFrequency[$0, default: 0] <= maximumCommonCount }
-            .sorted()
     }
 
     private static func normalizedWords(_ value: String) -> String {

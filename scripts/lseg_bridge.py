@@ -10,13 +10,113 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from pathlib import Path
 import sys
+import time
+from types import SimpleNamespace
 from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+
+
+def _load_project_environment() -> None:
+    path = PROJECT_ROOT / ".env"
+    if not path.exists():
+        return
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key:
+            os.environ.setdefault(key, value)
+
+
+def _float_setting(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
+def _session_state(session: Any) -> str:
+    state = getattr(session, "open_state", None) or getattr(session, "state", None)
+    return str(getattr(state, "name", None) or state or "Unknown")
+
+
+def _session_is_open(session: Any) -> bool:
+    state = _session_state(session).casefold().replace("_", " ")
+    return "opened" in state and "not opened" not in state and "closed" not in state
+
+
+def _configure_session(ld: Any, session_name: str, app_key: str | None) -> None:
+    try:
+        config = ld.get_config()
+    except Exception:
+        return
+    values = (
+        ("logs.transports.file.enabled", True),
+        ("logs.transports.file.name", str(PROJECT_ROOT / "data" / "lseg-data-lib.log")),
+        ("logs.level", "info"),
+        ("http.request-timeout", int(max(5, _float_setting("LSEG_REQUEST_TIMEOUT", 20)))),
+        ("sessions.default", session_name),
+    )
+    for key, value in values:
+        try:
+            config.set_param(key, value)
+        except Exception:
+            try:
+                config[key] = value
+            except Exception:
+                pass
+    if app_key:
+        try:
+            config.set_param("sessions.desktop.workspace.app-key", app_key)
+        except Exception:
+            try:
+                config["sessions.desktop.workspace.app-key"] = app_key
+            except Exception:
+                pass
+
+
+def _open_session(ld: Any) -> Any:
+    _load_project_environment()
+    session_name = os.getenv("LSEG_SESSION", "desktop.workspace").strip() or "desktop.workspace"
+    app_key = os.getenv("LSEG_APP_KEY", "").strip() or None
+    _configure_session(ld, session_name, app_key)
+    attempts = [(session_name, lambda: ld.open_session(name=session_name))]
+    if session_name == "desktop.workspace":
+        attempts.append(("desktop default", lambda: ld.open_session()))
+    errors = []
+    for label, opener in attempts:
+        try:
+            try:
+                ld.close_session()
+            except Exception:
+                pass
+            session = opener()
+            deadline = time.monotonic() + max(1, _float_setting("LSEG_SESSION_TIMEOUT", 8))
+            while time.monotonic() < deadline:
+                state = _session_state(session)
+                if _session_is_open(session):
+                    return session
+                if "closed" in state.casefold():
+                    break
+                time.sleep(0.2)
+            errors.append(f"{label} state={_session_state(session)}")
+        except Exception as exc:
+            errors.append(f"{label}: {type(exc).__name__}: {exc}")
+    detail = "; ".join(errors)
+    if session_name == "desktop.workspace":
+        raise RuntimeError(
+            "LSEG Workspace is not connected. Open Workspace, sign in, and keep it running, "
+            f"then retry. Session details: {detail}"
+        )
+    raise RuntimeError(f"The configured LSEG session could not connect. {detail}")
 
 
 COMPANY_FIELDS = (
@@ -146,14 +246,99 @@ def _get_data(ld: Any, universe: Any) -> Any:
         return ld.get_data(**kwargs)
 
 
-def _company_records(ld: Any, tickers: list[str]) -> tuple[list[dict[str, Any]], list[str]]:
-    from portfolio.company_resolver import resolve_instrument
+def _response_frame(response: Any) -> Any:
+    if response is None:
+        return None
+    if hasattr(response, "columns") and hasattr(response, "empty"):
+        return response
+    data = getattr(response, "data", None)
+    frame = getattr(data, "df", None)
+    return frame if frame is not None else getattr(response, "df", None)
 
+
+def _ric_values(response: Any) -> list[str]:
+    frame = _response_frame(response)
+    if frame is None or getattr(frame, "empty", True):
+        return []
+    for column in frame.columns:
+        if str(column).upper() == "RIC" or str(column).upper().endswith(".RIC"):
+            return [str(value).strip() for value in frame[column].dropna() if str(value).strip()]
+    return []
+
+
+def _ric_score(ric: str) -> tuple[int, str]:
+    upper = ric.upper().strip()
+    score = 0
+    if upper.endswith(".O"):
+        score = 100
+    elif upper.endswith(".N"):
+        score = 95
+    elif upper.endswith(".A"):
+        score = 80
+    elif upper.endswith(".K"):
+        score = 70
+    if any(marker in upper for marker in ("^", "=", "ATMIV", " VOL")):
+        score -= 100
+    return score, upper
+
+
+def _ticker_to_ric(ticker: str) -> str:
+    ticker = str(ticker).strip().upper().replace("/", "-")
+    if not ticker:
+        raise ValueError("No ticker was provided.")
+    errors = []
+    try:
+        from lseg.data.discovery import SymbolTypes, convert_symbols
+
+        try:
+            response = convert_symbols(
+                symbols=[ticker],
+                from_symbol_type=SymbolTypes.TICKER_SYMBOL,
+                to_symbol_types=[SymbolTypes.RIC],
+                preferred_country_code="USA",
+            )
+        except TypeError:
+            response = convert_symbols(
+                symbols=[ticker],
+                from_symbol_type=SymbolTypes.TICKER_SYMBOL,
+                to_symbol_types=[SymbolTypes.RIC],
+            )
+        values = _ric_values(response)
+        if values:
+            return max(values, key=_ric_score)
+    except Exception as exc:
+        errors.append(f"discovery conversion: {type(exc).__name__}: {exc}")
+    try:
+        from lseg.data.content import symbol_conversion
+
+        response = symbol_conversion.Definition(
+            symbols=[ticker],
+            from_symbol_type=symbol_conversion.SymbolTypes.TICKER_SYMBOL,
+            to_symbol_types=[symbol_conversion.SymbolTypes.RIC],
+        ).get_data()
+        values = _ric_values(response)
+        if values:
+            return max(values, key=_ric_score)
+    except Exception as exc:
+        errors.append(f"content conversion: {type(exc).__name__}: {exc}")
+    if "." in ticker:
+        return ticker
+    raise RuntimeError(f"LSEG could not convert ticker {ticker}: {'; '.join(errors)}")
+
+
+def _company_records(ld: Any, tickers: list[str]) -> tuple[list[dict[str, Any]], list[str]]:
     resolved = []
     failures = []
     for ticker in tickers[:8]:
         try:
-            resolved.append(resolve_instrument(str(ticker)))
+            normalized = str(ticker).strip().upper()
+            resolved.append(
+                SimpleNamespace(
+                    ticker=normalized,
+                    ric=_ticker_to_ric(normalized),
+                    company_name="",
+                )
+            )
         except Exception as exc:
             failures.append(f"{ticker}: {type(exc).__name__}: {exc}")
     if not resolved:
@@ -185,6 +370,7 @@ def _screen_records(ld: Any, screens: list[dict[str, Any]], limit: int) -> tuple
                 frame = _get_data(ld, f"SCREEN({body})")
             for _, row in frame.iterrows():
                 record = _record(row)
+                record["universe"] = label
                 identity = record["ric"] or record["ticker"]
                 if not identity or identity in seen:
                     continue
@@ -202,10 +388,8 @@ def main() -> int:
         payload = json.load(sys.stdin)
         operation = str(payload.get("operation") or "status")
         import lseg.data as ld
-        from portfolio.config import get_settings
-        from portfolio.lseg_research import _open_lseg_session
 
-        _open_lseg_session(ld, get_settings())
+        _open_session(ld)
         if operation == "status":
             output = {"ok": True, "companies": [], "failures": []}
         elif operation == "company":

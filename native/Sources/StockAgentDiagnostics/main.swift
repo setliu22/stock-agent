@@ -48,6 +48,11 @@ struct StockAgentDiagnostics {
                 for company in report.companies {
                     print("\n\(company.candidate.ticker) — \(company.candidate.name)")
                     print(company.thesis)
+                    if let investmentCase = company.investmentCase {
+                        print("Investment view [\(investmentCase.stance.rawValue)]: \(investmentCase.summary)")
+                        for point in investmentCase.reasons { print("+ \(point.text)") }
+                        for point in investmentCase.watchouts { print("! \(point.text)") }
+                    }
                     print("Evidence excerpts: \(company.evidence.count)")
                     print("Filing: \(company.candidate.filingURL?.absoluteString ?? "unavailable")")
                 }

@@ -1,95 +1,96 @@
 # Research and Portfolio Product Decisions
 
-Last reviewed: 2026-08-31
+Last reviewed: 2026-09-05
 
-This document records the product decisions behind the Research Lab and Portfolio behavior. It distinguishes what the application implements now from work that would require additional data, accounting rules, or licensing review.
+## Research scope
 
-## 1. What "undervalued" means
+The primary workflows are intentionally narrow: answer a question about a ticker,
+or find public companies connected to an open-ended business trend. The research
+plan contains only choices that change the run.
 
-In this application, undervalued means **peer-relative value evidence**, not an intrinsic-value estimate.
+Ticker research requires an explicit ticker symbol. Theme research creates a
+reviewable inline plan, including the matched industries, before retrieving data.
 
-- The research planner can select the typed `relative_value` objective.
-- Python then requires at least one usable, positive valuation multiple below the narrower TRBC industry median when at least two peers have usable data (otherwise the approved-universe median), plus positive evidence in at least two independent signal families.
-- The ranking can use forward P/E, EV/EBITDA, price/sales, and price/book when applicable and available.
-- Growth, profitability, financial resilience, macro fit, and data coverage affect shortlist order, but the LLM does not invent a weighted valuation score. Positive signals include quality, cash flow, income, momentum, and expectations; at least two are required for an undervalued candidate.
-- Missing factors remain missing. They are not replaced with zero or an estimate.
+## Theme matching
 
-This is a shortlist rule. The app does not claim that the market price is below a DCF value or that the stock will appreciate.
+There is no table mapping specific themes to sectors. Apple Foundation Models
+interprets the theme against a fixed public-equity taxonomy and generates
+product-level synonyms likely to occur in company descriptions. For example, the
+same generic process that maps a product theme to its end market can distinguish
+the end-product industry from enabling software or components.
 
-## 2. Comparing different industries
+LSEG screens the approved industries when Workspace is connected. A deterministic
+Swift evidence pass then requires product-language support in each returned
+description. Broad sector membership alone is not a match. SEC fallback candidates
+are checked against their own latest annual filing so language about a customer or
+counterparty is not attributed to the filer.
 
-Raw multiples are not directly ranked across unrelated industries. Each approved universe is screened and ranked independently. For a cross-industry theme such as data centers, the app interleaves candidates by their within-universe rank and then validates thematic exposure from retrieved company profiles. The report names the discovery universe and its peer median for each candidate when that evidence is available.
+## Investment interpretation
 
-## 3. Point-in-time data and backtests
+A thematic connection is not treated as proof that a stock is attractive. The
+report separates:
 
-Research screens are current retrieval snapshots. The app does not currently store the historical universe membership, delisted companies, estimate vintages, or historical fundamentals needed for a defensible point-in-time backtest. Price-history calculations are valid historical calculations for the securities selected now, but they are not evidence that a historical screen would have selected those same securities.
+- why the company surfaced;
+- reasons to continue researching the investment;
+- counterpoints and missing evidence; and
+- the raw metrics and source excerpts.
 
-The UI and reports now state this limitation. A future backtest must use licensed point-in-time universes and vintaged fundamentals before the app can make performance claims without hindsight and survivorship bias.
+When LSEG facts are available, Swift computes comparisons such as trailing and
+forward P/E or return on equity versus the median of screened companies with data.
+It also evaluates reported cash versus debt and the difference between the source
+price and mean analyst target. Apple Intelligence may write a short balanced
+synthesis from those evidence lines, but it cannot change identifiers,
+classifications, metrics, or citations.
 
-## 4. Portfolio accounting scope
+“Constructive” is an evidence summary, not a buy recommendation or forecast. The
+app does not claim intrinsic value, guaranteed upside, or theme-attributable
+revenue when those inputs are missing.
 
-The current portfolio is an **open-purchase-lot model**. It supports purchases, quantities, purchase prices, purchase dates, current prices, current market value, and unrealized gain or loss.
+## Source behavior
 
-It does not yet model sales, realized gains, dividends, splits, fees, cash balances, transfers, or taxes. Therefore:
+LSEG Workspace is the preferred research source and requires the user's existing
+session and entitlements. SEC EDGAR remains the company/filing fallback. FRED
+provides the five macro series, and daily portfolio prices have CSV and manual
+fallbacks.
 
-- "Total return" means unrealized return on the recorded open purchases.
-- The performance chart is not a complete brokerage-account return.
-- Deleting a ticker removes its recorded open purchase lots; it does not record a sale.
+An unavailable optional source produces an explicit fallback or missing-evidence
+state. It is not silently replaced with invented data. LSEG desktop requests are
+bounded so a disconnected session cannot leave a research run waiting forever.
 
-The Portfolio `Model` dialog makes this boundary visible. The correct next accounting change is an immutable transaction ledger with typed transaction events, not more fields added to purchase rows.
+## Model boundary
 
-## 5. Holding objectives and exit conditions
+Apple Foundation Models run on device and are used where language understanding is
+material: theme interpretation, filing-language expansion, and concise research
+synthesis. Swift remains authoritative for source retrieval, ticker identity,
+screen construction, numerical calculations, evidence validation, storage, and UI
+rendering.
 
-Objectives, expected horizon, and exit conditions are useful because the same facts can matter differently to different owners. They must remain explicitly user supplied and must never be inferred as a "stored thesis."
+## Portfolio accounting
 
-The position-risk dialog now accepts optional decision context for the current review. It is labeled as user supplied, passed to Groq only for bounded interpretation, and not persisted. Persistent per-position context should be added only with an explicit cloud schema and retention design so local and Supabase behavior remain consistent.
+The portfolio is an open-purchase-lot tracker. It models purchases, quantities,
+purchase prices, purchase dates, current value, and unrealized gain or loss. It
+does not yet model sales, realized gain, dividends, splits, fees, cash, transfers,
+or taxes, so its chart is not a complete brokerage-account return.
 
-## 6. Evidence freshness
+The full-portfolio performance index adjusts for new purchase contributions so a
+deposit is not shown as a gain. Selecting holdings switches to normalized price
+returns for only those tickers, which makes multi-stock comparisons meaningful.
+The 1M, 3M, 1Y, and All controls reset the visible comparison at the range start.
 
-Every Research Lab result now has a generation time and a `Complete` or `Partial` status. Generation time is the retrieval time, not necessarily the reporting period of every fundamental or estimate field. Source reporting periods can differ.
+## Data retention and distribution
 
-- Current prices and market-regime observations are refreshed when their pages are opened.
-- Historical analyses report their actual common observation windows and sample sizes.
-- Missing source evidence is shown rather than silently substituted.
-- The profile-relevance cache is content addressed. A changed theme, sector, industry, or business summary creates a different key, so an old classification is not reused against changed evidence.
+Portfolio records and imported price history are stored in local SQLite. Raw LSEG
+research results are kept in memory for the active run and are not written into
+the portfolio database. A future cloud or shared-report feature would require a
+separate retention and LSEG licensing review.
 
-The app does not use an arbitrary global "stale after N days" rule because appropriate freshness depends on the evidence type. Source dates and reporting periods should drive any future per-capability freshness policy.
+The local macOS bundle is ad-hoc signed. Distribution through the Mac App Store or
+Developer ID notarization would be a separate release decision; neither is needed
+to build and run the app locally.
 
-## 7. Partial research success
+## Regression coverage
 
-Optional capability failures produce missing-evidence warnings. Multi-universe discovery now keeps successful universes when another approved universe returns no match or fails, and labels the result partial. A run still fails closed when required identity, instrument resolution, or comparison evidence is unavailable, because reporting a comparison without its required inputs would be misleading.
-
-Automatic resume is not implemented. A real resume feature requires a durable job record with completed steps and evidence versions; silently rerunning part of an in-memory plan could mix vintages.
-
-## 8. Permanent evaluation scenarios
-
-`tests/test_research_scenarios.py` is the permanent product-level scenario suite. It covers:
-
-- undervalued companies in one supported industry;
-- cross-industry thematic discovery;
-- exchange geography;
-- named-security rate analysis; and
-- market-wide news research.
-
-Lower-level tests continue to cover schema validation, instrument grounding, LSEG compilation, thematic classification, calculations, missing evidence, model fallback, and rate limits. A prompt is added to the permanent suite when it represents an intended product workflow or a previously observed regression, not merely because a user happened to type it once.
-
-## 9. Measuring research outcomes
-
-The app does not currently claim that its candidates outperform a benchmark. A defensible evaluator needs to save the approved methodology version, candidate set, selection timestamp, price basis, benchmark, holding horizon, corporate-action treatment, and all candidates considered. It also needs point-in-time input data so results are not contaminated by hindsight.
-
-When those prerequisites exist, evaluation should report excess return, drawdown, volatility, hit rate, and coverage by cohort and methodology version. It should compare the complete generated shortlist, not only names the user later chose to buy.
-
-## 10. LSEG data retention and Supabase
-
-The engineering default is data minimization:
-
-- Raw LSEG result tables, Reuters story text, prices, and fundamentals remain in memory for the active run and are not synced to Supabase.
-- Supabase stores user portfolio records defined in `supabase/schema.sql`; it does not store Research Lab evidence.
-- Local research diagnostics store a request fingerprint, plan shape, request counts, field coverage, warnings, and instrument identifiers. They do not store the raw user question or LSEG result tables.
-- The local profile-relevance cache stores a content hash plus a derived relevance label and short reason. It does not store the raw business summary in a retrievable column.
-
-This is a conservative technical policy, not a legal conclusion. Before distributing the app or adding shared/cloud research history, the LSEG agreement and the user's specific entitlements must be reviewed for display, derived-data, caching, and redistribution rights.
-
-## Model routing
-
-Planning, theme-universe auditing, and final finding selection use Groq's larger `openai/gpt-oss-120b` model when available. Repetitive bounded profile classification uses `openai/gpt-oss-20b` to reduce latency and token pressure. Python validates all model output and remains the authority for identifiers, filters, calculations, state, and execution.
+Native tests cover ticker routing, theme cleanup, the LSEG industry screen,
+product-level fit versus broad sector language, SEC counterparty rejection,
+investment evidence construction, the original five macro references, daily price
+decoding, portfolio imports, SQLite storage, and selected-history calculations.

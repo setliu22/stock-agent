@@ -103,6 +103,12 @@ struct CapsuleLabel: View {
 }
 
 extension View {
+    func stockSecondaryButton() -> some View {
+        self
+            .buttonStyle(.glass)
+            .tint(StockTheme.surfaceRaised)
+    }
+
     func stockTextField() -> some View {
         self
             .textFieldStyle(.plain)

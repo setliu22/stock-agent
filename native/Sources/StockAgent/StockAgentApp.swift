@@ -9,11 +9,14 @@ struct StockAgentApp: App {
             RootView()
                 .environment(model)
                 .preferredColorScheme(.dark)
-                .frame(minWidth: 980, minHeight: 680)
+                .frame(minWidth: 860, minHeight: 560)
         }
-        .windowStyle(.hiddenTitleBar)
+        .windowStyle(.titleBar)
         .windowToolbarStyle(.unifiedCompact(showsTitle: false))
         .windowResizability(.contentMinSize)
+        .defaultSize(width: 960, height: 600)
+        .defaultPosition(.center)
+        .restorationBehavior(.disabled)
         .commands {
             CommandGroup(replacing: .newItem) {}
             CommandMenu("Research") {

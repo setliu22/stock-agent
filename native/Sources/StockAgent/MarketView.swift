@@ -31,7 +31,7 @@ struct MarketView: View {
                             Label("Refresh", systemImage: "arrow.clockwise")
                         }
                     }
-                    .buttonStyle(.glass)
+                    .stockSecondaryButton()
                     .disabled(model.isLoadingMarket)
                     .help("Refresh all five macro signals from FRED")
                 }
@@ -61,6 +61,7 @@ struct MarketView: View {
             .frame(maxWidth: 1100, alignment: .leading)
         }
         .scrollIndicators(.never)
+        .defaultScrollAnchor(.top)
     }
 
     private func regimeHero(_ regime: MarketRegime) -> some View {

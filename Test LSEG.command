@@ -12,9 +12,9 @@ if [[ ! -x "$PYTHON" ]]; then
 fi
 
 echo "Keep LSEG Workspace open and signed in."
-echo "Testing: fixed workflow -> broad screen -> finalist deep dives -> deterministic report"
+echo "Checking the native app's read-only Workspace connection."
 echo
-"$PYTHON" "$PROJECT_ROOT/test_lseg_connection.py"
+print -r -- '{"operation":"status"}' | "$PYTHON" "$PROJECT_ROOT/scripts/lseg_bridge.py"
 STATUS=$?
 echo
 read -k 1 "?Press any key to close."

@@ -13,7 +13,7 @@ public enum PortfolioImporter {
     ]
     private static let dateKeys = ["purchasedat", "purchasedate", "acquiredat", "date"]
 
-    public static func parseJSON(_ rawText: String, now: Date = .now) throws -> [Purchase] {
+    public static func parseJSON(_ rawText: String) throws -> [Purchase] {
         var text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         if text.hasPrefix("```") {
             let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
@@ -46,12 +46,13 @@ public enum PortfolioImporter {
             guard let price = number(first(normalized, keys: priceKeys)), price >= 0 else {
                 throw StockAgentError.validation("Position \(index + 1) (\(ticker)): purchase price is required.")
             }
-            let rawDate = string(first(normalized, keys: dateKeys))
-            let date = rawDate.flatMap(parseDate) ?? now
-            var note = string(first(normalized, keys: ["note", "notes"])) ?? ""
-            if rawDate == nil {
-                note += note.isEmpty ? "Imported; purchase date unavailable" : " | Imported; purchase date unavailable"
+            guard let rawDate = string(first(normalized, keys: dateKeys)),
+                  let date = parseDate(rawDate) else {
+                throw StockAgentError.validation(
+                    "Position \(index + 1) (\(ticker)): purchase date is required in YYYY-MM-DD format."
+                )
             }
+            let note = string(first(normalized, keys: ["note", "notes"])) ?? ""
             return Purchase(
                 ticker: ticker,
                 quantity: quantity,

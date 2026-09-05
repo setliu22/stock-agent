@@ -174,10 +174,16 @@ enum ResearchThemeLanguage {
     }
 
     private static func stem(_ value: String) -> String {
+        if value == "aerial" { return "air" }
         if value.count > 5, value.hasSuffix("ies") {
             return String(value.dropLast(3)) + "y"
         }
-        if value.count > 4, value.hasSuffix("s"), !value.hasSuffix("ss") {
+        if value.count > 4,
+           value.hasSuffix("s"),
+           !value.hasSuffix("ss"),
+           !value.hasSuffix("us"),
+           !value.hasSuffix("is"),
+           !value.hasSuffix("ous") {
             return String(value.dropLast())
         }
         return value
@@ -284,40 +290,16 @@ public struct ResearchPlanner: Sendable {
         }
 
         let tickers = groundedTickerSymbols(in: question)
-        let mode: ResearchMode
-        if !tickers.isEmpty {
-            mode = .named
-        } else if looksLikeMarketNews(question) {
-            mode = .marketNews
-        } else {
-            mode = .discovery
-        }
+        let mode: ResearchMode = tickers.isEmpty ? .discovery : .named
 
-        var capabilities = Set<String>()
-        let analyses = Set<String>()
-        let objectives = [String]()
         var universes = [String]()
         var reasons = [ProposedItem]()
         var warning: String?
 
         switch mode {
         case .named:
-            capabilities.formUnion([
-                "company_profile",
-                "profitability_snapshot",
-                "balance_sheet_snapshot",
-                "regulatory_filings",
-            ])
-        case .marketNews:
-            capabilities.insert("market_news")
+            break
         case .discovery:
-            capabilities.formUnion([
-                "candidate_discovery",
-                "company_profile",
-                "profitability_snapshot",
-                "balance_sheet_snapshot",
-                "regulatory_filings",
-            ])
             do {
                 let mapping = try await themeMapper.map(theme: question, question: question)
                 reasons = mapping.matches
@@ -335,9 +317,7 @@ public struct ResearchPlanner: Sendable {
                             universeReasons: reasons,
                             theme: normalizedTheme,
                             searchTerms: mapping.searchTerms,
-                            capabilityIDs: capabilities,
-                            analysisIDs: analyses,
-                            selectionObjectives: objectives,
+                            resultCount: 3,
                             warning: warning
                         )
                     )
@@ -355,34 +335,28 @@ public struct ResearchPlanner: Sendable {
             universes: universes,
             universeReasons: reasons,
             theme: mode == .discovery ? question : nil,
-            resultCount: mode == .named ? max(1, tickers.count) : 5,
-            capabilityIDs: capabilities,
-            analysisIDs: analyses,
-            selectionObjectives: objectives,
+            resultCount: mode == .named ? max(1, tickers.count) : 3,
             warning: warning
         )
         return try ResearchRegistry.validate(proposal)
     }
 
     public func groundedTickerSymbols(in question: String) -> [String] {
-        let pattern = #"(?<![A-Za-z0-9])\$?([A-Z]{1,5}(?:\.[A-Z])?)(?![A-Za-z0-9])"#
+        let pattern = #"(?<![A-Za-z0-9])(?:\$([A-Za-z]{1,5}(?:\.[A-Za-z])?)|([A-Z]{1,5}(?:\.[A-Z])?))(?![A-Za-z0-9])"#
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
         let range = NSRange(question.startIndex..., in: question)
         let excluded = Set(["A", "AI", "I", "US", "THE", "AND", "OR", "ETF", "CEO"])
         var seen = Set<String>()
         return regex.matches(in: question, range: range).compactMap { match in
-            guard let capture = Range(match.range(at: 1), in: question) else { return nil }
-            let symbol = String(question[capture])
+            let capture = [1, 2].lazy.compactMap { index -> Range<String.Index>? in
+                guard match.range(at: index).location != NSNotFound else { return nil }
+                return Range(match.range(at: index), in: question)
+            }.first
+            guard let capture else { return nil }
+            let symbol = String(question[capture]).uppercased()
             guard !excluded.contains(symbol), seen.insert(symbol).inserted else { return nil }
             return symbol
         }
     }
 
-    private func looksLikeMarketNews(_ question: String) -> Bool {
-        let normalized = question.lowercased()
-        let marketWords = ["market", "markets", "wall street", "stocks overall"]
-        let newsWords = ["news", "headlines", "today", "developments", "happening"]
-        return marketWords.contains(where: normalized.contains)
-            && newsWords.contains(where: normalized.contains)
-    }
 }

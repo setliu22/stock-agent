@@ -86,12 +86,16 @@ public struct PortfolioValuePoint: Hashable, Identifiable, Sendable {
     public let date: Date
     public let value: Double
     public var id: Date { date }
+
+    public init(date: Date, value: Double) {
+        self.date = date
+        self.value = value
+    }
 }
 
 public enum ResearchMode: String, Codable, CaseIterable, Hashable, Sendable {
     case named
     case discovery
-    case marketNews
 }
 
 public struct ProposedItem: Codable, Hashable, Identifiable, Sendable {
@@ -114,11 +118,6 @@ public struct ResearchProposal: Codable, Hashable, Identifiable, Sendable {
     public var theme: String?
     public var searchTerms: [String]
     public var resultCount: Int
-    public var lookbackDays: Int
-    public var benchmark: String?
-    public var capabilityIDs: Set<String>
-    public var analysisIDs: Set<String>
-    public var selectionObjectives: [String]
     public var warning: String?
 
     public init(
@@ -130,12 +129,7 @@ public struct ResearchProposal: Codable, Hashable, Identifiable, Sendable {
         universeReasons: [ProposedItem] = [],
         theme: String? = nil,
         searchTerms: [String] = [],
-        resultCount: Int = 5,
-        lookbackDays: Int = 365,
-        benchmark: String? = nil,
-        capabilityIDs: Set<String> = [],
-        analysisIDs: Set<String> = [],
-        selectionObjectives: [String] = [],
+        resultCount: Int = 3,
         warning: String? = nil
     ) {
         self.id = id
@@ -147,59 +141,7 @@ public struct ResearchProposal: Codable, Hashable, Identifiable, Sendable {
         self.theme = theme
         self.searchTerms = searchTerms
         self.resultCount = resultCount
-        self.lookbackDays = lookbackDays
-        self.benchmark = benchmark
-        self.capabilityIDs = capabilityIDs
-        self.analysisIDs = analysisIDs
-        self.selectionObjectives = selectionObjectives
         self.warning = warning
-    }
-}
-
-public struct ResearchMessage: Identifiable, Hashable, Sendable {
-    public enum Role: Sendable { case user, assistant, status }
-    public let id: UUID
-    public let role: Role
-    public let text: String
-
-    public init(id: UUID = UUID(), role: Role, text: String) {
-        self.id = id
-        self.role = role
-        self.text = text
-    }
-}
-
-public struct ResearchCapability: Identifiable, Hashable, Sendable {
-    public let id: String
-    public let label: String
-    public let source: String
-    public let modes: Set<ResearchMode>
-    public let required: Bool
-
-    public init(
-        id: String,
-        label: String,
-        source: String,
-        modes: Set<ResearchMode>,
-        required: Bool = false
-    ) {
-        self.id = id
-        self.label = label
-        self.source = source
-        self.modes = modes
-        self.required = required
-    }
-}
-
-public struct ResearchAnalysis: Identifiable, Hashable, Sendable {
-    public let id: String
-    public let label: String
-    public let requiredCapabilities: Set<String>
-
-    public init(id: String, label: String, requiredCapabilities: Set<String>) {
-        self.id = id
-        self.label = label
-        self.requiredCapabilities = requiredCapabilities
     }
 }
 
@@ -220,7 +162,59 @@ public enum ExposureStrength: String, Codable, Hashable, Sendable {
     case adjacent = "Adjacent exposure"
     case incidental = "Incidental mention"
     case unreviewed = "Needs review"
-    case profile = "SEC data"
+    case profile = "Company research"
+}
+
+public enum InvestmentStance: String, Hashable, Sendable {
+    case constructive = "Constructive"
+    case mixed = "Mixed"
+    case cautious = "Cautious"
+    case insufficient = "More evidence needed"
+}
+
+public struct InvestmentEvidenceItem: Identifiable, Hashable, Sendable {
+    public let id: String
+    public let label: String
+    public let detail: String
+    public let source: String
+
+    public init(id: String, label: String, detail: String, source: String) {
+        self.id = id
+        self.label = label
+        self.detail = detail
+        self.source = source
+    }
+}
+
+public struct InvestmentCasePoint: Identifiable, Hashable, Sendable {
+    public let id: UUID
+    public let text: String
+    public let evidence: [InvestmentEvidenceItem]
+
+    public init(id: UUID = UUID(), text: String, evidence: [InvestmentEvidenceItem]) {
+        self.id = id
+        self.text = text
+        self.evidence = evidence
+    }
+}
+
+public struct InvestmentCase: Hashable, Sendable {
+    public let stance: InvestmentStance
+    public let summary: String
+    public let reasons: [InvestmentCasePoint]
+    public let watchouts: [InvestmentCasePoint]
+
+    public init(
+        stance: InvestmentStance,
+        summary: String,
+        reasons: [InvestmentCasePoint],
+        watchouts: [InvestmentCasePoint]
+    ) {
+        self.stance = stance
+        self.summary = summary
+        self.reasons = reasons
+        self.watchouts = watchouts
+    }
 }
 
 public struct ResearchCompanyResult: Identifiable, Hashable, Sendable {
@@ -230,6 +224,7 @@ public struct ResearchCompanyResult: Identifiable, Hashable, Sendable {
     public let evidence: [String]
     public let snapshot: CompanySnapshot?
     public let sources: [String]
+    public let investmentCase: InvestmentCase?
 
     public var id: String { candidate.id }
 
@@ -239,7 +234,8 @@ public struct ResearchCompanyResult: Identifiable, Hashable, Sendable {
         thesis: String,
         evidence: [String],
         snapshot: CompanySnapshot?,
-        sources: [String] = []
+        sources: [String] = [],
+        investmentCase: InvestmentCase? = nil
     ) {
         self.candidate = candidate
         self.exposure = exposure
@@ -247,6 +243,7 @@ public struct ResearchCompanyResult: Identifiable, Hashable, Sendable {
         self.evidence = evidence
         self.snapshot = snapshot
         self.sources = sources
+        self.investmentCase = investmentCase
     }
 }
 

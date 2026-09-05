@@ -174,11 +174,18 @@ public actor SECService {
         var snippets = [String]()
         var fingerprints = Set<String>()
         for range in ordered {
-            let start = text.index(range.lowerBound, offsetBy: -220, limitedBy: text.startIndex) ?? text.startIndex
-            let end = text.index(range.upperBound, offsetBy: 340, limitedBy: text.endIndex) ?? text.endIndex
+            let rawStart = text.index(range.lowerBound, offsetBy: -260, limitedBy: text.startIndex) ?? text.startIndex
+            let rawEnd = text.index(range.upperBound, offsetBy: 420, limitedBy: text.endIndex) ?? text.endIndex
+            let prefix = text[rawStart..<range.lowerBound]
+            let start = prefix.lastIndex(where: { ".!?•".contains($0) })
+                .map { text.index(after: $0) } ?? rawStart
+            let suffix = text[range.upperBound..<rawEnd]
+            let end = suffix.firstIndex(where: { ".!?•".contains($0) })
+                .map { text.index(after: $0) } ?? rawEnd
             let snippet = String(text[start..<end])
                 .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !Self.looksLikeTechnicalMarkup(snippet) else { continue }
             let fingerprint = String(snippet.lowercased().prefix(90))
             guard snippet.count > 80, fingerprints.insert(fingerprint).inserted else { continue }
             snippets.append(snippet)
@@ -316,6 +323,12 @@ public actor SECService {
             .replacingOccurrences(of: #"(?s)<[^>]+>"#, with: " ", options: .regularExpression)
             .replacingOccurrences(of: "&nbsp;", with: " ")
             .replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: "&ldquo;", with: "“")
+            .replacingOccurrences(of: "&rdquo;", with: "”")
+            .replacingOccurrences(of: "&lsquo;", with: "‘")
+            .replacingOccurrences(of: "&rsquo;", with: "’")
+            .replacingOccurrences(of: "&ndash;", with: "–")
+            .replacingOccurrences(of: "&mdash;", with: "—")
             .replacingOccurrences(of: "&#160;", with: " ")
             .replacingOccurrences(of: "&#8226;", with: "•")
             .replacingOccurrences(of: "&#8217;", with: "’")
@@ -324,6 +337,16 @@ public actor SECService {
             .replacingOccurrences(of: "&#8220;", with: "“")
             .replacingOccurrences(of: "&#8221;", with: "”")
             .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+    }
+
+    private static func looksLikeTechnicalMarkup(_ text: String) -> Bool {
+        let lowered = text.lowercased()
+        let markers = ["us-gaap:", "xbrli:", "contextref", "schemaref", "unitref", "member"]
+        let markerCount = markers.reduce(0) { count, marker in
+            count + lowered.components(separatedBy: marker).count - 1
+        }
+        let numericTokens = text.split(whereSeparator: { !$0.isNumber }).filter { $0.count >= 6 }.count
+        return markerCount >= 2 || numericTokens >= 8
     }
 
     private static func riskFactorSection(in text: String) -> String? {

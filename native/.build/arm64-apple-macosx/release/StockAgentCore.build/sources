@@ -1,5 +1,6 @@
 /Users/a../stock-agent/native/Sources/StockAgentCore/AppConfiguration.swift
 /Users/a../stock-agent/native/Sources/StockAgentCore/Domain.swift
+/Users/a../stock-agent/native/Sources/StockAgentCore/InvestmentCase.swift
 /Users/a../stock-agent/native/Sources/StockAgentCore/LSEGWorkspaceService.swift
 /Users/a../stock-agent/native/Sources/StockAgentCore/MacroReference.swift
 /Users/a../stock-agent/native/Sources/StockAgentCore/MarketDataServices.swift

@@ -4,6 +4,7 @@ import SwiftUI
 
 struct AccountView: View {
     @Environment(AppModel.self) private var model
+    @State private var showAdvanced = false
 
     var body: some View {
         @Bindable var model = model
@@ -12,23 +13,11 @@ struct AccountView: View {
                 PageHeader(
                     eyebrow: "",
                     title: "Settings",
-                    subtitle: "Data sources and filing access."
+                    subtitle: "Connections used by research and portfolio views."
                 )
 
-                configurationSection($model.configuration)
-
-                dataSources
-
-                HStack {
-                    Text("Portfolio database: \(model.databaseURL.path)")
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(StockTheme.muted)
-                        .lineLimit(2)
-                        .textSelection(.enabled)
-                    Spacer()
-                    Button("Save settings") { model.saveConfiguration() }
-                        .buttonStyle(.glassProminent)
-                }
+                connections
+                advancedSettings($model.configuration)
             }
             .padding(.horizontal, 38)
             .padding(.top, 32)
@@ -36,14 +25,35 @@ struct AccountView: View {
             .frame(maxWidth: 1040, alignment: .leading)
         }
         .scrollIndicators(.never)
+        .defaultScrollAnchor(.top)
     }
 
-    private func configurationSection(_ configuration: Binding<AccountConfiguration>) -> some View {
+    private func advancedSettings(_ configuration: Binding<AccountConfiguration>) -> some View {
         VStack(alignment: .leading, spacing: 13) {
-            Text("Filing access")
+            Text("Advanced")
                 .font(.system(size: 19, weight: .bold, design: .rounded))
-            GlassPanel(cornerRadius: 27, padding: 23) {
-                VStack(spacing: 19) {
+            GlassPanel(cornerRadius: 27, padding: 0) {
+                VStack(spacing: 0) {
+                    Button {
+                        withAnimation(.snappy(duration: 0.22)) { showAdvanced.toggle() }
+                    } label: {
+                        HStack {
+                            Text("Request identity and local data")
+                                .font(.system(size: 13, weight: .semibold))
+                            Spacer()
+                            Image(systemName: showAdvanced ? "chevron.up" : "chevron.down")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(StockTheme.muted)
+                        }
+                        .padding(.horizontal, 22)
+                        .frame(height: 58)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+
+                    if showAdvanced {
+                        Divider().overlay(StockTheme.border.opacity(0.45)).padding(.horizontal, 20)
+                        VStack(alignment: .leading, spacing: 18) {
                     SettingsField(
                         title: "SEC CONTACT",
                         explanation: "Included in SEC requests for fair-access identification. Use an app name and contact email."
@@ -51,28 +61,35 @@ struct AccountView: View {
                         TextField("Stock Agent your@email.com", text: configuration.secUserAgent)
                             .stockTextField()
                     }
+                            Text("Portfolio database: \(model.databaseURL.path)")
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(StockTheme.muted)
+                                .lineLimit(2)
+                                .textSelection(.enabled)
+                            HStack {
+                                Spacer()
+                                Button("Save") { model.saveConfiguration() }
+                                    .buttonStyle(.glassProminent)
+                            }
+                        }
+                        .padding(22)
+                    }
                 }
             }
         }
     }
 
-    private var dataSources: some View {
+    private var connections: some View {
         VStack(alignment: .leading, spacing: 13) {
-            Text("Sources")
+            Text("Connections")
                 .font(.system(size: 19, weight: .bold, design: .rounded))
             GlassPanel(cornerRadius: 27, padding: 0) {
                 VStack(spacing: 0) {
-                    SourceRow(icon: "building.2.crop.circle", title: "LSEG Workspace", detail: "Company data and industry screens", status: lsegStatus)
+                    SourceRow(icon: "building.2.crop.circle", title: "LSEG Workspace", detail: "Company fundamentals and industry screening", status: lsegStatus)
                     Divider().overlay(StockTheme.border.opacity(0.45)).padding(.horizontal, 20)
-                    SourceRow(icon: "building.columns", title: "SEC EDGAR", detail: "Filings and company facts", status: "Ready")
+                    SourceRow(icon: "brain.head.profile", title: "Apple Intelligence", detail: "On-device matching and research synthesis", status: modelAvailability)
                     Divider().overlay(StockTheme.border.opacity(0.45)).padding(.horizontal, 20)
-                    SourceRow(icon: "waveform.path.ecg", title: "Federal Reserve data", detail: "Macro indicators", status: "Ready")
-                    Divider().overlay(StockTheme.border.opacity(0.45)).padding(.horizontal, 20)
-                    SourceRow(icon: "brain.head.profile", title: "Apple on-device model", detail: "Semantic trend matching · availability depends on Apple Intelligence", status: modelAvailability)
-                    Divider().overlay(StockTheme.border.opacity(0.45)).padding(.horizontal, 20)
-                    SourceRow(icon: "chart.line.uptrend.xyaxis", title: "Market prices", detail: "Daily portfolio history", status: "Ready")
-                    Divider().overlay(StockTheme.border.opacity(0.45)).padding(.horizontal, 20)
-                    SourceRow(icon: "doc.text", title: "CSV and manual prices", detail: "Offline fallback", status: "Ready")
+                    SourceRow(icon: "network", title: "Public sources", detail: "SEC filings, macro signals, and portfolio prices", status: "Ready")
                 }
             }
         }

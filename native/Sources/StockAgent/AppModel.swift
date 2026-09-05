@@ -15,7 +15,6 @@ final class AppModel {
 
     var purchases = [Purchase]()
     var holdings = [Holding]()
-    var portfolioHistory = [PortfolioValuePoint]()
     var priceHistoryByTicker = [String: [PricePoint]]()
     var selectedTickers = Set<String>()
     var isLoadingPortfolio = false
@@ -92,7 +91,7 @@ final class AppModel {
                     ProposedItem(id: "Semiconductors", reason: "Processors and sensing components can enable onboard autonomy."),
                 ],
                 theme: "autonomous drones",
-                capabilityIDs: ["macro_context", "candidate_discovery", "company_profile", "valuation_snapshot", "profitability_snapshot", "balance_sheet_snapshot"]
+                resultCount: 3
             )
         }
     }
@@ -128,21 +127,6 @@ final class AppModel {
         self.proposal = proposal
     }
 
-    func toggleCapability(_ id: String) {
-        guard var proposal,
-              let capability = ResearchRegistry.capability(id: id), !capability.required else { return }
-        if proposal.capabilityIDs.contains(id) { proposal.capabilityIDs.remove(id) }
-        else { proposal.capabilityIDs.insert(id) }
-        self.proposal = proposal
-    }
-
-    func toggleAnalysis(_ id: String) {
-        guard var proposal else { return }
-        if proposal.analysisIDs.contains(id) { proposal.analysisIDs.remove(id) }
-        else { proposal.analysisIDs.insert(id) }
-        self.proposal = proposal
-    }
-
     func updateResultCount(_ value: Int) {
         proposal?.resultCount = min(8, max(1, value))
     }
@@ -165,10 +149,8 @@ final class AppModel {
         do {
             async let loadedPurchases = portfolioStore.purchases()
             async let loadedHoldings = portfolioStore.holdings()
-            async let loadedHistory = portfolioStore.portfolioHistory()
             purchases = try await loadedPurchases
             holdings = try await loadedHoldings
-            portfolioHistory = try await loadedHistory
             var histories = [String: [PricePoint]]()
             for ticker in Set(purchases.map(\.ticker)) {
                 histories[ticker] = try await portfolioStore.priceHistory(ticker: ticker)
@@ -200,11 +182,11 @@ final class AppModel {
         else { selectedTickers.insert(ticker) }
     }
 
-    func valueHistory(for tickers: Set<String>) -> [PortfolioValuePoint] {
-        let included = tickers.isEmpty ? Set(purchases.map(\.ticker)) : tickers
-        let lots = purchases.filter { included.contains($0.ticker) }
-        let histories = priceHistoryByTicker.filter { included.contains($0.key) }
-        return PortfolioAnalytics.valueHistory(purchases: lots, priceHistory: histories)
+    func portfolioPerformanceIndex() -> [PortfolioValuePoint] {
+        PortfolioAnalytics.timeWeightedIndex(
+            purchases: purchases,
+            priceHistory: priceHistoryByTicker
+        )
     }
 
     func importPortfolioJSON(_ text: String) async -> Bool {

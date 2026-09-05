@@ -32,6 +32,7 @@ struct PortfolioView: View {
             .frame(maxWidth: 1180, alignment: .leading)
         }
         .scrollIndicators(.never)
+        .defaultScrollAnchor(.top)
     }
 
     private var portfolioActions: some View {
@@ -42,7 +43,7 @@ struct PortfolioView: View {
                 } label: {
                     Label("Import", systemImage: "square.and.arrow.down")
                 }
-                .buttonStyle(.glass)
+                .stockSecondaryButton()
                 .help("Import purchase lots from JSON")
 
                 Button {
@@ -54,7 +55,7 @@ struct PortfolioView: View {
                         Label("Refresh", systemImage: "arrow.clockwise")
                     }
                 }
-                .buttonStyle(.glass)
+                .stockSecondaryButton()
                 .disabled(model.isRefreshingPrices || model.holdings.isEmpty)
                 .help("Refresh daily prices for every holding")
 
@@ -178,13 +179,13 @@ private struct PortfolioChart: View {
                     Spacer()
                     if !model.selectedTickers.isEmpty {
                         Button("Clear selection") { model.selectedTickers.removeAll() }
-                            .buttonStyle(.glass)
+                            .stockSecondaryButton()
                             .help("Show the full portfolio")
                     }
                     rangeSelector
                 }
 
-                if visibleSeries.allSatisfy({ $0.points.isEmpty }) {
+                if chartSeries.allSatisfy({ $0.points.isEmpty }) {
                     ContentUnavailableView(
                         model.isRefreshingPrices ? "Loading price history" : "No chart data yet",
                         systemImage: "chart.line.uptrend.xyaxis",
@@ -195,7 +196,7 @@ private struct PortfolioChart: View {
                 } else {
                     if model.selectedTickers.count > 1 {
                         HStack(spacing: 15) {
-                            ForEach(visibleSeries) { series in
+                            ForEach(chartSeries) { series in
                                 HStack(spacing: 5) {
                                     Circle().fill(series.color).frame(width: 7, height: 7)
                                     Text(series.id).font(.system(size: 10, weight: .semibold))
@@ -204,7 +205,7 @@ private struct PortfolioChart: View {
                         }
                     }
                     Chart {
-                        ForEach(visibleSeries) { series in
+                        ForEach(chartSeries) { series in
                             ForEach(series.points) { point in
                                 if visibleSeries.count == 1 {
                                     AreaMark(
@@ -249,7 +250,11 @@ private struct PortfolioChart: View {
                     .chartYAxis {
                         AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { value in
                             AxisGridLine().foregroundStyle(StockTheme.border.opacity(0.22))
-                            AxisValueLabel()
+                            AxisValueLabel {
+                                if let percentage = value.as(Double.self) {
+                                    Text("\(percentage, specifier: "%+.1f")%")
+                                }
+                            }
                                 .foregroundStyle(StockTheme.muted)
                         }
                     }
@@ -279,19 +284,19 @@ private struct PortfolioChart: View {
     }
 
     private var chartTitle: String {
-        if model.selectedTickers.isEmpty { return "Portfolio value" }
+        if model.selectedTickers.isEmpty { return "Portfolio performance" }
         if model.selectedTickers.count == 1 { return model.selectedTickers.first! }
         return "Selected positions"
     }
 
     private var chartSubtitle: String {
-        if model.selectedTickers.isEmpty { return "Select holdings below to isolate them" }
-        return model.selectedTickers.sorted().joined(separator: " · ")
+        if model.selectedTickers.isEmpty { return "Select holdings below to compare returns" }
+        return model.selectedTickers.sorted().joined(separator: " · ") + " · normalized return"
     }
 
     private var rawSeries: [Series] {
         if model.selectedTickers.isEmpty {
-            return [Series(id: "Portfolio", points: model.valueHistory(for: []), color: StockTheme.accentBright)]
+            return [Series(id: "Portfolio", points: model.portfolioPerformanceIndex(), color: StockTheme.accentBright)]
         }
         let palette: [Color] = [
             StockTheme.accentBright,
@@ -304,7 +309,9 @@ private struct PortfolioChart: View {
             guard model.holdings.contains(where: { $0.ticker == ticker }) else { return nil }
             return Series(
                 id: ticker,
-                points: model.valueHistory(for: [ticker]),
+                points: (model.priceHistoryByTicker[ticker] ?? []).map {
+                    PortfolioValuePoint(date: $0.date, value: $0.close)
+                },
                 color: palette[index % palette.count]
             )
         }
@@ -325,6 +332,32 @@ private struct PortfolioChart: View {
         }
         return all.map { series in
             Series(id: series.id, points: series.points.filter { $0.date >= cutoff }, color: series.color)
+        }
+    }
+
+    private var chartSeries: [Series] {
+        return visibleSeries.map { series in
+            let baselineDate = model.purchases
+                .filter { $0.ticker == series.id }
+                .map(\.purchasedAt)
+                .min()
+            let points = baselineDate.map { baseline in
+                series.points.filter { $0.date >= baseline }
+            } ?? series.points
+            let first = points.first
+            guard let first, first.value != 0 else {
+                return Series(id: series.id, points: [], color: series.color)
+            }
+            return Series(
+                id: series.id,
+                points: points.map { point in
+                    PortfolioValuePoint(
+                        date: point.date,
+                        value: (point.value - first.value) / first.value * 100
+                    )
+                },
+                color: series.color
+            )
         }
     }
 
@@ -559,7 +592,7 @@ private struct AddPurchasePanel: View {
                 LabeledField(label: "NOTE") { TextField("Optional", text: $note).stockTextField() }
             }
         } footer: {
-            Button("Cancel") { model.overlay = nil }.buttonStyle(.glass)
+            Button("Cancel") { model.overlay = nil }.stockSecondaryButton()
             Button("Add lot") {
                 Task {
                     _ = await model.addPurchase(
@@ -600,7 +633,7 @@ private struct ImportPortfolioPanel: View {
             .background(StockTheme.background.opacity(0.4), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(StockTheme.border.opacity(0.7), lineWidth: 0.7))
         } footer: {
-            Button("Cancel") { model.overlay = nil }.buttonStyle(.glass)
+            Button("Cancel") { model.overlay = nil }.stockSecondaryButton()
             Button("Import") { Task { _ = await model.importPortfolioJSON(json) } }
                 .buttonStyle(.glassProminent)
                 .keyboardShortcut(.defaultAction)
@@ -620,7 +653,7 @@ private struct ManualPricePanel: View {
                 TextField("0.00", text: $price).stockTextField()
             }
         } footer: {
-            Button("Cancel") { model.overlay = nil }.buttonStyle(.glass)
+            Button("Cancel") { model.overlay = nil }.stockSecondaryButton()
             Button("Save price") {
                 Task { _ = await model.setManualPrice(ticker: ticker, price: Double(price) ?? -1) }
             }

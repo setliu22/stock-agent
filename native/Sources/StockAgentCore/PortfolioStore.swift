@@ -255,16 +255,6 @@ public actor PortfolioStore {
         return output
     }
 
-    public func portfolioHistory() throws -> [PortfolioValuePoint] {
-        let purchases = try purchases()
-        guard !purchases.isEmpty else { return [] }
-        var history = [String: [PricePoint]]()
-        for ticker in Set(purchases.map(\.ticker)) {
-            history[ticker] = try priceHistory(ticker: ticker)
-        }
-        return PortfolioAnalytics.valueHistory(purchases: purchases, priceHistory: history)
-    }
-
     private func currentPrices() throws -> [String: Double] {
         let database = try Self.open(databaseURL)
         defer { sqlite3_close(database) }
@@ -370,44 +360,46 @@ public actor PortfolioStore {
 }
 
 public enum PortfolioAnalytics {
-    public static func valueHistory(
+    public static func timeWeightedIndex(
         purchases: [Purchase],
         priceHistory: [String: [PricePoint]]
     ) -> [PortfolioValuePoint] {
-        let priceDates = priceHistory.values.flatMap { $0.map(\.date) }
-        let dates = Set(priceDates + purchases.map(\.purchasedAt)).sorted()
-        guard !dates.isEmpty else { return [] }
+        let sortedPurchases = purchases.sorted { $0.purchasedAt < $1.purchasedAt }
         let sortedHistory = priceHistory.mapValues { $0.sorted { $0.date < $1.date } }
-        return dates.compactMap { date in
-            var value = 0.0
-            var hasValue = false
-            for purchase in purchases where purchase.purchasedAt <= date {
-                let latestClose = sortedHistory[purchase.ticker]?
-                    .last(where: { $0.date <= date })?.close
-                let price = latestClose ?? purchase.price
-                value += purchase.quantity * price
-                hasValue = true
+        let dates = Set(
+            sortedHistory.values.flatMap { $0.map(\.date) } + sortedPurchases.map(\.purchasedAt)
+        ).sorted()
+        guard !dates.isEmpty else { return [] }
+
+        var previousDate: Date?
+        var previousValue: Double?
+        var index = 100.0
+        var output = [PortfolioValuePoint]()
+        for date in dates {
+            let active = sortedPurchases.filter { $0.purchasedAt <= date }
+            guard !active.isEmpty else { continue }
+            let value = active.reduce(0.0) { total, purchase in
+                let close = sortedHistory[purchase.ticker]?
+                    .last(where: { $0.date <= date })?.close ?? purchase.price
+                return total + purchase.quantity * close
             }
-            return hasValue ? PortfolioValuePoint(date: date, value: value) : nil
+            if let previousDate, let previousValue, previousValue > 0 {
+                let contributions = sortedPurchases
+                    .filter { $0.purchasedAt > previousDate && $0.purchasedAt <= date }
+                    .reduce(0.0) { $0 + $1.quantity * $1.price }
+                let adjustedValue = value - contributions
+                let periodFactor = adjustedValue / previousValue
+                if periodFactor.isFinite, periodFactor >= 0 {
+                    index *= periodFactor
+                }
+            }
+            if index.isFinite {
+                output.append(PortfolioValuePoint(date: date, value: index))
+            }
+            previousDate = date
+            previousValue = value
         }
+        return output
     }
 
-    public static func maximumDrawdown(_ points: [PricePoint]) -> Double? {
-        guard let first = points.first, first.close > 0 else { return nil }
-        var peak = first.close
-        var worst = 0.0
-        for point in points {
-            peak = max(peak, point.close)
-            guard peak > 0 else { continue }
-            worst = min(worst, (point.close - peak) / peak)
-        }
-        return worst * 100
-    }
-
-    public static func totalReturn(_ points: [PricePoint]) -> Double? {
-        guard let first = points.first?.close, let last = points.last?.close, first > 0 else {
-            return nil
-        }
-        return (last / first - 1) * 100
-    }
 }

@@ -3,13 +3,7 @@ import SwiftUI
 
 struct InlineProposalReview: View {
     @Environment(AppModel.self) private var model
-    @State private var tab: ProposalTab = .plan
-
-    private enum ProposalTab: String, CaseIterable, Identifiable {
-        case plan = "Plan"
-        case data = "Data & calculations"
-        var id: String { rawValue }
-    }
+    @State private var showAllUniverses = false
 
     var body: some View {
         ZStack {
@@ -23,16 +17,9 @@ struct InlineProposalReview: View {
                     VStack(spacing: 0) {
                         proposalHeader(proposal)
                         Divider().overlay(StockTheme.border.opacity(0.7))
-                        proposalTabs
-                        Divider().overlay(StockTheme.border.opacity(0.55))
 
                         ScrollView {
-                            Group {
-                                switch tab {
-                                case .plan: planContent(proposal)
-                                case .data: dataContent(proposal)
-                                }
-                            }
+                            planContent(proposal)
                             .padding(.horizontal, 28)
                             .padding(.vertical, 22)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -47,7 +34,7 @@ struct InlineProposalReview: View {
                     .overlay(RoundedRectangle(cornerRadius: 32, style: .continuous).stroke(Color.white.opacity(0.085), lineWidth: 0.8))
                     .shadow(color: .black.opacity(0.48), radius: 42, y: 24)
                 }
-                .frame(maxWidth: 900, maxHeight: 700)
+                .frame(maxWidth: 760, maxHeight: 680)
                 .padding(32)
                 .onTapGesture {}
             }
@@ -58,9 +45,9 @@ struct InlineProposalReview: View {
     private func proposalHeader(_ proposal: ResearchProposal) -> some View {
         HStack(alignment: .top, spacing: 16) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Review proposal")
+                Text("Research plan")
                     .font(.system(size: 23, weight: .bold, design: .rounded))
-                Text("Check the scope and sources.")
+                Text("Confirm the scope before running.")
                     .font(.system(size: 12))
                     .foregroundStyle(StockTheme.muted)
             }
@@ -71,37 +58,12 @@ struct InlineProposalReview: View {
                     .font(.system(size: 11, weight: .bold))
                     .frame(width: 20, height: 20)
             }
-            .buttonStyle(.glass)
+            .stockSecondaryButton()
             .keyboardShortcut(.cancelAction)
         }
         .padding(.horizontal, 28)
         .padding(.top, 24)
         .padding(.bottom, 18)
-    }
-
-    private var proposalTabs: some View {
-        HStack(spacing: 6) {
-            ForEach(ProposalTab.allCases) { candidate in
-                Button {
-                    tab = candidate
-                } label: {
-                    Text(candidate.rawValue)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(tab == candidate ? StockTheme.text : StockTheme.muted)
-                        .padding(.horizontal, 16)
-                        .frame(height: 33)
-                        .background {
-                            if tab == candidate {
-                                Capsule().fill(StockTheme.accent.opacity(0.14))
-                            }
-                        }
-                }
-                .buttonStyle(.plain)
-            }
-            Spacer()
-        }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 10)
     }
 
     @ViewBuilder
@@ -132,9 +94,9 @@ struct InlineProposalReview: View {
                     FlowLayout(items: proposal.securities)
                 }
             case .discovery:
-                ProposalSection(title: "Search universe", subtitle: "Select up to six. The semantic matches are shown first.") {
+                ProposalSection(title: "Industries", subtitle: "Matched to the investment theme. Select up to six.") {
                     VStack(spacing: 7) {
-                        ForEach(orderedUniverses(proposal), id: \.self) { universe in
+                        ForEach(proposal.universes, id: \.self) { universe in
                             let reason = proposal.universeReasons.first(where: { $0.id == universe })?.reason
                             ChoiceRow(
                                 title: universe,
@@ -143,11 +105,24 @@ struct InlineProposalReview: View {
                                 locked: false
                             ) { model.toggleUniverse(universe) }
                         }
+                        if showAllUniverses || proposal.universes.isEmpty {
+                            ForEach(ResearchRegistry.universes.filter { !proposal.universes.contains($0) }, id: \.self) { universe in
+                                ChoiceRow(
+                                    title: universe,
+                                    subtitle: nil,
+                                    selected: false,
+                                    locked: false
+                                ) { model.toggleUniverse(universe) }
+                            }
+                        }
+                        Button(showAllUniverses ? "Show matched only" : "Choose another industry") {
+                            withAnimation(.snappy(duration: 0.22)) { showAllUniverses.toggle() }
+                        }
+                        .font(.system(size: 11, weight: .semibold))
+                        .buttonStyle(.plain)
+                        .foregroundStyle(StockTheme.accentBright)
+                        .padding(.top, 4)
                     }
-                }
-            case .marketNews:
-                ProposalSection(title: "Scope", subtitle: "Broad market developments") {
-                    CapsuleLabel(text: "Market-wide")
                 }
             }
 
@@ -166,43 +141,11 @@ struct InlineProposalReview: View {
         }
     }
 
-    @ViewBuilder
-    private func dataContent(_ proposal: ResearchProposal) -> some View {
-        VStack(alignment: .leading, spacing: 26) {
-            ProposalSection(title: "Data sources", subtitle: "Required sources are locked; optional sources can be changed.") {
-                VStack(spacing: 7) {
-                    ForEach(capabilities(for: proposal)) { capability in
-                        let selected = proposal.capabilityIDs.contains(capability.id)
-                        ChoiceRow(
-                            title: capability.label,
-                            subtitle: capability.source,
-                            selected: selected,
-                            locked: capability.required
-                        ) { model.toggleCapability(capability.id) }
-                    }
-                }
-            }
-
-            ProposalSection(title: "Calculations", subtitle: "Calculations only run when their source data is available.") {
-                VStack(spacing: 7) {
-                    ForEach(ResearchRegistry.analyses) { analysis in
-                        ChoiceRow(
-                            title: analysis.label,
-                            subtitle: analysis.requiredCapabilities.sorted().joined(separator: " · "),
-                            selected: proposal.analysisIDs.contains(analysis.id),
-                            locked: false
-                        ) { model.toggleAnalysis(analysis.id) }
-                    }
-                }
-            }
-        }
-    }
-
     private func proposalFooter(_ proposal: ResearchProposal) -> some View {
         HStack(spacing: 12) {
             Spacer()
             Button("Cancel") { model.proposal = nil }
-                .buttonStyle(.glass)
+                .stockSecondaryButton()
             Button {
                 Task { await model.runProposal() }
             } label: {
@@ -217,20 +160,10 @@ struct InlineProposalReview: View {
         .padding(.vertical, 18)
     }
 
-    private func orderedUniverses(_ proposal: ResearchProposal) -> [String] {
-        let selected = proposal.universes
-        return selected + ResearchRegistry.universes.filter { !selected.contains($0) }
-    }
-
-    private func capabilities(for proposal: ResearchProposal) -> [ResearchCapability] {
-        ResearchRegistry.capabilities.filter { $0.modes.contains(proposal.mode) }
-    }
-
     private func modeName(_ mode: ResearchMode) -> String {
         switch mode {
         case .named: "Company research"
         case .discovery: "Trend discovery"
-        case .marketNews: "Market review"
         }
     }
 }
