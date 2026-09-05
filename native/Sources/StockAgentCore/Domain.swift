@@ -4,7 +4,6 @@ public enum AppSection: String, CaseIterable, Identifiable, Sendable {
     case research = "Research"
     case portfolio = "Portfolio"
     case market = "Market"
-    case account = "Settings"
 
     public var id: String { rawValue }
 
@@ -13,7 +12,6 @@ public enum AppSection: String, CaseIterable, Identifiable, Sendable {
         case .research: "sparkle.magnifyingglass"
         case .portfolio: "chart.line.uptrend.xyaxis"
         case .market: "waveform.path.ecg"
-        case .account: "gearshape"
         }
     }
 }
@@ -44,11 +42,15 @@ public struct Purchase: Codable, Hashable, Identifiable, Sendable {
 
     public func validated() throws -> Purchase {
         guard !ticker.isEmpty else { throw StockAgentError.validation("Enter a ticker.") }
-        guard quantity > 0 else {
+        guard quantity.isFinite, quantity > 0 else {
             throw StockAgentError.validation("Shares must be greater than zero.")
         }
-        guard price >= 0 else {
-            throw StockAgentError.validation("Purchase price cannot be negative.")
+        guard price.isFinite, price >= 0, (quantity * price).isFinite else {
+            throw StockAgentError.validation("Enter a finite, nonnegative purchase price and a valid total cost.")
+        }
+        guard purchasedAt.timeIntervalSince1970.isFinite,
+              Calendar.current.startOfDay(for: purchasedAt) <= Calendar.current.startOfDay(for: .now) else {
+            throw StockAgentError.validation("Purchase date must be today or earlier.")
         }
         return self
     }
@@ -62,7 +64,11 @@ public struct Holding: Hashable, Identifiable, Sendable {
     public var currentPrice: Double?
 
     public var id: String { ticker }
-    public var marketValue: Double? { currentPrice.map { $0 * quantity } }
+    public var marketValue: Double? {
+        guard let currentPrice else { return nil }
+        let value = currentPrice * quantity
+        return value.isFinite ? value : nil
+    }
     public var gainLoss: Double? { marketValue.map { $0 - totalCost } }
     public var returnPercent: Double? {
         guard let gainLoss, totalCost != 0 else { return nil }
@@ -159,17 +165,10 @@ public struct CompanyCandidate: Identifiable, Hashable, Sendable {
 public enum ExposureStrength: String, Codable, Hashable, Sendable {
     case direct = "Direct exposure"
     case enabling = "Enabling exposure"
-    case adjacent = "Adjacent exposure"
+    case adjacent = "Potential beneficiary"
     case incidental = "Incidental mention"
     case unreviewed = "Needs review"
     case profile = "Company research"
-}
-
-public enum InvestmentStance: String, Hashable, Sendable {
-    case constructive = "Constructive"
-    case mixed = "Mixed"
-    case cautious = "Cautious"
-    case insufficient = "More evidence needed"
 }
 
 public struct InvestmentEvidenceItem: Identifiable, Hashable, Sendable {
@@ -199,18 +198,15 @@ public struct InvestmentCasePoint: Identifiable, Hashable, Sendable {
 }
 
 public struct InvestmentCase: Hashable, Sendable {
-    public let stance: InvestmentStance
     public let summary: String
     public let reasons: [InvestmentCasePoint]
     public let watchouts: [InvestmentCasePoint]
 
     public init(
-        stance: InvestmentStance,
         summary: String,
         reasons: [InvestmentCasePoint],
         watchouts: [InvestmentCasePoint]
     ) {
-        self.stance = stance
         self.summary = summary
         self.reasons = reasons
         self.watchouts = watchouts
@@ -288,6 +284,8 @@ public struct FinancialFact: Hashable, Sendable {
     public let value: Double
     public let unit: String
     public let periodEnd: Date?
+    public let periodStart: Date?
+    public let filedAt: Date?
     public let source: String
 
     public init(
@@ -295,12 +293,16 @@ public struct FinancialFact: Hashable, Sendable {
         value: Double,
         unit: String,
         periodEnd: Date?,
+        periodStart: Date? = nil,
+        filedAt: Date? = nil,
         source: String = "SEC EDGAR"
     ) {
         self.label = label
         self.value = value
         self.unit = unit
         self.periodEnd = periodEnd
+        self.periodStart = periodStart
+        self.filedAt = filedAt
         self.source = source
     }
 }

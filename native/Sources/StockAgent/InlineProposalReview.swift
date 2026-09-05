@@ -69,7 +69,7 @@ struct InlineProposalReview: View {
     @ViewBuilder
     private func planContent(_ proposal: ResearchProposal) -> some View {
         VStack(alignment: .leading, spacing: 24) {
-            ProposalSection(title: "Question", subtitle: "The exact request that will anchor the report") {
+            ProposalSection(title: "Question", subtitle: "") {
                 Text(proposal.question)
                     .font(.system(size: 15, weight: .medium))
                     .fixedSize(horizontal: false, vertical: true)
@@ -90,28 +90,26 @@ struct InlineProposalReview: View {
 
             switch proposal.mode {
             case .named:
-                ProposalSection(title: "Companies", subtitle: "Resolved ticker symbols") {
+                ProposalSection(title: "Companies", subtitle: "Tickers to research") {
                     FlowLayout(items: proposal.securities)
                 }
             case .discovery:
-                ProposalSection(title: "Industries", subtitle: "Matched to the investment theme. Select up to six.") {
+                ProposalSection(title: "Industries", subtitle: "Select up to six for LSEG screening. SEC fallback searches filing text.") {
                     VStack(spacing: 7) {
-                        ForEach(proposal.universes, id: \.self) { universe in
+                        ForEach(matchedUniverses(proposal), id: \.self) { universe in
                             let reason = proposal.universeReasons.first(where: { $0.id == universe })?.reason
                             ChoiceRow(
                                 title: universe,
                                 subtitle: reason,
-                                selected: proposal.universes.contains(universe),
-                                locked: false
+                                selected: proposal.universes.contains(universe)
                             ) { model.toggleUniverse(universe) }
                         }
                         if showAllUniverses || proposal.universes.isEmpty {
-                            ForEach(ResearchRegistry.universes.filter { !proposal.universes.contains($0) }, id: \.self) { universe in
+                            ForEach(ResearchRegistry.universes.filter { !matchedUniverses(proposal).contains($0) }, id: \.self) { universe in
                                 ChoiceRow(
                                     title: universe,
                                     subtitle: nil,
-                                    selected: false,
-                                    locked: false
+                                    selected: false
                                 ) { model.toggleUniverse(universe) }
                             }
                         }
@@ -126,23 +124,19 @@ struct InlineProposalReview: View {
                 }
             }
 
-            if proposal.mode == .discovery {
-                ProposalSection(title: "Result count", subtitle: "How many companies to return") {
-                    HStack(spacing: 16) {
-                        Stepper("\(proposal.resultCount) companies", value: Binding(
-                            get: { proposal.resultCount },
-                            set: { value in model.updateResultCount(value) }
-                        ), in: 1...8)
-                        .font(.system(size: 13, weight: .medium))
-                        Spacer()
-                    }
-                }
-            }
         }
     }
 
     private func proposalFooter(_ proposal: ResearchProposal) -> some View {
         HStack(spacing: 12) {
+            if proposal.mode == .discovery {
+                Stepper("Up to \(proposal.resultCount) companies", value: Binding(
+                    get: { proposal.resultCount }, set: { model.updateResultCount($0) }
+                ), in: 1...8)
+                .font(.system(size: 12, weight: .medium))
+                .fixedSize()
+                .help("Only companies with supporting product evidence are returned.")
+            }
             Spacer()
             Button("Cancel") { model.proposal = nil }
                 .stockSecondaryButton()
@@ -166,6 +160,12 @@ struct InlineProposalReview: View {
         case .discovery: "Trend discovery"
         }
     }
+
+    private func matchedUniverses(_ proposal: ResearchProposal) -> [String] {
+        var seen = Set<String>()
+        return (proposal.universeReasons.map(\.id) + proposal.universes)
+            .filter { seen.insert($0).inserted }
+    }
 }
 
 private struct ProposalSection<Content: View>: View {
@@ -178,10 +178,11 @@ private struct ProposalSection<Content: View>: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
                     .font(.system(size: 14, weight: .semibold))
-                Text(subtitle)
+                if !subtitle.isEmpty { Text(subtitle)
                     .font(.system(size: 11))
                     .foregroundStyle(StockTheme.muted)
                     .fixedSize(horizontal: false, vertical: true)
+                }
             }
             content
         }
@@ -192,25 +193,18 @@ private struct ChoiceRow: View {
     let title: String
     let subtitle: String?
     let selected: Bool
-    let locked: Bool
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             HStack(alignment: .top, spacing: 13) {
-                VectorCheck(selected: selected, locked: locked)
+                VectorCheck(selected: selected, locked: false)
                     .padding(.top, 1)
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 7) {
                         Text(title)
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(StockTheme.text)
-                        if locked {
-                            Text("REQUIRED")
-                                .font(.system(size: 8, weight: .bold))
-                                .tracking(0.6)
-                                .foregroundStyle(StockTheme.muted)
-                        }
                     }
                     if let subtitle, !subtitle.isEmpty {
                         Text(subtitle)
@@ -225,11 +219,10 @@ private struct ChoiceRow: View {
             .padding(.horizontal, 13)
             .padding(.vertical, 11)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(selected ? StockTheme.accent.opacity(0.07) : StockTheme.background.opacity(0.22), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 15, style: .continuous).stroke(selected ? StockTheme.accent.opacity(0.22) : StockTheme.border.opacity(0.45), lineWidth: 0.7))
+            .background(selected ? StockTheme.accent.opacity(0.07) : .clear, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
         }
         .buttonStyle(.plain)
-        .disabled(locked)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 
@@ -237,7 +230,7 @@ private struct FlowLayout: View {
     let items: [String]
 
     var body: some View {
-        HStack(spacing: 8) {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 80), alignment: .leading)], alignment: .leading, spacing: 8) {
             ForEach(items, id: \.self) { item in CapsuleLabel(text: item) }
         }
     }

@@ -1,14 +1,22 @@
 import Foundation
+import NaturalLanguage
 
 public protocol DataFetching: Sendable {
     func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse)
 }
 
 public struct URLSessionDataFetcher: DataFetching {
-    public init() {}
+    private let session: URLSession
+
+    public init() {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        session = URLSession(configuration: configuration)
+    }
 
     public func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         guard let response = response as? HTTPURLResponse else {
             throw StockAgentError.network("The data provider returned an unreadable response.")
         }
@@ -19,7 +27,7 @@ public struct URLSessionDataFetcher: DataFetching {
 public actor SECService {
     private let fetcher: any DataFetching
     private let userAgent: String
-    private var lastRequest: ContinuousClock.Instant?
+    private var nextRequestTime: ContinuousClock.Instant?
     private var tickerCache: [TickerRecord]?
 
     public init(
@@ -159,39 +167,49 @@ public actor SECService {
            let section = Self.riskFactorSection(in: text) {
             return Self.sectionExcerpts(section, limit: limit)
         }
-        let lower = text.lowercased()
         var ranges = [Range<String.Index>]()
         for term in terms {
-            var cursor = lower.startIndex
-            while cursor < lower.endIndex,
-                  let range = lower.range(of: term, range: cursor..<lower.endIndex) {
+            var cursor = text.startIndex
+            var matches = 0
+            while cursor < text.endIndex, matches < 60,
+                  let range = text.range(of: term, options: .caseInsensitive, range: cursor..<text.endIndex) {
                 ranges.append(range)
                 cursor = range.upperBound
-                if ranges.count >= limit * 4 { break }
+                matches += 1
             }
         }
         let ordered = ranges.sorted { $0.lowerBound < $1.lowerBound }
-        var snippets = [String]()
+        var snippets = [(text: String, score: Int, order: Int)]()
         var fingerprints = Set<String>()
+        let tokenizer = NLTokenizer(unit: .sentence)
+        tokenizer.string = text
         for range in ordered {
-            let rawStart = text.index(range.lowerBound, offsetBy: -260, limitedBy: text.startIndex) ?? text.startIndex
-            let rawEnd = text.index(range.upperBound, offsetBy: 420, limitedBy: text.endIndex) ?? text.endIndex
-            let prefix = text[rawStart..<range.lowerBound]
-            let start = prefix.lastIndex(where: { ".!?•".contains($0) })
-                .map { text.index(after: $0) } ?? rawStart
-            let suffix = text[range.upperBound..<rawEnd]
-            let end = suffix.firstIndex(where: { ".!?•".contains($0) })
-                .map { text.index(after: $0) } ?? rawEnd
-            let snippet = String(text[start..<end])
+            let sentence = tokenizer.tokenRange(at: range.lowerBound)
+            let snippet = String(text[sentence])
                 .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !Self.looksLikeTechnicalMarkup(snippet) else { continue }
+            guard snippet.count <= 2400, !Self.looksLikeTechnicalMarkup(snippet) else { continue }
             let fingerprint = String(snippet.lowercased().prefix(90))
             guard snippet.count > 80, fingerprints.insert(fingerprint).inserted else { continue }
-            snippets.append(snippet)
-            if snippets.count >= limit { break }
+            var score = Set(terms).filter { snippet.range(of: $0, options: .caseInsensitive) != nil }.count
+            if query.hasPrefix("business-model") {
+                let lower = snippet.lowercased()
+                if lower.contains("revenue") && ["generate", "derived", "earn", "comes from"].contains(where: { lower.contains($0) }) { score += 8 }
+                if lower.contains("revenue") && ["substantially all", "primarily", "principally"].contains(where: { lower.contains($0) }) { score += 30 }
+                if lower.contains("cash flow") || lower.contains("tax") { score -= 5 }
+            }
+            snippets.append((snippet, score, snippets.count))
         }
-        return snippets
+        return snippets.sorted { $0.score == $1.score ? $0.order < $1.order : $0.score > $1.score }
+            .prefix(limit).map(\.text)
+    }
+
+    public func resolveCompanyLead(_ name: String) async throws -> CompanyCandidate? {
+        let records = try await tickerRecords()
+        let matches = records.filter { $0.ticker.caseInsensitiveCompare(name) == .orderedSame || CompanyIdentity.matches($0.name, name) }
+        guard Set(matches.map(\.cik)).count == 1, let match = matches.first else { return nil }
+        return CompanyCandidate(cik: String(match.cik), ticker: match.ticker, name: match.name,
+            filingDate: nil, filingURL: nil, relevance: 0)
     }
 
     private func tickerRecords() async throws -> [TickerRecord] {
@@ -217,16 +235,14 @@ public actor SECService {
     }
 
     private func get(_ url: URL) async throws -> Data {
-        if let lastRequest {
-            let elapsed = lastRequest.duration(to: .now)
-            if elapsed < .milliseconds(120) {
-                try await Task.sleep(for: .milliseconds(120) - elapsed)
-            }
-        }
+        let now = ContinuousClock.Instant.now
+        let scheduled = max(nextRequestTime ?? now, now)
+        nextRequestTime = scheduled.advanced(by: .milliseconds(120))
+        if scheduled > now { try await Task.sleep(until: scheduled, clock: .continuous) }
+        try Task.checkCancellation()
         var request = URLRequest(url: url, timeoutInterval: 25)
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue("application/json,text/html;q=0.9,*/*;q=0.5", forHTTPHeaderField: "Accept")
-        lastRequest = .now
         do {
             let (data, response) = try await fetcher.data(for: request)
             guard (200..<300).contains(response.statusCode) else {
@@ -236,6 +252,7 @@ public actor SECService {
         } catch let error as StockAgentError {
             throw error
         } catch {
+            try Task.checkCancellation()
             throw StockAgentError.network("Could not reach SEC EDGAR: \(error.localizedDescription)")
         }
     }
@@ -277,39 +294,65 @@ public actor SECService {
     }
 
     private static func selectedFacts(from root: CompanyFactsRoot) -> [FinancialFact] {
-        let preferred = [
-            "RevenueFromContractWithCustomerExcludingAssessedTax": "Revenue",
-            "Revenues": "Revenue",
-            "SalesRevenueNet": "Revenue",
-            "NetIncomeLoss": "Net income",
-            "Assets": "Total assets",
-            "Liabilities": "Total liabilities",
-            "CashAndCashEquivalentsAtCarryingValue": "Cash and equivalents",
-            "LongTermDebtAndFinanceLeaseObligationsCurrent": "Current debt",
-            "LongTermDebtNoncurrent": "Long-term debt",
-            "OperatingIncomeLoss": "Operating income",
+        let selections: [(label: String, duration: Bool, concepts: [String])] = [
+            ("Revenue", true, ["RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues", "SalesRevenueNet"]),
+            ("Net income", true, ["NetIncomeLoss"]),
+            ("Operating income", true, ["OperatingIncomeLoss"]),
+            ("Total assets", false, ["Assets"]),
+            ("Total liabilities", false, ["Liabilities"]),
+            ("Cash and equivalents", false, ["CashAndCashEquivalentsAtCarryingValue"]),
+            ("Current long-term debt and finance leases", false, ["LongTermDebtAndFinanceLeaseObligationsCurrent"]),
+            ("Long-term debt, noncurrent", false, ["LongTermDebtNoncurrent"]),
         ]
         let concepts = root.facts["us-gaap"] ?? [:]
-        var labels = Set<String>()
         var output = [FinancialFact]()
-        for (conceptID, preferredLabel) in preferred {
-            guard let concept = concepts[conceptID], labels.insert(preferredLabel).inserted else { continue }
-            var observations = concept.units.flatMap { unit, values in
-                values.map { (unit, $0) }
+        for selection in selections {
+            let observations = selection.concepts.enumerated().flatMap { priority, conceptID in
+                (concepts[conceptID]?.units ?? [:]).flatMap { unit, values in
+                    values.compactMap { value -> SelectedFactObservation? in
+                        guard unit == "USD", ["10-K", "10-Q", "10-K/A", "10-Q/A"].contains(value.form ?? ""),
+                              value.value.isFinite, let endText = value.end, let end = date(endText),
+                              let filedText = value.filed, date(filedText) != nil else { return nil }
+                        if selection.duration {
+                            guard let startText = value.start, let start = date(startText),
+                                  start < end,
+                                  end.timeIntervalSince(start) <= 400 * 86_400 else { return nil }
+                        } else if value.start != nil { return nil }
+                        return SelectedFactObservation(unit: unit, observation: value, priority: priority)
+                    }
+                }
             }
-            observations = observations.filter { observation in
-                ["10-K", "10-Q"].contains(observation.1.form ?? "")
-                    && observation.1.value.isFinite
+            let ordered = observations.sorted { lhs, rhs in
+                let a = lhs.observation
+                let b = rhs.observation
+                if a.end != b.end { return (a.end ?? "") > (b.end ?? "") }
+                // Use the full reported duration at this end date (annual or year-to-date),
+                // then the latest filing of that same period, including amendments.
+                if a.start != b.start { return (a.start ?? "") < (b.start ?? "") }
+                if a.filed != b.filed { return (a.filed ?? "") > (b.filed ?? "") }
+                if lhs.priority != rhs.priority { return lhs.priority < rhs.priority }
+                return (a.accession ?? "") > (b.accession ?? "")
             }
-            guard let latest = observations.max(by: {
-                ($0.1.end ?? "") < ($1.1.end ?? "")
-            }) else { continue }
+            guard let latest = ordered.first else { continue }
+            // Conflicting values for an otherwise identical observation cannot be resolved
+            // safely by JSON ordering. Leave that metric out instead of choosing arbitrarily.
+            let conflicting = ordered.contains {
+                $0.priority == latest.priority && $0.unit == latest.unit
+                    && $0.observation.start == latest.observation.start
+                    && $0.observation.end == latest.observation.end
+                    && $0.observation.filed == latest.observation.filed
+                    && $0.observation.accession == latest.observation.accession
+                    && $0.observation.value != latest.observation.value
+            }
+            guard !conflicting else { continue }
             output.append(
                 FinancialFact(
-                    label: preferredLabel,
-                    value: latest.1.value,
-                    unit: latest.0,
-                    periodEnd: latest.1.end.flatMap(date)
+                    label: selection.label,
+                    value: latest.observation.value,
+                    unit: latest.unit,
+                    periodEnd: latest.observation.end.flatMap(date),
+                    periodStart: latest.observation.start.flatMap(date),
+                    filedAt: latest.observation.filed.flatMap(date)
                 )
             )
         }
@@ -317,7 +360,7 @@ public actor SECService {
     }
 
     private static func plainText(_ html: String) -> String {
-        html
+        var text = html
             .replacingOccurrences(of: #"(?is)<script.*?</script>"#, with: " ", options: .regularExpression)
             .replacingOccurrences(of: #"(?is)<style.*?</style>"#, with: " ", options: .regularExpression)
             .replacingOccurrences(of: #"(?s)<[^>]+>"#, with: " ", options: .regularExpression)
@@ -337,6 +380,16 @@ public actor SECService {
             .replacingOccurrences(of: "&#8220;", with: "“")
             .replacingOccurrences(of: "&#8221;", with: "”")
             .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        if let pattern = try? NSRegularExpression(pattern: "&#(x[0-9A-Fa-f]+|[0-9]+);") {
+            let matches = pattern.matches(in: text, range: NSRange(text.startIndex..., in: text))
+            for match in matches.reversed() {
+                guard let digitsRange = Range(match.range(at: 1), in: text), let whole = Range(match.range, in: text) else { continue }
+                let digits = String(text[digitsRange])
+                let number = digits.hasPrefix("x") ? UInt32(digits.dropFirst(), radix: 16) : UInt32(digits)
+                if let number, let scalar = UnicodeScalar(number) { text.replaceSubrange(whole, with: String(scalar)) }
+            }
+        }
+        return text
     }
 
     private static func looksLikeTechnicalMarkup(_ text: String) -> Bool {
@@ -531,13 +584,23 @@ private struct CompanyFactConcept: Decodable {
 }
 
 private struct CompanyFactObservation: Decodable {
+    let start: String?
     let end: String?
     let value: Double
     let form: String?
+    let filed: String?
+    let accession: String?
 
     enum CodingKeys: String, CodingKey {
-        case end
+        case start, end, filed
         case value = "val"
         case form
+        case accession = "accn"
     }
+}
+
+private struct SelectedFactObservation {
+    let unit: String
+    let observation: CompanyFactObservation
+    let priority: Int
 }

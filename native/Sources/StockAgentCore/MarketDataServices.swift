@@ -1,5 +1,16 @@
 import Foundation
 
+public struct StockSplit: Codable, Sendable {
+    public let date: Date
+    public let ratio: Double
+    public init(date: Date, ratio: Double) { self.date = date; self.ratio = ratio }
+}
+
+public struct MarketPriceHistory: Sendable {
+    public let prices: [PricePoint]
+    public let splits: [StockSplit]
+}
+
 public actor YahooPriceService {
     private let fetcher: any DataFetching
 
@@ -8,6 +19,10 @@ public actor YahooPriceService {
     }
 
     public func dailyPrices(ticker rawTicker: String, starting startDate: Date? = nil) async throws -> [PricePoint] {
+        try await history(ticker: rawTicker, starting: startDate).prices
+    }
+
+    public func history(ticker rawTicker: String, starting startDate: Date? = nil) async throws -> MarketPriceHistory {
         let ticker = rawTicker.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         guard !ticker.isEmpty else { throw StockAgentError.validation("Enter a ticker.") }
 
@@ -27,14 +42,14 @@ public actor YahooPriceService {
                 URLQueryItem(name: "period1", value: String(Int(paddedStart.timeIntervalSince1970))),
                 URLQueryItem(name: "period2", value: String(Int(Date.now.addingTimeInterval(86_400).timeIntervalSince1970))),
                 URLQueryItem(name: "interval", value: "1d"),
-                URLQueryItem(name: "events", value: "history"),
+                URLQueryItem(name: "events", value: "splits"),
                 URLQueryItem(name: "includeAdjustedClose", value: "true"),
             ]
         } else {
             components.queryItems = [
                 URLQueryItem(name: "range", value: "5y"),
                 URLQueryItem(name: "interval", value: "1d"),
-                URLQueryItem(name: "events", value: "history"),
+                URLQueryItem(name: "events", value: "splits"),
                 URLQueryItem(name: "includeAdjustedClose", value: "true"),
             ]
         }
@@ -83,7 +98,20 @@ public actor YahooPriceService {
         guard !points.isEmpty else {
             throw StockAgentError.unavailable("No usable daily prices were returned for \(ticker).")
         }
-        return points.sorted { $0.date < $1.date }
+        let events = result["events"] as? [String: Any]
+        let rawSplits = events?["splits"] as? [String: [String: Any]] ?? [:]
+        let splits = try rawSplits.values.map { event -> StockSplit in
+            guard let date = event["date"] as? NSNumber,
+                  let numerator = event["numerator"] as? NSNumber,
+                  let denominator = event["denominator"] as? NSNumber,
+                  denominator.doubleValue > 0 else {
+                throw StockAgentError.malformedResponse("Stock split data for \(ticker) was incomplete; prices were not applied.")
+            }
+            let ratio = numerator.doubleValue / denominator.doubleValue
+            guard ratio.isFinite, ratio > 0 else { throw StockAgentError.malformedResponse("Invalid stock split ratio for \(ticker).") }
+            return StockSplit(date: Date(timeIntervalSince1970: date.doubleValue), ratio: ratio)
+        }
+        return MarketPriceHistory(prices: points.sorted { $0.date < $1.date }, splits: splits)
     }
 }
 
@@ -92,19 +120,22 @@ public actor FREDMarketService {
 
     private struct Definition: Sendable {
         enum Calculation: Sendable { case change, percentChange, yearOverYear }
+        enum Comparison: Sendable { case days(Int), previousMonth }
         let id: String
         let label: String
         let unit: String
-        let lookbackDays: Int
+        let comparison: Comparison
         let calculation: Calculation
     }
 
     private let definitions = [
-        Definition(id: "DFF", label: "Effective federal funds rate", unit: "%", lookbackDays: 90, calculation: .change),
-        Definition(id: "WALCL", label: "Federal Reserve assets", unit: "$T", lookbackDays: 91, calculation: .percentChange),
-        Definition(id: "CPIAUCNS", label: "Consumer Price Index inflation", unit: "% YoY", lookbackDays: 35, calculation: .yearOverYear),
-        Definition(id: "BAMLH0A0HYM2", label: "US high-yield option-adjusted spread", unit: "%", lookbackDays: 90, calculation: .change),
-        Definition(id: "VIXCLS", label: "CBOE Volatility Index", unit: "", lookbackDays: 30, calculation: .change),
+        Definition(id: "DFF", label: "Effective federal funds rate", unit: "%", comparison: .days(90), calculation: .change),
+        Definition(id: "DGS10", label: "10-year Treasury yield", unit: "%", comparison: .days(90), calculation: .change),
+        Definition(id: "WALCL", label: "Federal Reserve assets", unit: "$T", comparison: .days(91), calculation: .percentChange),
+        Definition(id: "CPIAUCNS", label: "Consumer Price Index inflation", unit: "% YoY", comparison: .previousMonth, calculation: .yearOverYear),
+        Definition(id: "UNRATE", label: "Unemployment rate", unit: "%", comparison: .previousMonth, calculation: .change),
+        Definition(id: "BAMLH0A0HYM2", label: "US high-yield option-adjusted spread", unit: "%", comparison: .days(90), calculation: .change),
+        Definition(id: "VIXCLS", label: "CBOE Volatility Index", unit: "", comparison: .days(30), calculation: .change),
     ]
 
     public init(fetcher: any DataFetching = URLSessionDataFetcher()) {
@@ -123,33 +154,23 @@ public actor FREDMarketService {
             let order = definitions.map(\.id)
             return (order.firstIndex(of: $0.id) ?? 99) < (order.firstIndex(of: $1.id) ?? 99)
         }
-        let rate = indicators.first(where: { $0.id == "DFF" })?.tilt ?? .unavailable
-        let balance = indicators.first(where: { $0.id == "WALCL" })?.tilt ?? .unavailable
-        let label: String
-        let stance: MarketIndicator.Tilt
-        let summary: String
-        if rate == .unavailable || balance == .unavailable {
-            label = "Regime incomplete"
-            stance = .unavailable
-            summary = "Some rate or Fed data is missing, so the app cannot set a market view yet."
-        } else if rate == .tolerant && balance == .tolerant {
-            label = "Easing and expanding liquidity"
-            stance = .tolerant
-            summary = "Rates are falling and the Fed is adding liquidity. This usually helps growth stocks most."
-        } else if rate == .defensive && balance == .defensive {
-            label = "Tightening and contracting liquidity"
-            stance = .defensive
-            summary = "Rates are rising and the Fed is removing liquidity. Expensive or high-leverage growth stocks face more pressure."
-        } else if rate == .neutral && balance == .neutral {
-            label = "Neutral liquidity regime"
-            stance = .neutral
-            summary = "Rates and the Fed balance sheet are broadly stable. The market data does not favor growth or defense."
-        } else {
-            label = "Mixed liquidity regime"
-            stance = .neutral
-            summary = "Rates and Fed liquidity point in different directions. Neither growth nor defensive stocks has a clear advantage."
+        guard let rateChange = indicators.first(where: { $0.id == "DFF" })?.change,
+              let balanceChange = indicators.first(where: { $0.id == "WALCL" })?.change else {
+            return MarketRegime(
+                label: "Policy data incomplete",
+                stance: .unavailable,
+                summary: "The rate or Fed asset comparison is unavailable. Other signals are shown below.",
+                indicators: indicators
+            )
         }
-        return MarketRegime(label: label, stance: stance, summary: summary, indicators: indicators)
+        let rates = abs(rateChange) < 0.05 ? "Rates little changed" : rateChange > 0 ? "Rates rising" : "Rates falling"
+        let assets = balanceChange > 0 ? "Fed assets expanding" : balanceChange < 0 ? "Fed assets shrinking" : "Fed assets unchanged"
+        return MarketRegime(
+            label: "\(rates) · \(assets)",
+            stance: .neutral,
+            summary: "Effective rates over 90 days and Fed assets over 13 weeks. Fed assets are only one part of liquidity; read these alongside inflation, labor and credit conditions below.",
+            indicators: indicators
+        )
     }
 
     private func indicator(_ definition: Definition) async -> MarketIndicator {
@@ -163,37 +184,37 @@ public actor FREDMarketService {
                   let text = String(data: data, encoding: .utf8) else {
                 throw StockAgentError.network("FRED did not return data.")
             }
-            var rows = text.split(whereSeparator: \Character.isNewline).dropFirst().compactMap { line -> Observation? in
+            var valuesByDate = [Date: Double]()
+            for line in text.split(whereSeparator: \Character.isNewline).dropFirst() {
                 let columns = line.split(separator: ",", omittingEmptySubsequences: false)
-                guard columns.count >= 2, let value = Double(columns[1]),
-                      let date = Self.date(String(columns[0])) else { return nil }
-                return Observation(date: date, value: value)
+                guard columns.count >= 2, let value = Double(columns[1]), value.isFinite,
+                      let date = Self.date(String(columns[0])) else { continue }
+                valuesByDate[date] = value
             }
+            var rows = valuesByDate.map { Observation(date: $0.key, value: $0.value) }.sorted { $0.date < $1.date }
             if definition.calculation == .yearOverYear { rows = Self.yearOverYear(rows) }
             guard let latest = rows.last else { throw StockAgentError.unavailable("No observations.") }
-            guard let result = Self.historicalChange(
+            let result = Self.observedChange(
                 rows,
-                lookbackDays: definition.lookbackDays,
+                comparison: definition.comparison,
                 percent: definition.calculation == .percentChange
-            ) else { throw StockAgentError.unavailable("Not enough observations.") }
-            let percentile = Self.percentile(of: latest.value, in: rows)
-            let tilt = Self.tilt(seriesID: definition.id, direction: result.direction, percentile: percentile)
-            let verb: String
-            if definition.calculation == .percentChange {
-                verb = result.change > 0 ? "Expanding" : result.change < 0 ? "Contracting" : "Unchanged"
-            } else {
-                verb = result.change > 0 ? "Rising" : result.change < 0 ? "Falling" : "Unchanged"
-            }
+            )
             let suffix = definition.calculation == .percentChange ? "%" : definition.id == "VIXCLS" ? " points" : " pp"
+            let changeDescription = result.map { result in
+                let comparisonDate = definition.calculation == .yearOverYear
+                    ? result.previous.date.formatted(.dateTime.month(.abbreviated).year())
+                    : result.previous.date.formatted(.dateTime.month(.abbreviated).day().year())
+                return "\(result.change.formatted(.number.sign(strategy: .always()).precision(.fractionLength(2))))\(suffix) · vs \(comparisonDate)"
+            } ?? "Comparison unavailable"
             return MarketIndicator(
                 id: definition.id,
                 label: definition.label,
                 latest: latest.value,
-                previous: result.previous.value,
+                previous: result?.previous.value,
                 unit: definition.unit,
                 asOf: latest.date,
-                tilt: tilt,
-                changeDescription: "\(verb) (\(result.change.formatted(.number.sign(strategy: .always()).precision(.fractionLength(2))))\(suffix))",
+                tilt: .neutral,
+                changeDescription: changeDescription,
                 source: "FRED \(definition.id)"
             )
         } catch {
@@ -219,35 +240,27 @@ public actor FREDMarketService {
     private struct ChangeResult: Sendable {
         let previous: Observation
         let change: Double
-        let direction: Int
     }
 
-    private static func historicalChange(
+    private static func observedChange(
         _ observations: [Observation],
-        lookbackDays: Int,
+        comparison: Definition.Comparison,
         percent: Bool
     ) -> ChangeResult? {
-        guard observations.count >= 4, let latest = observations.last else { return nil }
-        let cutoff = Calendar.current.date(byAdding: .year, value: -5, to: latest.date) ?? .distantPast
-        var changes = [(Observation, Observation, Double)]()
-        for (index, current) in observations.enumerated() where current.date >= cutoff {
-            let target = Calendar.current.date(byAdding: .day, value: -lookbackDays, to: current.date) ?? current.date
-            guard let previous = observations[..<index].last(where: { $0.date <= target }),
-                  !percent || previous.value != 0 else { continue }
-            let change = percent
-                ? (current.value / previous.value - 1) * 100
-                : current.value - previous.value
-            changes.append((current, previous, change))
+        guard observations.count >= 2, let latest = observations.last else { return nil }
+        let calendar = Calendar(identifier: .gregorian)
+        let previous: Observation?
+        switch comparison {
+        case .days(let days):
+            guard let target = calendar.date(byAdding: .day, value: -days, to: latest.date) else { return nil }
+            previous = observations.dropLast().last(where: { $0.date <= target })
+        case .previousMonth:
+            guard let target = calendar.date(byAdding: .month, value: -1, to: latest.date) else { return nil }
+            previous = observations.dropLast().last(where: { calendar.isDate($0.date, equalTo: target, toGranularity: .month) })
         }
-        guard changes.count >= 4, let current = changes.last else { return nil }
-        let distribution = changes.map(\.2).sorted()
-        let lower = quantile(distribution, fraction: 0.25)
-        let upper = quantile(distribution, fraction: 0.75)
-        let direction: Int
-        if current.2 < 0 && current.2 <= lower { direction = -1 }
-        else if current.2 > 0 && current.2 >= upper { direction = 1 }
-        else { direction = 0 }
-        return ChangeResult(previous: current.1, change: current.2, direction: direction)
+        guard let previous, !percent || previous.value != 0 else { return nil }
+        let change = percent ? (latest.value / previous.value - 1) * 100 : latest.value - previous.value
+        return ChangeResult(previous: previous, change: change)
     }
 
     private static func yearOverYear(_ observations: [Observation]) -> [Observation] {
@@ -262,47 +275,6 @@ public actor FREDMarketService {
             guard let prior = byMonth[priorKey], prior.value != 0 else { return nil }
             return Observation(date: current.date, value: (current.value / prior.value - 1) * 100)
         }
-    }
-
-    private static func quantile(_ values: [Double], fraction: Double) -> Double {
-        guard !values.isEmpty else { return 0 }
-        let position = Double(values.count - 1) * fraction
-        let lower = Int(position.rounded(.down))
-        let upper = min(lower + 1, values.count - 1)
-        let weight = position - Double(lower)
-        return values[lower] * (1 - weight) + values[upper] * weight
-    }
-
-    private static func percentile(of latest: Double, in observations: [Observation]) -> Int? {
-        guard let end = observations.last?.date else { return nil }
-        let cutoff = Calendar.current.date(byAdding: .year, value: -5, to: end) ?? .distantPast
-        let values = observations.filter { $0.date >= cutoff }.map(\.value)
-        guard values.count >= 12 else { return nil }
-        let below = values.filter { $0 < latest }.count
-        let equal = values.filter { $0 == latest }.count
-        return Int((100 * (Double(below) + Double(equal) / 2) / Double(values.count)).rounded())
-    }
-
-    private static func tilt(seriesID: String, direction: Int, percentile: Int?) -> MarketIndicator.Tilt {
-        let elevated = (percentile ?? -1) >= 75
-        let low = percentile.map { $0 <= 25 } ?? false
-        switch seriesID {
-        case "DFF":
-            if elevated { return .defensive }
-            if low { return .tolerant }
-        case "WALCL":
-            if direction < 0 { return .defensive }
-            if direction > 0 { return .tolerant }
-        case "CPIAUCNS":
-            if elevated || direction > 0 { return .defensive }
-            if low && direction < 0 { return .tolerant }
-        case "BAMLH0A0HYM2", "VIXCLS":
-            if elevated { return .defensive }
-            if low { return .tolerant }
-        default:
-            break
-        }
-        return .neutral
     }
 
     private static func date(_ text: String) -> Date? {

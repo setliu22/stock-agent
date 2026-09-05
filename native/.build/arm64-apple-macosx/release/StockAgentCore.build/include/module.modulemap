@@ -1,3 +1,0 @@
-module StockAgentCore {
-    header "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentCore.build/include/StockAgentCore-Swift.h"
-}

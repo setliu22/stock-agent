@@ -14,13 +14,15 @@ struct StockAgentApp: App {
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unifiedCompact(showsTitle: false))
         .windowResizability(.contentMinSize)
-        .defaultSize(width: 960, height: 600)
+        .defaultSize(width: CommandLine.arguments.contains("--compact-preview") ? 860 : 960,
+                     height: CommandLine.arguments.contains("--compact-preview") ? 560 : 600)
         .defaultPosition(.center)
         .restorationBehavior(.disabled)
         .commands {
             CommandGroup(replacing: .newItem) {}
             CommandMenu("Research") {
                 Button("Focus Research Question") {
+                    model.selectedSection = .research
                     NotificationCenter.default.post(name: .focusResearchComposer, object: nil)
                 }
                 .keyboardShortcut("k", modifiers: .command)

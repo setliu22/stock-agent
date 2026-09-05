@@ -8,31 +8,40 @@ struct PortfolioView: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 25) {
-                HStack(alignment: .bottom) {
-                    PageHeader(
-                        eyebrow: "",
-                        title: "Portfolio",
-                        subtitle: "Track holdings, purchase lots, and price history."
-                    )
-                    Spacer()
-                    portfolioActions
+        GeometryReader { geometry in
+            let compact = geometry.size.width < 760
+            ScrollView {
+                VStack(alignment: .leading, spacing: 25) {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(alignment: .bottom, spacing: 24) {
+                            portfolioHeader
+                            Spacer()
+                            portfolioActions
+                        }
+                        VStack(alignment: .leading, spacing: 16) {
+                            portfolioHeader
+                            portfolioActions
+                        }
+                    }
+
+                    PortfolioSummary()
+
+                    PortfolioChart()
+
+                    HoldingsList(compact: compact)
                 }
-
-                PortfolioSummary()
-
-                PortfolioChart()
-
-                HoldingsList(importPriceCSV: choosePriceCSV)
+                .padding(.horizontal, compact ? 24 : 38)
+                .padding(.top, 32)
+                .padding(.bottom, 46)
+                .frame(maxWidth: 1180, alignment: .leading)
             }
-            .padding(.horizontal, 38)
-            .padding(.top, 32)
-            .padding(.bottom, 46)
-            .frame(maxWidth: 1180, alignment: .leading)
+            .scrollIndicators(.never)
+            .defaultScrollAnchor(.top)
         }
-        .scrollIndicators(.never)
-        .defaultScrollAnchor(.top)
+    }
+
+    private var portfolioHeader: some View {
+        PageHeader(eyebrow: "", title: "Portfolio", subtitle: "")
     }
 
     private var portfolioActions: some View {
@@ -70,15 +79,6 @@ struct PortfolioView: View {
         }
     }
 
-    private func choosePriceCSV(_ ticker: String) {
-        let panel = NSOpenPanel()
-        panel.title = "Import daily prices for \(ticker)"
-        panel.message = "Choose a CSV containing Date and Close columns."
-        panel.allowedContentTypes = [.commaSeparatedText, .plainText]
-        panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let url = panel.url, let data = try? Data(contentsOf: url) else { return }
-        Task { await model.importPriceCSV(ticker: ticker, data: data) }
-    }
 }
 
 private struct PortfolioSummary: View {
@@ -89,9 +89,9 @@ private struct PortfolioSummary: View {
             HStack(spacing: 0) {
                 summaryValue("COST BASIS", value: money(model.totalCost), detail: "Across \(model.holdings.count) positions")
                 separator
-                summaryValue("MARKET VALUE", value: model.marketValue.map(money) ?? "—", detail: model.marketValue == nil ? "Add a current price or price history" : "Latest available prices")
+                summaryValue("MARKET VALUE", value: model.marketValue.map(money) ?? "—", detail: model.marketValue == nil ? "Market prices unavailable" : "Latest available closes")
                 separator
-                summaryValue("UNREALIZED", value: model.portfolioGain.map(signedMoney) ?? "—", detail: gainDetail, color: gainColor)
+                summaryValue("RETURN ON COST", value: gainDetail, detail: model.portfolioGain.map(signedMoney) ?? "Waiting for prices", color: gainColor)
             }
             .frame(minHeight: 112)
         }
@@ -103,7 +103,7 @@ private struct PortfolioSummary: View {
 
     private var gainDetail: String {
         guard let gain = model.portfolioGain, model.totalCost > 0 else { return "Waiting for prices" }
-        return (gain / model.totalCost * 100).formatted(.percent.scale(1).precision(.fractionLength(1)))
+        return (gain / model.totalCost).formatted(.percent.precision(.fractionLength(1)))
     }
 
     private var gainColor: Color {
@@ -119,6 +119,8 @@ private struct PortfolioSummary: View {
                 .foregroundStyle(StockTheme.muted)
             Text(value)
                 .font(.system(size: 22, weight: .bold, design: .rounded))
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
                 .foregroundStyle(color)
                 .contentTransition(.numericText())
             Text(detail)
@@ -145,6 +147,7 @@ private struct PortfolioChart: View {
     private enum ChartRange: String, CaseIterable, Identifiable {
         case oneMonth = "1M"
         case threeMonths = "3M"
+        case sixMonths = "6M"
         case oneYear = "1Y"
         case all = "All"
 
@@ -153,6 +156,7 @@ private struct PortfolioChart: View {
             switch self {
             case .oneMonth: -1
             case .threeMonths: -3
+            case .sixMonths: -6
             case .oneYear: -12
             case .all: nil
             }
@@ -166,26 +170,30 @@ private struct PortfolioChart: View {
     }
 
     var body: some View {
+        let plottedSeries = chartSeries
+        let nonemptySeries = plottedSeries.filter { !$0.points.isEmpty }
         GlassPanel(cornerRadius: 28, padding: 21) {
             VStack(alignment: .leading, spacing: 18) {
                 HStack {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(chartTitle)
                             .font(.system(size: 16, weight: .semibold, design: .rounded))
-                        Text(chartSubtitle)
+                        Text(chartSubtitle(for: plottedSeries))
                             .font(.system(size: 10))
                             .foregroundStyle(StockTheme.muted)
                     }
                     Spacer()
-                    if !model.selectedTickers.isEmpty {
-                        Button("Clear selection") { model.selectedTickers.removeAll() }
-                            .stockSecondaryButton()
-                            .help("Show the full portfolio")
-                    }
                     rangeSelector
                 }
+                .help("Unrealized gain divided by purchase cost. New lots change the cost-weighted return. Time ranges change the visible dates, not your cost basis. Excludes dividends, sales and fees.")
+                if !model.selectedTickers.isEmpty {
+                    Button("Show full portfolio") { model.selectedTickers.removeAll() }
+                        .font(.system(size: 11, weight: .medium))
+                        .buttonStyle(.plain)
+                        .foregroundStyle(StockTheme.accentBright)
+                }
 
-                if chartSeries.allSatisfy({ $0.points.isEmpty }) {
+                if nonemptySeries.isEmpty {
                     ContentUnavailableView(
                         model.isRefreshingPrices ? "Loading price history" : "No chart data yet",
                         systemImage: "chart.line.uptrend.xyaxis",
@@ -195,8 +203,8 @@ private struct PortfolioChart: View {
                     .frame(height: 220)
                 } else {
                     if model.selectedTickers.count > 1 {
-                        HStack(spacing: 15) {
-                            ForEach(chartSeries) { series in
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 65), alignment: .leading)], alignment: .leading, spacing: 8) {
+                            ForEach(nonemptySeries) { series in
                                 HStack(spacing: 5) {
                                     Circle().fill(series.color).frame(width: 7, height: 7)
                                     Text(series.id).font(.system(size: 10, weight: .semibold))
@@ -205,9 +213,12 @@ private struct PortfolioChart: View {
                         }
                     }
                     Chart {
-                        ForEach(chartSeries) { series in
+                        RuleMark(y: .value("Starting return", 0))
+                            .foregroundStyle(StockTheme.muted.opacity(0.3))
+                            .lineStyle(StrokeStyle(lineWidth: 0.7, dash: [3, 4]))
+                        ForEach(nonemptySeries) { series in
                             ForEach(series.points) { point in
-                                if visibleSeries.count == 1 {
+                                if nonemptySeries.count == 1 {
                                     AreaMark(
                                         x: .value("Date", point.date),
                                         y: .value("Value", point.value)
@@ -240,6 +251,7 @@ private struct PortfolioChart: View {
                             }
                         }
                     }
+                    .chartYScale(domain: yDomain(for: plottedSeries))
                     .chartXAxis {
                         AxisMarks(values: .automatic(desiredCount: 5)) { value in
                             AxisGridLine().foregroundStyle(StockTheme.border.opacity(0.18))
@@ -259,6 +271,14 @@ private struct PortfolioChart: View {
                         }
                     }
                     .frame(height: 250)
+                    if !model.selectedTickers.isEmpty {
+                        let unavailable = plottedSeries.filter { $0.points.isEmpty }.map(\.id)
+                        if !unavailable.isEmpty {
+                            Text("No price history for \(unavailable.joined(separator: ", ")) in this period.")
+                                .font(.system(size: 10))
+                                .foregroundStyle(StockTheme.muted)
+                        }
+                    }
                 }
             }
         }
@@ -289,9 +309,11 @@ private struct PortfolioChart: View {
         return "Selected positions"
     }
 
-    private var chartSubtitle: String {
-        if model.selectedTickers.isEmpty { return "Select holdings below to compare returns" }
-        return model.selectedTickers.sorted().joined(separator: " · ") + " · normalized return"
+    private func chartSubtitle(for series: [Series]) -> String {
+        guard let latest = series.flatMap({ $0.points.map(\.date) }).max() else {
+            return "Return on purchase cost"
+        }
+        return "Return on cost · through \(latest.formatted(.dateTime.month(.abbreviated).day().year()))"
     }
 
     private var rawSeries: [Series] {
@@ -309,9 +331,7 @@ private struct PortfolioChart: View {
             guard model.holdings.contains(where: { $0.ticker == ticker }) else { return nil }
             return Series(
                 id: ticker,
-                points: (model.priceHistoryByTicker[ticker] ?? []).map {
-                    PortfolioValuePoint(date: $0.date, value: $0.close)
-                },
+                points: PortfolioAnalytics.returnsOnCost(purchases: model.purchases.filter { $0.ticker == ticker }, priceHistory: model.priceHistoryByTicker),
                 color: palette[index % palette.count]
             )
         }
@@ -320,51 +340,38 @@ private struct PortfolioChart: View {
     private var emptyChartMessage: String {
         if model.isRefreshingPrices { return "Downloading daily closes for your holdings." }
         if model.holdings.isEmpty { return "Add a purchase lot to begin the portfolio history." }
-        return "Daily prices could not be loaded. Try Refresh or import a price CSV."
-    }
-
-    private var visibleSeries: [Series] {
-        let all = rawSeries
-        guard let offset = range.monthOffset,
-              let latest = all.flatMap({ $0.points.map(\.date) }).max(),
-              let cutoff = Calendar.current.date(byAdding: .month, value: offset, to: latest) else {
-            return all
-        }
-        return all.map { series in
-            Series(id: series.id, points: series.points.filter { $0.date >= cutoff }, color: series.color)
-        }
+        return "Verified market prices could not be loaded. Try Refresh; unavailable prices are not estimated."
     }
 
     private var chartSeries: [Series] {
-        return visibleSeries.map { series in
-            let baselineDate = model.purchases
-                .filter { $0.ticker == series.id }
-                .map(\.purchasedAt)
-                .min()
-            let points = baselineDate.map { baseline in
-                series.points.filter { $0.date >= baseline }
-            } ?? series.points
-            let first = points.first
-            guard let first, first.value != 0 else {
-                return Series(id: series.id, points: [], color: series.color)
+        let all = rawSeries
+        let cutoff = range.monthOffset.flatMap { offset in
+            all.flatMap({ $0.points.map(\.date) }).max().flatMap {
+                Calendar.current.date(byAdding: .month, value: offset, to: $0)
             }
-            return Series(
+        }
+        return all.map { series in
+            Series(
                 id: series.id,
-                points: points.map { point in
-                    PortfolioValuePoint(
-                        date: point.date,
-                        value: (point.value - first.value) / first.value * 100
-                    )
-                },
+                points: series.points.filter { cutoff == nil || $0.date >= cutoff! },
                 color: series.color
             )
         }
+    }
+
+    private func yDomain(for series: [Series]) -> ClosedRange<Double> {
+        let values = series.flatMap { $0.points.map(\.value) }
+        let lower = min(values.min() ?? 0, 0)
+        let upper = max(values.max() ?? 0, 0)
+        let padding = max((upper - lower) * 0.08, 1)
+        return (lower - padding)...(upper + padding)
     }
 
     private func rangeDescription(_ range: ChartRange) -> String {
         switch range {
         case .oneMonth: "one month"
         case .threeMonths: "three months"
+        case .sixMonths: "six months"
         case .oneYear: "one year"
         case .all: "all history"
         }
@@ -373,7 +380,7 @@ private struct PortfolioChart: View {
 
 private struct HoldingsList: View {
     @Environment(AppModel.self) private var model
-    let importPriceCSV: (String) -> Void
+    let compact: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -403,7 +410,7 @@ private struct HoldingsList: View {
                         holdingsHeader
                         ForEach(Array(model.holdings.enumerated()), id: \.element.id) { index, holding in
                             if index > 0 { Divider().overlay(StockTheme.border.opacity(0.4)).padding(.horizontal, 18) }
-                            HoldingRow(holding: holding, importPriceCSV: importPriceCSV)
+                            HoldingRow(holding: holding, compact: compact)
                         }
                     }
                 }
@@ -414,10 +421,12 @@ private struct HoldingsList: View {
     private var holdingsHeader: some View {
         HStack {
             Text("SYMBOL").frame(maxWidth: .infinity, alignment: .leading)
-            Text("SHARES").frame(width: 95, alignment: .trailing)
-            Text("AVG COST").frame(width: 110, alignment: .trailing)
-            Text("VALUE").frame(width: 120, alignment: .trailing)
-            Text("RETURN").frame(width: 95, alignment: .trailing)
+            if !compact {
+                Text("SHARES").frame(width: 95, alignment: .trailing)
+                Text("AVG COST").frame(width: 110, alignment: .trailing)
+            }
+            Text("VALUE").frame(width: compact ? 108 : 120, alignment: .trailing)
+            Text("RETURN").frame(width: compact ? 76 : 95, alignment: .trailing)
             Color.clear.frame(width: 30)
         }
         .font(.system(size: 9, weight: .bold, design: .rounded))
@@ -430,10 +439,12 @@ private struct HoldingsList: View {
 
 private struct HoldingRow: View {
     @Environment(AppModel.self) private var model
+    @State private var confirmingDeletion = false
     let holding: Holding
-    let importPriceCSV: (String) -> Void
+    let compact: Bool
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
         HStack {
             Button {
                 model.toggleTickerSelection(holding.ticker)
@@ -452,8 +463,16 @@ private struct HoldingRow: View {
                                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                                     .stroke(Color.white.opacity(0.13), lineWidth: 0.7)
                             )
-                        Text(holding.ticker)
-                            .font(.system(size: 14, weight: .bold, design: .rounded))
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(holding.ticker)
+                                .font(.system(size: 14, weight: .bold, design: .rounded))
+                            if compact {
+                                Text("\(holding.quantity.formatted(.number.precision(.fractionLength(0...4)))) shares · \(holding.averageCost.formatted(.currency(code: "USD").precision(.fractionLength(2)))) avg")
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(StockTheme.muted)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
                         if model.selectedTickers.contains(holding.ticker) {
                             Image(systemName: "checkmark.circle.fill")
                                 .font(.system(size: 12, weight: .semibold))
@@ -461,26 +480,25 @@ private struct HoldingRow: View {
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    Text(holding.quantity.formatted(.number.precision(.fractionLength(0...4))))
-                        .frame(width: 95, alignment: .trailing)
-                    Text(holding.averageCost.formatted(.currency(code: "USD").precision(.fractionLength(2))))
-                        .frame(width: 110, alignment: .trailing)
+                    if !compact {
+                        Text(holding.quantity.formatted(.number.precision(.fractionLength(0...4))))
+                            .frame(width: 95, alignment: .trailing)
+                        Text(holding.averageCost.formatted(.currency(code: "USD").precision(.fractionLength(2))))
+                            .frame(width: 110, alignment: .trailing)
+                    }
                     Text(holding.marketValue?.formatted(.currency(code: "USD").precision(.fractionLength(0...2))) ?? "—")
-                        .frame(width: 120, alignment: .trailing)
+                        .frame(width: compact ? 108 : 120, alignment: .trailing)
                     Text(holding.returnPercent.map { ($0 / 100).formatted(.percent.precision(.fractionLength(1))) } ?? "—")
                         .foregroundStyle(returnColor)
-                        .frame(width: 95, alignment: .trailing)
+                        .frame(width: compact ? 76 : 95, alignment: .trailing)
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .help("\(model.selectedTickers.contains(holding.ticker) ? "Remove" : "Add") \(holding.ticker) \(model.selectedTickers.contains(holding.ticker) ? "from" : "to") the chart")
             Menu {
-                Button("Enter current price…") { model.overlay = .manualPrice(holding.ticker) }
-                Button("Import price CSV…") { importPriceCSV(holding.ticker) }
-                Divider()
                 Button("Delete position", role: .destructive) {
-                    Task { await model.deleteTicker(holding.ticker) }
+                    confirmingDeletion = true
                 }
             } label: {
                 Image(systemName: "ellipsis")
@@ -496,10 +514,27 @@ private struct HoldingRow: View {
         .background(
             model.selectedTickers.contains(holding.ticker) ? StockTheme.accent.opacity(0.055) : .clear
         )
+        if confirmingDeletion {
+            HStack(spacing: 12) {
+                Text("Delete every purchase lot for \(holding.ticker)?")
+                    .font(.system(size: 11))
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                Button("Cancel") { confirmingDeletion = false }.stockSecondaryButton()
+                Button("Delete", role: .destructive) {
+                    Task { await model.deleteTicker(holding.ticker) }
+                }
+                .stockSecondaryButton()
+            }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 14)
+        }
+        }
     }
 
     private var returnColor: Color {
-        ReturnColorScale.color(for: holding.returnPercent)
+        guard let value = holding.returnPercent else { return StockTheme.muted }
+        return value >= 0 ? StockTheme.positive : StockTheme.negative
     }
 }
 
@@ -557,7 +592,6 @@ struct PortfolioOverlay: View {
                     switch overlay {
                     case .addPurchase: AddPurchasePanel()
                     case .importPortfolio: ImportPortfolioPanel()
-                    case .manualPrice(let ticker): ManualPricePanel(ticker: ticker)
                     }
                 }
                 .frame(maxWidth: 620)
@@ -577,7 +611,7 @@ private struct AddPurchasePanel: View {
     @State private var note = ""
 
     var body: some View {
-        OverlayPanel(title: "Add purchase lot", subtitle: "Saved directly to your local portfolio database.") {
+        OverlayPanel(title: "Add purchase lot", subtitle: "") {
             VStack(spacing: 14) {
                 HStack(spacing: 12) {
                     LabeledField(label: "TICKER") { TextField("AAPL", text: $ticker).stockTextField() }
@@ -585,7 +619,7 @@ private struct AddPurchasePanel: View {
                     LabeledField(label: "PRICE") { TextField("185.00", text: $price).stockTextField() }
                 }
                 LabeledField(label: "PURCHASE DATE") {
-                    DatePicker("", selection: $date, displayedComponents: .date)
+                    DatePicker("", selection: $date, in: ...Date.now, displayedComponents: .date)
                         .labelsHidden()
                         .datePickerStyle(.field)
                 }
@@ -615,7 +649,7 @@ private struct ImportPortfolioPanel: View {
     @State private var json = ""
 
     var body: some View {
-        OverlayPanel(title: "Import portfolio JSON", subtitle: "Accepts holdings, positions, purchases, assets, stocks, or securities arrays.") {
+        OverlayPanel(title: "Import portfolio JSON", subtitle: "Each lot needs a ticker, shares, price per share, and purchase date.") {
             ZStack(alignment: .topLeading) {
                 if json.isEmpty {
                     Text("Paste portfolio JSON…")
@@ -638,27 +672,6 @@ private struct ImportPortfolioPanel: View {
                 .buttonStyle(.glassProminent)
                 .keyboardShortcut(.defaultAction)
                 .disabled(json.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        }
-    }
-}
-
-private struct ManualPricePanel: View {
-    @Environment(AppModel.self) private var model
-    let ticker: String
-    @State private var price = ""
-
-    var body: some View {
-        OverlayPanel(title: "Update \(ticker) price", subtitle: "Used until another price is imported.") {
-            LabeledField(label: "CURRENT PRICE") {
-                TextField("0.00", text: $price).stockTextField()
-            }
-        } footer: {
-            Button("Cancel") { model.overlay = nil }.stockSecondaryButton()
-            Button("Save price") {
-                Task { _ = await model.setManualPrice(ticker: ticker, price: Double(price) ?? -1) }
-            }
-            .buttonStyle(.glassProminent)
-            .keyboardShortcut(.defaultAction)
         }
     }
 }

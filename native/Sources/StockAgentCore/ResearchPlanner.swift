@@ -79,7 +79,7 @@ struct GeneratedUniverseReason {
     @Guide(description: "The supported market universe")
     var universe: GeneratedUniverse
 
-    @Guide(description: "One concise commercial relationship between the theme and universe")
+    @Guide(description: "One concise reason to SEARCH this industry. Exposure is not a guaranteed benefit: do not assert profits, stock returns or current contracts. State uncertainty and offsetting effects when relevant.")
     var reason: String
 
     @Guide(description: "Whether this universe is the primary product/end market, an enabling input, or only adjacent")
@@ -88,14 +88,20 @@ struct GeneratedUniverseReason {
 
 @Generable
 struct GeneratedThemeAudit {
-    @Guide(description: "Two to eight words naming only the investable product, service, or business trend; omit request wording and sector names")
+    @Guide(description: "Two to eight words naming the business trend AND the user's specific application or end market. Preserve scope qualifiers; omit valuation and request wording.")
     var theme: String
 
-    @Guide(description: "Most directly exposed universes first", .minimumCount(1), .maximumCount(6))
+    @Guide(description: "The one or two strongest industries for retrieval: the specific end market and its most material enabling input. Omit generic financing and unrelated end markets.", .minimumCount(1), .maximumCount(2))
     var matches: [GeneratedUniverseReason]
 
     @Guide(description: "Product-level aliases, acronyms, and formal filing terminology for the trend; exclude sector names and generic words such as technology or industry", .minimumCount(3), .maximumCount(8))
     var searchTerms: [String]
+}
+
+@Generable
+private struct FilingAliases {
+    @Guide(description: "Three to six technical synonyms or established acronyms for the same product or phenomenon. Not adjacent industries, customers, uses, financing or generic development terms.", .minimumCount(3), .maximumCount(6))
+    var terms: [String]
 }
 
 enum ResearchThemeLanguage {
@@ -110,6 +116,7 @@ enum ResearchThemeLanguage {
         "advanced", "application", "applications", "commercial", "global", "group", "industry",
         "industries", "market", "markets", "platform", "platforms", "product", "products", "service",
         "services", "solution", "solutions", "system", "systems", "technology", "technologies",
+        "spending", "development", "infrastructure", "funding", "growth", "opportunity",
     ])
 
     static func conciseTheme(_ value: String) -> String {
@@ -220,14 +227,17 @@ public struct OnDeviceThemeMapper: ThemeMapping {
             model: model,
             instructions: """
             Semantically map an open-ended business trend to the supplied equity taxonomy. Infer the
-            commercial meaning rather than matching words. Classify the industry that builds, operates,
-            or buys the end product as primary. Technology, software, AI, chips, sensors, and infrastructure
+            commercial meaning rather than matching words. Classify the industry that builds or directly
+            operates the end product as primary. Also consider economically relevant suppliers and
+            beneficiaries, with a concrete conditional demand or cost mechanism. Technology, software, AI, chips, sensors, and infrastructure
             are enabling—not primary—when they merely make another industry's product possible. Order
-            primary product/end-market industries first, then material enabling inputs, then adjacent
-            applications. Prefer a specific industry over its broad sector. Never choose companies or
+            primary product industries first, then material enabling inputs and second-order beneficiaries.
+            Industry membership is a retrieval lead, not evidence of company exposure. Prefer a specific industry over its broad sector. Never choose companies or
             assess valuation. Separately produce several product-level search aliases: include acronyms,
             formal names, older filing terminology, and close commercial synonyms. Search aliases must
             not be sector labels or vague words such as technology, solutions, or industry.
+            Respect the question's end market. Generic financing demand does not justify Financials,
+            and consumer applications are not relevant to a specifically government or industrial thesis.
             """
         )
         let conciseInput = ResearchThemeLanguage.conciseTheme(theme)
@@ -240,7 +250,8 @@ public struct OnDeviceThemeMapper: ThemeMapping {
             """
         let response = try await session.respond(
             to: prompt,
-            generating: GeneratedThemeAudit.self
+            generating: GeneratedThemeAudit.self,
+            options: GenerationOptions(sampling: .greedy, maximumResponseTokens: 800)
         )
         var seen = Set<String>()
         let orderedMatches = response.content.matches.enumerated().sorted { left, right in
@@ -260,8 +271,11 @@ public struct OnDeviceThemeMapper: ThemeMapping {
         }
         let generatedTheme = ResearchThemeLanguage.conciseTheme(response.content.theme)
         let mappedTheme = generatedTheme.isEmpty ? conciseInput : generatedTheme
+        let aliasSession = LanguageModelSession(instructions: "Translate a technical business concept into alternative terminology used in company filings. Supply synonyms and common acronyms for the SAME concept, not possible applications or related sectors. Do not choose companies or discuss investing.")
+        let aliases = try? await aliasSession.respond(to: mappedTheme, generating: FilingAliases.self,
+            options: GenerationOptions(sampling: .greedy, maximumResponseTokens: 180))
         let terms = ResearchThemeLanguage.cleanSearchTerms(
-            response.content.searchTerms,
+            aliases?.content.terms ?? response.content.searchTerms,
             theme: mappedTheme,
             universes: matches.map(\.id)
         )
@@ -280,7 +294,7 @@ public struct ResearchPlanner: Sendable {
         self.themeMapper = themeMapper
     }
 
-    public func propose(question rawQuestion: String) async throws -> ResearchProposal {
+    public func propose(question rawQuestion: String, preferredMode: ResearchMode? = nil) async throws -> ResearchProposal {
         let question = rawQuestion.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty else {
             throw StockAgentError.validation("Enter a research question.")
@@ -289,8 +303,16 @@ public struct ResearchPlanner: Sendable {
             throw StockAgentError.validation("The research question is too long.")
         }
 
-        let tickers = groundedTickerSymbols(in: question)
-        let mode: ResearchMode = tickers.isEmpty ? .discovery : .named
+        var tickers = groundedTickerSymbols(in: question)
+        if preferredMode == .named, tickers.isEmpty,
+           question.range(of: #"^[A-Za-z]{1,5}(?:\.[A-Za-z])?$"#, options: .regularExpression) != nil {
+            tickers = [question.uppercased()]
+        }
+        let mode = preferredMode ?? (tickers.isEmpty ? .discovery : .named)
+        if mode == .named, tickers.isEmpty {
+            throw StockAgentError.validation("Include a ticker symbol in your company question.")
+        }
+        if mode == .discovery { tickers = [] }
 
         var universes = [String]()
         var reasons = [ProposedItem]()
@@ -323,6 +345,7 @@ public struct ResearchPlanner: Sendable {
                     )
                 }
             } catch {
+                try Task.checkCancellation()
                 universes = ["All public equities"]
                 warning = error.localizedDescription
             }
@@ -354,7 +377,8 @@ public struct ResearchPlanner: Sendable {
             }.first
             guard let capture else { return nil }
             let symbol = String(question[capture]).uppercased()
-            guard !excluded.contains(symbol), seen.insert(symbol).inserted else { return nil }
+            let explicitlyPrefixed = match.range(at: 1).location != NSNotFound
+            guard (explicitlyPrefixed || !excluded.contains(symbol)), seen.insert(symbol).inserted else { return nil }
             return symbol
         }
     }

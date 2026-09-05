@@ -33,7 +33,7 @@ struct MarketView: View {
                     }
                     .stockSecondaryButton()
                     .disabled(model.isLoadingMarket)
-                    .help("Refresh all five macro signals from FRED")
+                    .help("Refresh macro signals from FRED")
                 }
 
                 if let regime = model.marketRegime {
@@ -62,6 +62,7 @@ struct MarketView: View {
         }
         .scrollIndicators(.never)
         .defaultScrollAnchor(.top)
+        .task { if model.marketRegime == nil { await model.loadMarket() } }
     }
 
     private func regimeHero(_ regime: MarketRegime) -> some View {
@@ -69,19 +70,20 @@ struct MarketView: View {
             HStack(spacing: 22) {
                 ZStack {
                     Circle()
-                        .fill(stanceColor(regime.stance).opacity(0.14))
-                        .frame(width: 76, height: 76)
-                    Image(systemName: stanceIcon(regime.stance))
-                        .font(.system(size: 28, weight: .medium))
-                        .foregroundStyle(stanceColor(regime.stance))
+                        .fill(StockTheme.accent.opacity(0.14))
+                        .frame(width: 46, height: 46)
+                    Image(systemName: "chart.xyaxis.line")
+                        .font(.system(size: 20, weight: .medium))
+                        .foregroundStyle(StockTheme.accentBright)
                 }
                 VStack(alignment: .leading, spacing: 7) {
-                    Text("CURRENT STANCE")
+                    Text("RATES & LIQUIDITY")
                         .font(.system(size: 9, weight: .bold, design: .rounded))
                         .tracking(1.0)
                         .foregroundStyle(StockTheme.muted)
                     Text(regime.label)
-                        .font(.system(size: 27, weight: .bold, design: .rounded))
+                        .font(.system(size: 21, weight: .semibold, design: .rounded))
+                        .fixedSize(horizontal: false, vertical: true)
                     Text(regime.summary)
                         .font(.system(size: 13))
                         .foregroundStyle(StockTheme.muted)
@@ -107,20 +109,19 @@ struct MarketView: View {
                             }
                         } label: {
                             HStack(spacing: 16) {
-                                Circle()
-                                    .fill(stanceColor(indicator.tilt).opacity(0.16))
-                                    .frame(width: 34, height: 34)
-                                    .overlay(
-                                        Circle()
-                                            .fill(stanceColor(indicator.tilt))
-                                            .frame(width: 8, height: 8)
-                                    )
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(indicator.label)
                                         .font(.system(size: 13, weight: .semibold))
+                                        .fixedSize(horizontal: false, vertical: true)
                                     Text(indicator.asOf?.formatted(date: .abbreviated, time: .omitted) ?? "Unavailable")
                                         .font(.system(size: 10))
                                         .foregroundStyle(StockTheme.muted)
+                                    if indicator.latest != nil {
+                                        Text(implication(indicator.id))
+                                            .font(.system(size: 10))
+                                            .foregroundStyle(StockTheme.muted)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
                                 }
                                 Spacer()
                                 VStack(alignment: .trailing, spacing: 3) {
@@ -129,15 +130,16 @@ struct MarketView: View {
                                     Text(indicator.changeDescription)
                                         .font(.system(size: 10))
                                         .foregroundStyle(StockTheme.muted)
+                                        .multilineTextAlignment(.trailing)
+                                        .fixedSize(horizontal: false, vertical: true)
                                 }
-                                CapsuleLabel(text: indicator.tilt.rawValue, color: stanceColor(indicator.tilt))
-                                    .frame(width: 112, alignment: .trailing)
                                 Image(systemName: expandedSignal == indicator.id ? "chevron.up.circle.fill" : "info.circle")
                                     .font(.system(size: 16, weight: .medium))
                                     .foregroundStyle(StockTheme.accentBright)
                                     .frame(width: 23)
                             }
                             .padding(.horizontal, 20)
+                            .padding(.vertical, 10)
                             .frame(minHeight: 69)
                             .contentShape(Rectangle())
                         }
@@ -155,6 +157,19 @@ struct MarketView: View {
         }
     }
 
+    private func implication(_ id: String) -> String {
+        switch id {
+        case "DFF": "Financing costs and the return available on cash."
+        case "DGS10": "Discount rates for distant profits; borrowing-rate benchmark."
+        case "WALCL": "One influence on liquidity, not a complete measure."
+        case "CPIAUCNS": "Margin pressure, pricing power and room for rate cuts."
+        case "UNRATE": "Household demand and cyclical earnings risk."
+        case "BAMLH0A0HYM2": "Refinancing stress for weaker borrowers."
+        case "VIXCLS": "Expected volatility, not the direction of stock returns."
+        default: ""
+        }
+    }
+
     private func format(_ value: Double, unit: String) -> String {
         if unit == "$T" {
             return "$" + (value / 1_000_000).formatted(.number.precision(.fractionLength(2))) + "T"
@@ -164,23 +179,6 @@ struct MarketView: View {
         return value.formatted(.number.precision(.fractionLength(2)))
     }
 
-    private func stanceColor(_ tilt: MarketIndicator.Tilt) -> Color {
-        switch tilt {
-        case .defensive: StockTheme.warning
-        case .neutral: StockTheme.accentBright
-        case .tolerant: StockTheme.positive
-        case .unavailable: StockTheme.muted
-        }
-    }
-
-    private func stanceIcon(_ tilt: MarketIndicator.Tilt) -> String {
-        switch tilt {
-        case .defensive: "shield.lefthalf.filled"
-        case .neutral: "equal.circle"
-        case .tolerant: "wind"
-        case .unavailable: "questionmark.circle"
-        }
-    }
 }
 
 private struct MacroExplanation: View {
@@ -199,7 +197,7 @@ private struct MacroExplanation: View {
                         .font(.system(size: 12, weight: .semibold))
                 }
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("COMPANIES TO EMPHASIZE")
+                    Text("COMPANY CONTEXT")
                         .font(.system(size: 9, weight: .bold, design: .rounded))
                         .tracking(0.8)
                         .foregroundStyle(StockTheme.muted)
@@ -214,11 +212,11 @@ private struct MacroExplanation: View {
                 .lineSpacing(3)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
-            Text(indicator.source)
+            Link("\(indicator.source) ↗", destination: URL(string: "https://fred.stlouisfed.org/series/\(indicator.id)")!)
                 .font(.system(size: 9, weight: .medium))
                 .foregroundStyle(StockTheme.muted)
         }
-        .padding(.leading, 70)
+        .padding(.leading, 24)
         .padding(.trailing, 24)
         .padding(.bottom, 20)
     }

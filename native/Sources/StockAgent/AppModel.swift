@@ -1,4 +1,5 @@
 import Foundation
+import FoundationModels
 import Observation
 import StockAgentCore
 
@@ -7,6 +8,7 @@ import StockAgentCore
 final class AppModel {
     var selectedSection: AppSection = .research
     var researchQuestion = ""
+    var researchMode: ResearchMode?
     var proposal: ResearchProposal?
     var report: ResearchReport?
     var isPlanning = false
@@ -23,18 +25,21 @@ final class AppModel {
     var marketRegime: MarketRegime?
     var isLoadingMarket = false
     var lsegConnected: Bool?
+    var appleIntelligenceAvailable = false
+    var isCheckingConnections = false
 
-    var configuration: AccountConfiguration
     var notice: AppNotice?
     var overlay: AppOverlay?
 
     let databaseURL: URL
-    private let portfolioStore: PortfolioStore
+    private let portfolioStore: PortfolioStore?
     private let planner = ResearchPlanner()
     private let priceService = YahooPriceService()
     private let marketService = FREDMarketService()
     private let lsegService: LSEGWorkspaceService
-    private var researchEngine: ResearchEngine
+    private let researchEngine: ResearchEngine
+    private var researchTask: Task<Void, Never>?
+    private var planningTask: Task<Void, Never>?
 
     init() {
         let bundleParent = Bundle.main.bundleURL.pathExtension == "app"
@@ -49,24 +54,22 @@ final class AppModel {
         } else {
             initialConfiguration = environmentConfiguration
         }
-        configuration = initialConfiguration
         lsegService = LSEGWorkspaceService(projectRoot: bundleParent)
         do {
             portfolioStore = try PortfolioStore(databaseURL: databaseURL)
         } catch {
-            let fallback = FileManager.default.temporaryDirectory.appendingPathComponent("stock-agent-portfolio.db")
-            portfolioStore = try! PortfolioStore(databaseURL: fallback)
+            portfolioStore = nil
+            notice = AppNotice(style: .error, title: "Portfolio could not be opened", message: error.localizedDescription)
         }
         researchEngine = ResearchEngine(
             sec: SECService(userAgent: initialConfiguration.secUserAgent),
             lseg: lsegService
         )
         applyPreviewArguments(CommandLine.arguments)
-        Task { await checkLSEG() }
+        Task { await checkConnections() }
         Task {
             await loadPortfolio()
             await refreshPrices(showNotice: false, staleOnly: true)
-            await loadMarket()
         }
     }
 
@@ -100,29 +103,46 @@ final class AppModel {
 
     var marketValue: Double? {
         let values = holdings.compactMap(\.marketValue)
-        guard !values.isEmpty else { return nil }
-        return values.reduce(0, +)
+        guard !values.isEmpty, values.count == holdings.count else { return nil }
+        let total = values.reduce(0, +)
+        return total.isFinite ? total : nil
     }
 
     var portfolioGain: Double? { marketValue.map { $0 - totalCost } }
 
     func createProposal() async {
-        guard !isPlanning else { return }
+        guard !isPlanning, !isResearching else { return }
         isPlanning = true
         notice = nil
-        do { proposal = try await planner.propose(question: researchQuestion) }
-        catch { show(error) }
-        isPlanning = false
+        let question = researchQuestion
+        let mode = researchMode
+        planningTask = Task {
+            defer { isPlanning = false; planningTask = nil }
+            do {
+                let value = try await planner.propose(question: question, preferredMode: mode)
+                try Task.checkCancellation()
+                proposal = value
+            } catch is CancellationError { }
+            catch { show(error) }
+        }
+        await planningTask?.value
     }
 
     func toggleUniverse(_ universe: String) {
         guard var proposal else { return }
         if let index = proposal.universes.firstIndex(of: universe) {
             proposal.universes.remove(at: index)
-        } else if proposal.universes.count < 6 {
-            proposal.universes.append(universe)
         } else {
-            notice = AppNotice(style: .warning, title: "Six-universe limit", message: "Remove one universe before adding another.")
+            if universe == "All public equities" {
+                proposal.universes = [universe]
+            } else {
+                proposal.universes.removeAll { $0 == "All public equities" }
+                guard proposal.universes.count < 6 else {
+                    notice = AppNotice(style: .warning, title: "Six-industry limit", message: "Remove one industry before adding another.")
+                    return
+                }
+                proposal.universes.append(universe)
+            }
         }
         self.proposal = proposal
     }
@@ -138,24 +158,52 @@ final class AppModel {
         self.proposal = nil
         isResearching = true
         researchProgress = "Retrieving company evidence…"
-        do { report = try await researchEngine.run(proposal) }
-        catch { show(error) }
-        researchProgress = ""
-        isResearching = false
+        report = nil
+        researchTask = Task {
+            defer { researchProgress = ""; isResearching = false; researchTask = nil }
+            do {
+                let value = try await researchEngine.run(proposal)
+                try Task.checkCancellation()
+                report = value
+            } catch is CancellationError { }
+            catch { show(error) }
+        }
+        await researchTask?.value
+    }
+
+    func cancelResearch() {
+        planningTask?.cancel()
+        researchTask?.cancel()
+    }
+
+    private func store() throws -> PortfolioStore {
+        guard let portfolioStore else {
+            throw StockAgentError.unavailable("The portfolio database could not be opened. Your existing data has not been replaced. Restart after checking disk access.")
+        }
+        return portfolioStore
     }
 
     func loadPortfolio() async {
         isLoadingPortfolio = true
         do {
-            async let loadedPurchases = portfolioStore.purchases()
+            let portfolioStore = try store()
+            async let loadedPurchases = portfolioStore.adjustedPurchases()
             async let loadedHoldings = portfolioStore.holdings()
             purchases = try await loadedPurchases
             holdings = try await loadedHoldings
             var histories = [String: [PricePoint]]()
             for ticker in Set(purchases.map(\.ticker)) {
-                histories[ticker] = try await portfolioStore.priceHistory(ticker: ticker)
+                if await portfolioStore.hasVerifiedPriceHistory(ticker: ticker) {
+                    histories[ticker] = await portfolioStore.priceHistory(ticker: ticker)
+                }
             }
             priceHistoryByTicker = histories
+            let freshnessCutoff = Date.now.addingTimeInterval(-4 * 86_400)
+            for index in holdings.indices {
+                if histories[holdings[index].ticker]?.last?.date ?? .distantPast < freshnessCutoff {
+                    holdings[index].currentPrice = nil
+                }
+            }
             selectedTickers.formIntersection(Set(holdings.map(\.ticker)))
         } catch { show(error) }
         isLoadingPortfolio = false
@@ -163,16 +211,17 @@ final class AppModel {
 
     func addPurchase(ticker: String, quantity: Double, price: Double, date: Date, note: String) async -> Bool {
         do {
-            _ = try await portfolioStore.record(Purchase(ticker: ticker, quantity: quantity, price: price, purchasedAt: date, note: note))
+            _ = try await store().record(Purchase(ticker: ticker, quantity: quantity, price: price, purchasedAt: date, note: note))
             overlay = nil
             await loadPortfolio()
+            Task { await refreshPrices(showNotice: false, staleOnly: true) }
             return true
         } catch { show(error); return false }
     }
 
     func deleteTicker(_ ticker: String) async {
         do {
-            _ = try await portfolioStore.deleteTicker(ticker)
+            _ = try await store().deleteTicker(ticker)
             await loadPortfolio()
         } catch { show(error) }
     }
@@ -183,7 +232,7 @@ final class AppModel {
     }
 
     func portfolioPerformanceIndex() -> [PortfolioValuePoint] {
-        PortfolioAnalytics.timeWeightedIndex(
+        PortfolioAnalytics.returnsOnCost(
             purchases: purchases,
             priceHistory: priceHistoryByTicker
         )
@@ -192,30 +241,13 @@ final class AppModel {
     func importPortfolioJSON(_ text: String) async -> Bool {
         do {
             let imported = try PortfolioImporter.parseJSON(text)
-            _ = try await portfolioStore.record(imported)
+            _ = try await store().record(imported)
             overlay = nil
             await loadPortfolio()
             notice = AppNotice(style: .success, title: "Portfolio imported", message: "Added \(imported.count) purchase \(imported.count == 1 ? "lot" : "lots").")
+            Task { await refreshPrices(showNotice: false, staleOnly: true) }
             return true
         } catch { show(error); return false }
-    }
-
-    func setManualPrice(ticker: String, price: Double) async -> Bool {
-        do {
-            try await portfolioStore.setManualPrice(ticker: ticker, close: price)
-            overlay = nil
-            await loadPortfolio()
-            return true
-        } catch { show(error); return false }
-    }
-
-    func importPriceCSV(ticker: String, data: Data) async {
-        do {
-            let points = try PortfolioImporter.parsePriceCSV(data)
-            try await portfolioStore.importPriceHistory(ticker: ticker, points: points, source: "Imported CSV")
-            await loadPortfolio()
-            notice = AppNotice(style: .success, title: "Prices imported", message: "Loaded \(points.count) daily closes for \(ticker.uppercased()).")
-        } catch { show(error) }
     }
 
     func refreshPrices(showNotice: Bool = true, staleOnly: Bool = false) async {
@@ -230,14 +262,15 @@ final class AppModel {
                     .filter { $0.ticker == holding.ticker }
                     .map(\.purchasedAt)
                     .min()
-                let points = try await priceService.dailyPrices(
+                let history = try await priceService.history(
                     ticker: holding.ticker,
                     starting: firstPurchase
                 )
-                try await portfolioStore.importPriceHistory(
+                try await store().importPriceHistory(
                     ticker: holding.ticker,
-                    points: points,
-                    source: "Yahoo Finance"
+                    points: history.prices,
+                    source: "Yahoo Finance (split-adjusted)",
+                    splits: history.splits
                 )
             } catch { failures.append("\(holding.ticker): \(error.localizedDescription)") }
             if index < targets.count - 1 {
@@ -246,7 +279,7 @@ final class AppModel {
         }
         await loadPortfolio()
         isRefreshingPrices = false
-        if showNotice {
+        if showNotice || !failures.isEmpty {
             if failures.isEmpty {
                 notice = AppNotice(style: .success, title: "Prices refreshed", message: "Daily price history is up to date.")
             } else {
@@ -271,19 +304,14 @@ final class AppModel {
         isLoadingMarket = false
     }
 
-    func checkLSEG() async {
+    func checkConnections() async {
+        guard !isCheckingConnections else { return }
+        isCheckingConnections = true
+        appleIntelligenceAvailable = await Task.detached(priority: .utility) {
+            SystemLanguageModel.default.isAvailable
+        }.value
         lsegConnected = await lsegService.isAvailable()
-    }
-
-    func saveConfiguration() {
-        if let data = try? JSONEncoder().encode(configuration) {
-            UserDefaults.standard.set(data, forKey: "StockAgent.configuration")
-        }
-        researchEngine = ResearchEngine(
-            sec: SECService(userAgent: configuration.secUserAgent),
-            lseg: lsegService
-        )
-        notice = AppNotice(style: .success, title: "Settings saved", message: "Provider settings were updated on this Mac.")
+        isCheckingConnections = false
     }
 
     func show(_ error: Error) {
@@ -294,7 +322,6 @@ final class AppModel {
 enum AppOverlay: Equatable {
     case addPurchase
     case importPortfolio
-    case manualPrice(String)
 }
 
 struct AppNotice: Identifiable, Equatable {

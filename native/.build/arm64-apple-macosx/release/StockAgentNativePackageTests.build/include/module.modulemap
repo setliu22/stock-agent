@@ -1,3 +1,0 @@
-module StockAgentNativePackageTests {
-    header "/Users/a../stock-agent/native/.build/arm64-apple-macosx/release/StockAgentNativePackageTests.build/include/StockAgentNativePackageTests-Swift.h"
-}

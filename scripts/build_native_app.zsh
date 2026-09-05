@@ -28,12 +28,7 @@ chmod 755 "$STAGED_APP/Contents/MacOS/StockAgent"
 /usr/bin/codesign --verify --deep --strict "$STAGED_APP"
 
 if [[ -d "$APP_PATH" ]]; then
-    if [[ -x "$APP_PATH/Contents/MacOS/applet" && ! -e "$PROJECT_ROOT/backups/Stock Agent Python Legacy.app" ]]; then
-        mkdir -p "$PROJECT_ROOT/backups"
-        mv "$APP_PATH" "$PROJECT_ROOT/backups/Stock Agent Python Legacy.app"
-    else
-        mv "$APP_PATH" "$PREVIOUS_APP"
-    fi
+    mv "$APP_PATH" "$PREVIOUS_APP"
 fi
 
 if ! mv "$STAGED_APP" "$APP_PATH"; then

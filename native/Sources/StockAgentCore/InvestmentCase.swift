@@ -6,8 +6,8 @@ private struct GeneratedInvestmentCaseRow {
     @Guide(description: "Copy the supplied company identifier exactly")
     var identifier: String
 
-    @Guide(description: "A balanced one- or two-sentence synthesis under 70 words; do not recommend buying or selling")
-    var summary: String
+    @Guide(description: "Copy one to three supplied statement IDs, choosing the most useful facts for further research", .minimumCount(1), .maximumCount(3))
+    var statementIDs: [String]
 }
 
 @Generable
@@ -20,6 +20,8 @@ struct InvestmentCaseInput: Sendable {
     let company: CompanyCandidate
     let evidence: [InvestmentEvidenceItem]
     let fallback: InvestmentCase
+    let summaryStatements: [String: String]
+    let cautionStatementIDs: Set<String>
 }
 
 protocol InvestmentCaseGenerating: Sendable {
@@ -28,27 +30,28 @@ protocol InvestmentCaseGenerating: Sendable {
 
 struct OnDeviceInvestmentCaseGenerator: InvestmentCaseGenerating {
     func generate(_ inputs: [InvestmentCaseInput]) async throws -> [String: InvestmentCase] {
+        let inputs = inputs.filter { $0.evidence.contains(where: { $0.id != "coverage_limit" }) }
+        guard !inputs.isEmpty else { return [:] }
         guard SystemLanguageModel.default.isAvailable else {
             throw StockAgentError.unavailable("Apple Intelligence is unavailable for investment-case synthesis.")
         }
         var output = [String: InvestmentCase]()
         for offset in stride(from: 0, to: inputs.count, by: 5) {
+            try Task.checkCancellation()
             let group = Array(inputs[offset..<min(offset + 5, inputs.count)])
             let session = LanguageModelSession(
                 model: .default,
                 instructions: """
-                Act as a source-disciplined equity research editor. Explain why each stock may or may not
-                deserve further research using only the supplied evidence lines. A thematic connection is
-                not by itself proof of an attractive investment. Weigh valuation, profitability, balance
-                sheet, expectations, and data limitations when available. Return only a short balanced
-                synthesis; the app computes the stance and displays validated evidence points separately. Never
-                invent revenue exposure, growth, contracts, market share, forecasts, risks,
-                recommendations, or numbers. Do not tell the user to buy or sell.
+                Select the most informative supplied statements for each company's research summary.
+                Return only statement IDs and the exact company identifier. Prioritize a concrete
+                business connection and comparable financial evidence when present. Include a relevant
+                caution. A thematic connection alone does not establish an attractive investment.
+                Do not create statements, recommendations, or company identifiers.
                 """
             )
             let companyText = group.enumerated().map { index, input in
-                let lines = input.evidence.map { item in
-                    "\(item.id) | \(item.label) | \(item.detail) | Source: \(item.source)"
+                let lines = input.summaryStatements.sorted { $0.key < $1.key }.map { id, statement in
+                    "\(id) | \(statement)\(input.cautionStatementIDs.contains(id) ? " | Caution" : "")"
                 }.joined(separator: "\n")
                 return """
                 Company \(index + 1)
@@ -60,44 +63,55 @@ struct OnDeviceInvestmentCaseGenerator: InvestmentCaseGenerating {
             }.joined(separator: "\n\n")
             let response = try await session.respond(
                 to: companyText,
-                generating: GeneratedInvestmentCaseBatch.self
+                generating: GeneratedInvestmentCaseBatch.self,
+                options: GenerationOptions(sampling: .greedy, maximumResponseTokens: 500)
             )
-            for (index, row) in response.content.companies.enumerated() {
-                guard let input = group.first(where: { $0.company.id == row.identifier })
-                        ?? (group.indices.contains(index) ? group[index] : nil) else { continue }
-                output[input.company.id] = Self.validated(row, for: input)
-            }
+            let selected = Self.validated(
+                rows: response.content.companies.map { ($0.identifier, $0.statementIDs) },
+                for: group
+            )
+            output.merge(selected, uniquingKeysWith: { _, latest in latest })
         }
         return output
     }
 
-    private static func validated(
-        _ generated: GeneratedInvestmentCaseRow,
+    static func validated(
+        rows: [(identifier: String, statementIDs: [String])],
+        for inputs: [InvestmentCaseInput]
+    ) -> [String: InvestmentCase] {
+        let rowsByID = Dictionary(grouping: rows, by: \.identifier)
+        var output = [String: InvestmentCase]()
+        for input in inputs {
+            guard let matches = rowsByID[input.company.id], matches.count == 1,
+                  let match = matches.first else { continue }
+            output[input.company.id] = validated(statementIDs: match.statementIDs, for: input)
+        }
+        return output
+    }
+
+    static func validated(
+        statementIDs: [String],
         for input: InvestmentCaseInput
     ) -> InvestmentCase {
-        let byID = Dictionary(uniqueKeysWithValues: input.evidence.map { ($0.id, $0) })
-        let allEvidence = byID.values.map(\.detail).joined(separator: " ")
-        let proposedSummary = generated.summary.trimmingCharacters(in: .whitespacesAndNewlines)
-        let summary = !proposedSummary.isEmpty && numbers(in: proposedSummary).isSubset(of: numbers(in: allEvidence))
-            ? String(proposedSummary.prefix(520))
-            : input.fallback.summary
+        guard !statementIDs.isEmpty, statementIDs.count <= 3,
+              Set(statementIDs).count == statementIDs.count,
+              statementIDs.allSatisfy({ input.summaryStatements[$0] != nil }) else {
+            return input.fallback
+        }
+        var selected = statementIDs
+        if !input.cautionStatementIDs.isEmpty,
+           input.cautionStatementIDs.isDisjoint(with: selected),
+           let cautionID = input.cautionStatementIDs.sorted().first {
+            selected = Array(selected.prefix(2)) + [cautionID]
+        }
+        let summary = selected.compactMap { input.summaryStatements[$0] }.joined(separator: " ")
         return InvestmentCase(
-            stance: input.fallback.stance,
             summary: summary,
             reasons: input.fallback.reasons,
             watchouts: input.fallback.watchouts
         )
     }
 
-    private static func numbers(in text: String) -> Set<String> {
-        let pattern = #"-?\d+(?:[,.]\d+)?%?"#
-        guard let expression = try? NSRegularExpression(pattern: pattern) else { return [] }
-        let range = NSRange(text.startIndex..., in: text)
-        return Set(expression.matches(in: text, range: range).compactMap { match in
-            guard let range = Range(match.range, in: text) else { return nil }
-            return text[range].replacingOccurrences(of: ",", with: "")
-        })
-    }
 }
 
 enum InvestmentCaseEvidence {
@@ -109,26 +123,9 @@ enum InvestmentCaseEvidence {
         var positive = [InvestmentCasePoint]()
         var watchouts = [InvestmentCasePoint]()
 
-        if result.exposure != .profile {
-            let theme = InvestmentEvidenceItem(
-                id: "theme_fit",
-                label: "Theme fit",
-                detail: result.thesis,
-                source: result.sources.joined(separator: " + ")
-            )
-            evidence.append(theme)
-            positive.append(
-                InvestmentCasePoint(
-                    text: "The source description establishes \(result.exposure.rawValue.lowercased()) to the theme.",
-                    evidence: [theme]
-                )
-            )
-        }
-
         addPeerComparison(
             label: "Trailing P/E",
             id: "trailing_pe",
-            lowerIsFavorable: true,
             result: result,
             peers: peerSnapshots,
             evidence: &evidence,
@@ -138,24 +135,12 @@ enum InvestmentCaseEvidence {
         addPeerComparison(
             label: "Forward P/E",
             id: "forward_pe",
-            lowerIsFavorable: true,
             result: result,
             peers: peerSnapshots,
             evidence: &evidence,
             positive: &positive,
             watchouts: &watchouts
         )
-        addPeerComparison(
-            label: "Return on equity",
-            id: "return_on_equity",
-            lowerIsFavorable: false,
-            result: result,
-            peers: peerSnapshots,
-            evidence: &evidence,
-            positive: &positive,
-            watchouts: &watchouts
-        )
-
         if let snapshot = result.snapshot {
             addProfitabilityEvidence(
                 snapshot: snapshot,
@@ -169,17 +154,6 @@ enum InvestmentCaseEvidence {
                 positive: &positive,
                 watchouts: &watchouts
             )
-            addTargetEvidence(
-                snapshot: snapshot,
-                evidence: &evidence,
-                positive: &positive,
-                watchouts: &watchouts
-            )
-            addContextFact("Market cap", id: "market_cap", snapshot: snapshot, evidence: &evidence)
-            addContextFact("LTM revenue", id: "revenue", snapshot: snapshot, evidence: &evidence)
-            addContextFact("EV / EBITDA", id: "ev_ebitda", snapshot: snapshot, evidence: &evidence)
-            addContextFact("FY1 EPS estimate", id: "fy1_eps", snapshot: snapshot, evidence: &evidence)
-            addContextFact("FY1 revenue estimate", id: "fy1_revenue", snapshot: snapshot, evidence: &evidence)
         }
 
         let coverageDetail = result.exposure == .profile
@@ -202,53 +176,48 @@ enum InvestmentCaseEvidence {
             )
         )
 
-        let stance: InvestmentStance
-        if evidence.count <= 2 {
-            stance = .insufficient
-        } else if positive.count >= 3 && positive.count > watchouts.count {
-            stance = .constructive
-        } else if watchouts.count > positive.count {
-            stance = .cautious
-        } else {
-            stance = .mixed
-        }
         let supportSummary = positive.prefix(2).map(\.text).joined(separator: " ")
         let cautionSummary = watchouts.prefix(1).map(\.text).joined(separator: " ")
-        let summary: String
-        switch stance {
-        case .constructive:
-            summary = "\(supportSummary) \(cautionSummary)"
-        case .mixed:
-            summary = "\(supportSummary) \(cautionSummary)"
-        case .cautious:
-            summary = "\(cautionSummary)\(supportSummary.isEmpty ? "" : " \(supportSummary)")"
-        case .insufficient:
-            summary = result.exposure == .profile
-                ? "The available company data is not sufficient to judge the investment case."
-                : "The business connection is visible, but there is not enough comparable financial evidence to judge the investment case."
-        }
+        let summary = [supportSummary, cautionSummary].filter { !$0.isEmpty }.joined(separator: " ")
         let fallback = InvestmentCase(
-            stance: stance,
             summary: summary,
             reasons: Array(positive.prefix(3)),
             watchouts: Array(watchouts.prefix(3))
         )
-        return InvestmentCaseInput(company: result.candidate, evidence: evidence, fallback: fallback)
+        let statements = (positive + watchouts).compactMap { point -> (String, String)? in
+            guard let id = point.evidence.first?.id else { return nil }
+            return (id, point.text)
+        }
+        return InvestmentCaseInput(
+            company: result.candidate,
+            evidence: evidence,
+            fallback: fallback,
+            summaryStatements: Dictionary(statements, uniquingKeysWith: { first, _ in first }),
+            cautionStatementIDs: Set(watchouts.compactMap { $0.evidence.first?.id })
+        )
     }
 
     private static func addPeerComparison(
         label: String,
         id: String,
-        lowerIsFavorable: Bool,
         result: ResearchCompanyResult,
         peers: [CompanySnapshot],
         evidence: inout [InvestmentEvidenceItem],
         positive: inout [InvestmentCasePoint],
         watchouts: inout [InvestmentCasePoint]
     ) {
-        guard let fact = result.snapshot?.facts.first(where: { $0.label == label }), fact.value.isFinite else { return }
-        let values = peers.compactMap { snapshot in
-            snapshot.facts.first(where: { $0.label == label })?.value
+        guard let fact = result.snapshot?.facts.first(where: { $0.label == label }),
+              fact.value.isFinite, fact.value > 0 else { return }
+        var seen = Set<String>()
+        let values = peers.compactMap { snapshot -> Double? in
+            guard snapshot.cik != result.snapshot?.cik,
+                  snapshot.description == result.snapshot?.description,
+                  seen.insert(snapshot.cik).inserted,
+                  let peerFact = snapshot.facts.first(where: { $0.label == label }),
+                  peerFact.unit == fact.unit, peerFact.source == fact.source,
+                  peerFact.periodStart == fact.periodStart,
+                  peerFact.periodEnd == fact.periodEnd else { return nil }
+            return peerFact.value
         }.filter { $0.isFinite && $0 > 0 }.sorted()
         guard values.count >= 3, let median = median(values), median > 0 else { return }
         let item = InvestmentEvidenceItem(
@@ -258,22 +227,17 @@ enum InvestmentCaseEvidence {
             source: fact.source
         )
         evidence.append(item)
-        let relative = fact.value / median
-        if (lowerIsFavorable && relative <= 0.9) || (!lowerIsFavorable && relative >= 1.1) {
+        if fact.value < median {
             positive.append(
                 InvestmentCasePoint(
-                    text: lowerIsFavorable
-                        ? "\(label) is below the screened peer median."
-                        : "\(label) is above the screened peer median.",
+                    text: "\(label) is below the screened peer median.",
                     evidence: [item]
                 )
             )
-        } else if (lowerIsFavorable && relative >= 1.1) || (!lowerIsFavorable && relative <= 0.9) {
+        } else if fact.value > median {
             watchouts.append(
                 InvestmentCasePoint(
-                    text: lowerIsFavorable
-                        ? "\(label) is above the screened peer median."
-                        : "\(label) is below the screened peer median.",
+                    text: "\(label) is above the screened peer median.",
                     evidence: [item]
                 )
             )
@@ -286,25 +250,23 @@ enum InvestmentCaseEvidence {
         positive: inout [InvestmentCasePoint],
         watchouts: inout [InvestmentCasePoint]
     ) {
-        guard let cash = snapshot.facts.first(where: { $0.label == "Cash and equivalents" }) else { return }
-        let debtFacts = snapshot.facts.filter {
-            ["Total debt", "Current debt", "Long-term debt"].contains($0.label)
-        }
-        guard !debtFacts.isEmpty else { return }
-        let totalDebt = debtFacts.first(where: { $0.label == "Total debt" })?.value
-            ?? debtFacts.reduce(0) { $0 + $1.value }
-        let debtSource = joinedSources(debtFacts.map(\.source))
+        guard let cash = snapshot.facts.first(where: { $0.label == "Cash and equivalents" }),
+              let debt = snapshot.facts.first(where: { $0.label == "Total debt" }),
+              cash.value.isFinite, debt.value.isFinite,
+              cash.value >= 0, debt.value >= 0,
+              cash.unit == debt.unit,
+              let period = cash.periodEnd, period == debt.periodEnd else { return }
         let item = InvestmentEvidenceItem(
             id: "balance_sheet",
             label: "Balance sheet",
-            detail: "Cash and equivalents are \(format(cash.value, unit: cash.unit)); reported debt is \(format(totalDebt, unit: debtFacts[0].unit)).",
-            source: joinedSources([cash.source, debtSource])
+            detail: "As of \(period.formatted(date: .abbreviated, time: .omitted)), cash and equivalents are \(format(cash.value, unit: cash.unit)); total debt is \(format(debt.value, unit: debt.unit)).",
+            source: joinedSources([cash.source, debt.source])
         )
         evidence.append(item)
-        if cash.value >= totalDebt {
-            positive.append(InvestmentCasePoint(text: "Reported cash is at least as large as reported debt.", evidence: [item]))
-        } else if totalDebt > max(cash.value * 2, 1) {
-            watchouts.append(InvestmentCasePoint(text: "Reported debt is more than twice reported cash.", evidence: [item]))
+        if cash.value >= debt.value {
+            positive.append(InvestmentCasePoint(text: "Reported cash is at least as large as total debt at the same reporting date.", evidence: [item]))
+        } else {
+            watchouts.append(InvestmentCasePoint(text: "Total debt exceeds cash and equivalents at the same reporting date.", evidence: [item]))
         }
     }
 
@@ -316,13 +278,14 @@ enum InvestmentCaseEvidence {
     ) {
         guard let revenue = snapshot.facts.first(where: { $0.label == "Revenue" }),
               let income = snapshot.facts.first(where: { $0.label == "Net income" }),
-              revenue.value > 0,
+              revenue.value.isFinite, income.value.isFinite, revenue.value > 0,
               revenue.unit == income.unit,
-              revenue.periodEnd == income.periodEnd else { return }
+              let start = revenue.periodStart, start == income.periodStart,
+              let end = revenue.periodEnd, end == income.periodEnd,
+              start < end else { return }
         let margin = income.value / revenue.value * 100
-        let period = income.periodEnd.map {
-            " for the period ending \($0.formatted(date: .abbreviated, time: .omitted))"
-        } ?? ""
+        guard margin.isFinite else { return }
+        let period = " from \(start.formatted(date: .abbreviated, time: .omitted)) to \(end.formatted(date: .abbreviated, time: .omitted))"
         let item = InvestmentEvidenceItem(
             id: "reported_profitability",
             label: "Reported profitability",
@@ -335,46 +298,6 @@ enum InvestmentCaseEvidence {
         } else if income.value < 0 {
             watchouts.append(InvestmentCasePoint(text: "The latest comparable revenue and net-income facts show a loss.", evidence: [item]))
         }
-    }
-
-    private static func addTargetEvidence(
-        snapshot: CompanySnapshot,
-        evidence: inout [InvestmentEvidenceItem],
-        positive: inout [InvestmentCasePoint],
-        watchouts: inout [InvestmentCasePoint]
-    ) {
-        guard let price = snapshot.facts.first(where: { $0.label == "Share price" }), price.value > 0,
-              let target = snapshot.facts.first(where: { $0.label == "Mean price target" }), target.value > 0 else { return }
-        let upside = (target.value / price.value - 1) * 100
-        let item = InvestmentEvidenceItem(
-            id: "analyst_target",
-            label: "Analyst target",
-            detail: "The source share price is \(format(price.value, unit: price.unit)); the mean analyst target is \(format(target.value, unit: target.unit)), a \(format(upside, unit: "%")) difference. Targets are opinions and can change.",
-            source: target.source
-        )
-        evidence.append(item)
-        if upside >= 10 {
-            positive.append(InvestmentCasePoint(text: "The mean analyst target is above the source share price, with normal target uncertainty.", evidence: [item]))
-        } else if upside <= -5 {
-            watchouts.append(InvestmentCasePoint(text: "The mean analyst target is below the source share price.", evidence: [item]))
-        }
-    }
-
-    private static func addContextFact(
-        _ label: String,
-        id: String,
-        snapshot: CompanySnapshot,
-        evidence: inout [InvestmentEvidenceItem]
-    ) {
-        guard let fact = snapshot.facts.first(where: { $0.label == label }) else { return }
-        evidence.append(
-            InvestmentEvidenceItem(
-                id: id,
-                label: label,
-                detail: "\(label) is \(format(fact.value, unit: fact.unit)).",
-                source: fact.source
-            )
-        )
     }
 
     private static func median(_ values: [Double]) -> Double? {

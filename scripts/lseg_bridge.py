@@ -59,8 +59,7 @@ def _configure_session(ld: Any, session_name: str, app_key: str | None) -> None:
     except Exception:
         return
     values = (
-        ("logs.transports.file.enabled", True),
-        ("logs.transports.file.name", str(PROJECT_ROOT / "data" / "lseg-data-lib.log")),
+        ("logs.transports.file.enabled", False),
         ("logs.level", "info"),
         ("http.request-timeout", int(max(5, _float_setting("LSEG_REQUEST_TIMEOUT", 20)))),
         ("sessions.default", session_name),
@@ -321,8 +320,6 @@ def _ticker_to_ric(ticker: str) -> str:
             return max(values, key=_ric_score)
     except Exception as exc:
         errors.append(f"content conversion: {type(exc).__name__}: {exc}")
-    if "." in ticker:
-        return ticker
     raise RuntimeError(f"LSEG could not convert ticker {ticker}: {'; '.join(errors)}")
 
 
@@ -355,9 +352,8 @@ def _company_records(ld: Any, tickers: list[str]) -> tuple[list[dict[str, Any]],
 def _screen_records(ld: Any, screens: list[dict[str, Any]], limit: int) -> tuple[list[dict[str, Any]], list[str]]:
     from lseg.data.discovery import Screener
 
-    records = []
+    batches = []
     failures = []
-    seen = set()
     for screen in screens[:6]:
         label = str(screen.get("label") or "Screen")
         body = str(screen.get("body") or "").strip()
@@ -368,18 +364,29 @@ def _screen_records(ld: Any, screens: list[dict[str, Any]], limit: int) -> tuple
                 frame = _get_data(ld, Screener(body))
             except Exception:
                 frame = _get_data(ld, f"SCREEN({body})")
+            batch = []
             for _, row in frame.iterrows():
                 record = _record(row)
                 record["universe"] = label
-                identity = record["ric"] or record["ticker"]
-                if not identity or identity in seen:
-                    continue
-                seen.add(identity)
-                records.append(record)
-                if len(records) >= limit:
-                    return records, failures
+                batch.append(record)
+            batches.append(batch)
         except Exception as exc:
             failures.append(f"{label}: {type(exc).__name__}: {exc}")
+    # Interleave screens so a broad first industry cannot consume the entire budget.
+    records = []
+    seen = set()
+    for index in range(max((len(batch) for batch in batches), default=0)):
+        for batch in batches:
+            if index >= len(batch):
+                continue
+            record = batch[index]
+            identity = record["ric"] or record["ticker"]
+            if not identity or identity in seen:
+                continue
+            seen.add(identity)
+            records.append(record)
+            if len(records) >= limit:
+                return records, failures
     return records, failures
 
 
@@ -399,7 +406,7 @@ def main() -> int:
             companies, failures = _screen_records(
                 ld,
                 list(payload.get("screens") or []),
-                max(1, min(int(payload.get("limit") or 16), 48)),
+                max(1, min(int(payload.get("limit") or 16), 120)),
             )
             output = {"ok": True, "companies": companies, "failures": failures}
         else:

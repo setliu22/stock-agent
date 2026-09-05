@@ -6,5 +6,7 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 Stock Agent.app/
+native/.build/
+backups/
 data/*
 !data/.gitkeep

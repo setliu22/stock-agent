@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 
 public enum PortfolioImporter {
     private static let containers = [
@@ -9,7 +10,7 @@ public enum PortfolioImporter {
     private static let quantityKeys = ["quantity", "shares", "units", "qty"]
     private static let priceKeys = [
         "purchaseprice", "purchasepricepershare", "averagecost", "averagecostpershare",
-        "avgcost", "costbasis", "entryprice", "price",
+        "avgcost", "entryprice", "price",
     ]
     private static let dateKeys = ["purchasedat", "purchasedate", "acquiredat", "date"]
 
@@ -36,7 +37,7 @@ public enum PortfolioImporter {
             throw StockAgentError.validation("The portfolio JSON contains no positions.")
         }
         return try records.enumerated().map { index, record in
-            let normalized = Dictionary(uniqueKeysWithValues: record.map { (key($0.key), $0.value) })
+            let normalized = try normalizedKeys(record)
             guard let ticker = string(first(normalized, keys: tickerKeys)), !ticker.isEmpty else {
                 throw StockAgentError.validation("Position \(index + 1): ticker or symbol is missing.")
             }
@@ -53,44 +54,14 @@ public enum PortfolioImporter {
                 )
             }
             let note = string(first(normalized, keys: ["note", "notes"])) ?? ""
-            return Purchase(
+            return try Purchase(
                 ticker: ticker,
                 quantity: quantity,
                 price: price,
                 purchasedAt: date,
                 note: note
-            )
+            ).validated()
         }
-    }
-
-    public static func parsePriceCSV(_ data: Data) throws -> [PricePoint] {
-        guard let text = String(data: data, encoding: .utf8) else {
-            throw StockAgentError.validation("The CSV must use UTF-8 text.")
-        }
-        let rows = text.split(whereSeparator: \Character.isNewline).map {
-            $0.split(separator: ",", omittingEmptySubsequences: false).map {
-                $0.trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "\"")))
-            }
-        }
-        guard let header = rows.first else {
-            throw StockAgentError.validation("The CSV is empty.")
-        }
-        let normalized = header.map(key)
-        guard let dateIndex = normalized.firstIndex(where: { ["date", "timestamp"].contains($0) }),
-              let closeIndex = normalized.firstIndex(where: { ["close", "adjustedclose", "price"].contains($0) }) else {
-            throw StockAgentError.validation("The CSV needs Date and Close columns.")
-        }
-        let points = rows.dropFirst().compactMap { row -> PricePoint? in
-            guard dateIndex < row.count, closeIndex < row.count,
-                  let date = parseDate(row[dateIndex]), let close = Double(row[closeIndex]), close >= 0 else {
-                return nil
-            }
-            return PricePoint(date: date, close: close)
-        }.sorted { $0.date < $1.date }
-        guard !points.isEmpty else {
-            throw StockAgentError.validation("The CSV contains no valid price rows.")
-        }
-        return points
     }
 
     private static func positionRecords(_ payload: Any) throws -> [[String: Any]] {
@@ -98,7 +69,7 @@ public enum PortfolioImporter {
         guard let object = payload as? [String: Any] else {
             throw StockAgentError.validation("Portfolio positions must be JSON objects.")
         }
-        let normalized = Dictionary(uniqueKeysWithValues: object.map { (key($0.key), $0.value) })
+        let normalized = try normalizedKeys(object)
         for container in containers {
             if let records = normalized[container] as? [[String: Any]] { return records }
         }
@@ -108,6 +79,18 @@ public enum PortfolioImporter {
 
     private static func first(_ values: [String: Any], keys: [String]) -> Any? {
         keys.lazy.compactMap { values[$0] }.first
+    }
+
+    private static func normalizedKeys(_ values: [String: Any]) throws -> [String: Any] {
+        var result = [String: Any]()
+        for (name, value) in values {
+            let normalized = key(name)
+            guard result[normalized] == nil else {
+                throw StockAgentError.validation("The JSON has duplicate fields named \(name).")
+            }
+            result[normalized] = value
+        }
+        return result
     }
 
     private static func key(_ value: String) -> String {
@@ -123,18 +106,30 @@ public enum PortfolioImporter {
     }
 
     private static func number(_ value: Any?) -> Double? {
-        if let value = value as? NSNumber { return value.doubleValue }
+        if let value = value as? NSNumber {
+            guard CFGetTypeID(value) != CFBooleanGetTypeID(), value.doubleValue.isFinite else { return nil }
+            return value.doubleValue
+        }
         if let value = value as? String {
-            return Double(value.replacingOccurrences(of: ",", with: "").replacingOccurrences(of: "$", with: ""))
+            guard let number = Double(value.replacingOccurrences(of: ",", with: "").replacingOccurrences(of: "$", with: "")),
+                  number.isFinite else { return nil }
+            return number
         }
         return nil
     }
 
     private static func parseDate(_ value: String) -> Date? {
-        let pieces = value.prefix(10).split(separator: "-").compactMap { Int($0) }
-        guard pieces.count == 3 else { return nil }
-        return Calendar(identifier: .gregorian).date(
+        let rawDate = String(value.prefix(10))
+        let tokens = rawDate.split(separator: "-", omittingEmptySubsequences: false)
+        guard tokens.count == 3, tokens[0].count == 4, tokens[1].count == 2, tokens[2].count == 2 else { return nil }
+        let pieces = tokens.compactMap { Int($0) }
+        guard pieces.count == 3, pieces[0] >= 1900 else { return nil }
+        let calendar = Calendar(identifier: .gregorian)
+        guard let date = calendar.date(
             from: DateComponents(year: pieces[0], month: pieces[1], day: pieces[2], hour: 12)
-        )
+        ) else { return nil }
+        let actual = calendar.dateComponents([.year, .month, .day], from: date)
+        guard actual.year == pieces[0], actual.month == pieces[1], actual.day == pieces[2] else { return nil }
+        return date
     }
 }

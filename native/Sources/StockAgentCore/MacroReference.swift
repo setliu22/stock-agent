@@ -18,6 +18,12 @@ public enum MacroReferences {
     // These are the established explanations from the original app's
     // MACRO_REFERENCE_ROWS. They intentionally remain deterministic copy.
     public static let bySeriesID: [String: MacroReference] = [
+        "DGS10": MacroReference(id: "DGS10", condition: "Rising",
+            companyProfile: "Long-duration growth stocks and rate-sensitive businesses face greater valuation pressure",
+            explanation: "The 10-year Treasury yield is a market borrowing-rate benchmark, distinct from the Fed's overnight rate. Higher yields can reduce the present value of distant profits and raise financing costs. They may also reflect stronger growth rather than tighter policy, so compare the move with inflation and credit spreads before drawing an equity conclusion."),
+        "UNRATE": MacroReference(id: "UNRATE", condition: "Rising",
+            companyProfile: "Consumer-sensitive and cyclical earnings may face weaker demand",
+            explanation: "Rising unemployment can signal weakening household income and demand. That can pressure discretionary spending and cyclical earnings, while weaker wage pressure may allow easier monetary policy. The rate can also change because people enter or leave the labor force, so one monthly observation does not establish a recession."),
         "DFF": MacroReference(
             id: "DFF",
             condition: "High or rising",

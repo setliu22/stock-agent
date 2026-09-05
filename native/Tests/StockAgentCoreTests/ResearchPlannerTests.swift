@@ -170,10 +170,11 @@ func investmentCaseTurnsMetricsIntoComparableResearchEvidence() {
             companySnapshot,
             snapshot(cik: "TWO", pe: 20, roe: 20),
             snapshot(cik: "THREE", pe: 30, roe: 10),
+            snapshot(cik: "FOUR", pe: 25, roe: 15),
         ]
     )
     #expect(input.evidence.contains(where: { $0.id == "trailing_pe" && $0.detail.contains("peer median") }))
-    #expect(input.evidence.contains(where: { $0.id == "return_on_equity" && $0.detail.contains("peer median") }))
+    #expect(!input.evidence.contains(where: { $0.id == "return_on_equity" }))
     #expect(input.fallback.reasons.contains(where: { $0.text.contains("below the screened peer median") }))
     #expect(input.fallback.watchouts.contains(where: { $0.text.contains("Theme-specific revenue") }))
 }
@@ -263,19 +264,19 @@ func groundedFitCentersItsExplanationOnTheMatchingEvidence() async throws {
 }
 
 @Test
-func namedInvestmentCaseUsesReportedProfitAndAggregatedDebt() {
+func namedInvestmentCaseUsesComparableProfitAndExplicitTotalDebt() {
     let period = Date(timeIntervalSince1970: 1_767_225_600)
+    let start = period.addingTimeInterval(-364 * 86_400)
     let snapshot = CompanySnapshot(
         cik: "META",
         ticker: "META",
         name: "Meta Platforms",
         description: "Internet services",
         facts: [
-            FinancialFact(label: "Revenue", value: 100, unit: "USD", periodEnd: period),
-            FinancialFact(label: "Net income", value: 20, unit: "USD", periodEnd: period),
+            FinancialFact(label: "Revenue", value: 100, unit: "USD", periodEnd: period, periodStart: start),
+            FinancialFact(label: "Net income", value: 20, unit: "USD", periodEnd: period, periodStart: start),
             FinancialFact(label: "Cash and equivalents", value: 50, unit: "USD", periodEnd: period),
-            FinancialFact(label: "Current debt", value: 5, unit: "USD", periodEnd: period),
-            FinancialFact(label: "Long-term debt", value: 15, unit: "USD", periodEnd: period),
+            FinancialFact(label: "Total debt", value: 20, unit: "USD", periodEnd: period),
         ],
         recentFilings: []
     )
@@ -298,9 +299,10 @@ func namedInvestmentCaseUsesReportedProfitAndAggregatedDebt() {
 }
 
 @Test
-func macroReferenceSetMatchesOriginalFiveSignals() {
+func macroReferencesPreserveOriginalSignalsAndCoverLaborAndBondYields() {
     #expect(Set(MacroReferences.bySeriesID.keys) == Set([
         "DFF", "WALCL", "CPIAUCNS", "BAMLH0A0HYM2", "VIXCLS",
+        "DGS10", "UNRATE",
     ]))
     #expect(MacroReferences.bySeriesID.values.allSatisfy { !$0.explanation.isEmpty })
 }
@@ -368,32 +370,10 @@ func sqlitePortfolioRoundTripStoresPricesAndHoldings() async throws {
         source: "Test"
     )
     let holdings = try await store.holdings()
-    let prices = try await store.priceHistory(ticker: "ABC")
+    let prices = await store.priceHistory(ticker: "ABC")
     #expect(holdings.count == 1)
     #expect(holdings[0].quantity == 3)
     #expect(holdings[0].totalCost == 40)
     #expect(holdings[0].currentPrice == 18)
     #expect(prices.map(\.close) == [12, 18])
-}
-
-@Test
-func portfolioPerformanceDoesNotTreatNewCapitalAsGain() {
-    let calendar = Calendar(identifier: .gregorian)
-    let firstDay = calendar.date(from: DateComponents(year: 2026, month: 1, day: 2, hour: 12))!
-    let secondDay = calendar.date(from: DateComponents(year: 2026, month: 1, day: 3, hour: 12))!
-    let purchases = [
-        Purchase(ticker: "ABC", quantity: 1, price: 100, purchasedAt: firstDay),
-        Purchase(ticker: "ABC", quantity: 1, price: 110, purchasedAt: secondDay),
-    ]
-    let index = PortfolioAnalytics.timeWeightedIndex(
-        purchases: purchases,
-        priceHistory: [
-            "ABC": [
-                PricePoint(date: firstDay, close: 100),
-                PricePoint(date: secondDay, close: 110),
-            ]
-        ]
-    )
-    #expect(index.count == 2)
-    #expect(abs((index.last?.value ?? 0) - 110) < 0.001)
 }

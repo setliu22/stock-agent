@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ResearchView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.scenePhase) private var scenePhase
     @FocusState private var composerFocused: Bool
 
     var body: some View {
@@ -12,9 +13,10 @@ struct ResearchView: View {
                 PageHeader(
                     eyebrow: "",
                     title: "Research",
-                    subtitle: "Research a ticker or investment theme."
+                    subtitle: ""
                 )
 
+                ResearchConnections()
                 ResearchComposer(question: $model.researchQuestion, focused: $composerFocused)
 
                 if model.isResearching {
@@ -37,8 +39,51 @@ struct ResearchView: View {
         .onReceive(NotificationCenter.default.publisher(for: .focusResearchComposer)) { _ in
             composerFocused = true
         }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { Task { await model.checkConnections() } }
+        }
     }
 
+}
+
+private struct ResearchConnections: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        HStack(spacing: 18) {
+            Label {
+                Text("LSEG · \(lsegStatus)")
+            } icon: {
+                Circle().fill(model.lsegConnected == true ? StockTheme.positive : StockTheme.muted)
+                    .frame(width: 7, height: 7)
+            }
+            .help("Company fundamentals and industry screens. Open Workspace and sign in to connect; SEC filings remain available without it.")
+            Label {
+                Text("Apple Intelligence · \(model.isCheckingConnections ? "Checking…" : model.appleIntelligenceAvailable ? "Available" : "Unavailable")")
+            } icon: {
+                Image(systemName: "sparkles")
+                    .foregroundStyle(model.appleIntelligenceAvailable ? StockTheme.accentBright : StockTheme.muted)
+            }
+            .help("On-device theme matching and source-based answers. Availability depends on this Mac's Apple Intelligence settings and model download.")
+            Spacer(minLength: 0)
+            Button {
+                Task { await model.checkConnections() }
+            } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .buttonStyle(.plain)
+            .disabled(model.isCheckingConnections)
+            .help("Check research connections")
+            .accessibilityLabel("Check research connections")
+        }
+        .font(.system(size: 11, weight: .medium))
+        .foregroundStyle(StockTheme.muted)
+    }
+
+    private var lsegStatus: String {
+        if model.isCheckingConnections { return "Checking" }
+        return model.lsegConnected == true ? "Activated" : "Unavailable"
+    }
 }
 
 private struct ResearchComposer: View {
@@ -50,8 +95,14 @@ private struct ResearchComposer: View {
         GlassEffectContainer(spacing: 12) {
             GlassPanel(cornerRadius: 30, padding: 0) {
                 VStack(spacing: 0) {
+                    HStack(spacing: 8) {
+                        capability(.named, title: "Company Research", detail: "Business, filings and financials", icon: "building.2")
+                        capability(.discovery, title: "Trend Discovery", detail: "Companies connected to a trend", icon: "sparkle.magnifyingglass")
+                    }
+                    .padding(12)
+                    Divider().overlay(StockTheme.border.opacity(0.35)).padding(.horizontal, 22)
                     TextField(
-                        "Enter a ticker question or an investment theme",
+                        placeholder,
                         text: $question,
                         axis: .vertical
                     )
@@ -67,6 +118,10 @@ private struct ResearchComposer: View {
 
                     HStack(spacing: 12) {
                         Spacer()
+                        if model.isPlanning {
+                            Button("Cancel") { model.cancelResearch() }
+                                .stockSecondaryButton()
+                        }
                         Button {
                             Task { await model.createProposal() }
                         } label: {
@@ -83,7 +138,7 @@ private struct ResearchComposer: View {
                         }
                         .buttonStyle(.glassProminent)
                         .help("Review the scope before running research")
-                        .disabled(question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.isPlanning)
+                        .disabled(question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.isPlanning || model.isResearching)
                         .keyboardShortcut(.return, modifiers: .command)
                     }
                     .padding(.horizontal, 16)
@@ -92,9 +147,48 @@ private struct ResearchComposer: View {
             }
         }
     }
+
+    private var placeholder: String {
+        switch model.researchMode {
+        case .named: "Enter a ticker and what you want to know"
+        case .discovery: "Describe the business trend you want to explore"
+        case nil: "Enter a ticker question or an investment theme"
+        }
+    }
+
+    private func capability(_ mode: ResearchMode, title: String, detail: String, icon: String) -> some View {
+        Button {
+            model.researchMode = model.researchMode == mode ? nil : mode
+            focused.wrappedValue = true
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: icon)
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(StockTheme.accentBright)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title).font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(StockTheme.text)
+                    Text(detail).font(.system(size: 11))
+                        .foregroundStyle(StockTheme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(model.researchMode == mode ? StockTheme.accent.opacity(0.13) : .clear,
+                        in: RoundedRectangle(cornerRadius: 18))
+            .contentShape(RoundedRectangle(cornerRadius: 18))
+        }
+        .buttonStyle(.plain)
+        .disabled(model.isPlanning || model.isResearching)
+        .accessibilityAddTraits(model.researchMode == mode ? .isSelected : [])
+        .help("Use \(title). Click again to let the question choose the workflow.")
+    }
 }
 
 private struct ResearchProgress: View {
+    @Environment(AppModel.self) private var model
     let message: String
 
     var body: some View {
@@ -110,6 +204,8 @@ private struct ResearchProgress: View {
                     .foregroundStyle(StockTheme.muted)
             }
             Spacer()
+            Button("Cancel") { model.cancelResearch() }
+                .stockSecondaryButton()
         }
         .padding(.horizontal, 18)
         .frame(height: 66)
@@ -138,7 +234,7 @@ private struct ResearchReportView: View {
 
             if report.companies.isEmpty {
                 GlassPanel {
-                    Text(report.notes.first ?? "No companies were returned.")
+                    Text(report.notes.isEmpty ? "No companies were returned." : report.notes.joined(separator: "\n\n"))
                         .font(.system(size: 14))
                         .foregroundStyle(StockTheme.muted)
                 }
@@ -150,7 +246,7 @@ private struct ResearchReportView: View {
                 }
             }
 
-            if !report.notes.isEmpty {
+            if !report.notes.isEmpty && !report.companies.isEmpty {
                 VStack(alignment: .leading, spacing: 7) {
                     ForEach(report.notes, id: \.self) { note in
                         Label(note, systemImage: "info.circle")
@@ -241,7 +337,11 @@ private struct CompanyResultView: View {
                 }
 
                 if let snapshot = company.snapshot, !snapshot.facts.isEmpty {
-                    KeyMetricsView(facts: Array(snapshot.facts.prefix(8)))
+                    DisclosureGroup("Financials") {
+                        KeyMetricsView(facts: snapshot.facts)
+                    }
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(StockTheme.muted)
                 }
 
                 if !company.evidence.isEmpty {
@@ -275,30 +375,30 @@ private struct CompanyResultView: View {
 private struct InvestmentCaseView: View {
     let investmentCase: InvestmentCase
 
-    private var stanceColor: Color {
-        switch investmentCase.stance {
-        case .constructive: StockTheme.positive
-        case .mixed: StockTheme.accentBright
-        case .cautious: StockTheme.warning
-        case .insufficient: StockTheme.muted
-        }
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                Text("INVESTMENT CASE")
+                Text("INVESTMENT EVIDENCE")
                     .font(.system(size: 9, weight: .bold, design: .rounded))
                     .tracking(0.9)
                     .foregroundStyle(StockTheme.muted)
                 Spacer()
-                CapsuleLabel(text: investmentCase.stance.rawValue, color: stanceColor)
             }
             Text(investmentCase.summary)
                 .font(.system(size: 14, weight: .medium))
                 .lineSpacing(3)
                 .fixedSize(horizontal: false, vertical: true)
 
+            DisclosureGroup("Financial evidence") {
+                financialEvidence
+            }
+            .font(.system(size: 11, weight: .medium))
+        }
+        .padding(.top, 2)
+    }
+
+    @ViewBuilder
+    private var financialEvidence: some View {
             if investmentCase.reasons.isEmpty {
                 ResearchPointColumn(
                     title: "What to watch",
@@ -347,8 +447,6 @@ private struct InvestmentCaseView: View {
                     }
                 }
             }
-        }
-        .padding(.top, 2)
     }
 }
 
@@ -433,22 +531,32 @@ private struct KeyMetricsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("KEY METRICS")
-                .font(.system(size: 9, weight: .bold, design: .rounded))
-                .tracking(0.9)
-                .foregroundStyle(StockTheme.muted)
             LazyVGrid(columns: columns, alignment: .leading, spacing: 13) {
                 ForEach(facts, id: \.label) { fact in
                     VStack(alignment: .leading, spacing: 3) {
                         Text(fact.label)
                             .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(StockTheme.muted)
-                            .lineLimit(1)
+                            .fixedSize(horizontal: false, vertical: true)
                         Text(format(fact))
                             .font(.system(size: 14, weight: .semibold, design: .rounded))
                             .lineLimit(1)
+                            .foregroundStyle(StockTheme.text)
+                        if let context = metricMeaning(fact) {
+                            Text(context)
+                                .font(.system(size: 10))
+                                .foregroundStyle(StockTheme.muted)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        if let end = fact.periodEnd {
+                            Text((fact.periodStart.map { "\($0.formatted(.dateTime.month(.abbreviated).day())) – " } ?? "As of ")
+                                 + end.formatted(.dateTime.month(.abbreviated).day().year()))
+                                .font(.system(size: 9))
+                                .foregroundStyle(StockTheme.muted)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
-                    .help(fact.source)
+                    .help(factContext(fact))
                 }
             }
         }
@@ -468,5 +576,35 @@ private struct KeyMetricsView: View {
             )
         }
         return fact.value.formatted(.number.notation(.compactName).precision(.fractionLength(0...1))) + " " + fact.unit
+    }
+
+    private func factContext(_ fact: FinancialFact) -> String {
+        var parts = [fact.source]
+        if let end = fact.periodEnd {
+            let period = fact.periodStart.map { "\($0.formatted(date: .abbreviated, time: .omitted)) – " } ?? "As of "
+            parts.append(period + end.formatted(date: .abbreviated, time: .omitted))
+        }
+        if let filed = fact.filedAt { parts.append("Filed \(filed.formatted(date: .abbreviated, time: .omitted))") }
+        return parts.joined(separator: "\n")
+    }
+
+    private func metricMeaning(_ fact: FinancialFact) -> String? {
+        let label = fact.label.lowercased()
+        if label.contains("p/e") {
+            if fact.value <= 0 { return "Not a useful earnings valuation multiple when earnings are nonpositive." }
+            return label.contains("forward") ? "Price relative to forecast earnings; estimates can change." : "Price per dollar of past earnings. Compare similar businesses, not the whole market."
+        }
+        if label.contains("ebitda") { return "Enterprise value relative to operating earnings before interest, tax and depreciation; ignores capital spending." }
+        if label.contains("target") { return "Analyst estimate, not a promised return or independently assessed fair value." }
+        if label.contains("revenue") { return "Sales, not profit. Growth needs a comparable earlier period." }
+        if label.contains("net income") { return fact.value < 0 ? "A reported loss for this period." : "Profit after expenses and tax; cash generation can differ." }
+        if label.contains("cash") { return "Liquidity available to the business; assess alongside debt and spending needs." }
+        if label.contains("debt") { return "Borrowing obligations. Refinancing costs and repayment dates matter as well as the balance." }
+        if label.contains("market cap") { return "Equity market value; size alone does not establish investment value." }
+        if label.contains("return on equity") { return "Profit relative to book equity; high leverage can inflate this ratio." }
+        if label.contains("assets") { return "Resources on the balance sheet, not an estimate of shareholder value." }
+        if label.contains("liabilities") { return "Amounts owed, including obligations other than borrowing." }
+        if label.contains("equity") { return "Accounting residual after liabilities; not market value." }
+        return nil
     }
 }

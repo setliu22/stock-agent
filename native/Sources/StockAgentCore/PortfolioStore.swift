@@ -5,6 +5,9 @@ private let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self
 
 public actor PortfolioStore {
     public let databaseURL: URL
+    private var sessionPrices = [String: [PricePoint]]()
+    private var sessionSplits = [String: [StockSplit]]()
+    private var verifiedTickers = Set<String>()
 
     public init(databaseURL: URL) throws {
         self.databaseURL = databaseURL
@@ -26,18 +29,10 @@ public actor PortfolioStore {
                 note TEXT NOT NULL DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_purchases_ticker ON purchases(ticker);
-            CREATE TABLE IF NOT EXISTS price_history (
-                ticker TEXT NOT NULL,
-                price_date TEXT NOT NULL,
-                close REAL NOT NULL CHECK(close >= 0),
-                source TEXT NOT NULL DEFAULT 'Imported CSV',
-                PRIMARY KEY(ticker, price_date)
-            );
-            CREATE TABLE IF NOT EXISTS manual_prices (
-                ticker TEXT PRIMARY KEY,
-                close REAL NOT NULL CHECK(close >= 0),
-                updated_at TEXT NOT NULL
-            );
+            DROP TABLE IF EXISTS price_history;
+            DROP TABLE IF EXISTS manual_prices;
+            DROP TABLE IF EXISTS stock_splits;
+            DROP TABLE IF EXISTS research_profile_classifications;
             """
         )
     }
@@ -127,43 +122,17 @@ public actor PortfolioStore {
     }
 
     public func holdings() throws -> [Holding] {
-        let prices = try currentPrices()
-        let database = try Self.open(databaseURL)
-        defer { sqlite3_close(database) }
-        let statement = try Self.prepare(
-            database,
-            sql: """
-            SELECT ticker, SUM(quantity), SUM(quantity * price)
-            FROM purchases
-            GROUP BY ticker
-            HAVING SUM(quantity) > 0
-            ORDER BY ticker
-            """
-        )
-        defer { sqlite3_finalize(statement) }
-        var output = [Holding]()
-        while sqlite3_step(statement) == SQLITE_ROW {
-            let ticker = Self.string(statement, column: 0)
-            let quantity = sqlite3_column_double(statement, 1)
-            let totalCost = sqlite3_column_double(statement, 2)
-            output.append(
-                Holding(
-                    ticker: ticker,
-                    quantity: quantity,
-                    totalCost: totalCost,
-                    averageCost: totalCost / quantity,
-                    currentPrice: prices[ticker]
-                )
-            )
+        let prices = currentPrices()
+        let lots = try adjustedPurchases()
+        return Dictionary(grouping: lots, by: \.ticker).sorted { $0.key < $1.key }.map { ticker, purchases in
+            let quantity = purchases.reduce(0) { $0 + $1.quantity }
+            let cost = purchases.reduce(0) { $0 + $1.quantity * $1.price }
+            return Holding(ticker: ticker, quantity: quantity, totalCost: cost, averageCost: cost / quantity, currentPrice: prices[ticker])
         }
-        return output
     }
 
-    @discardableResult
-    public func deletePurchase(id: Int64) throws -> Int {
-        try mutate("DELETE FROM purchases WHERE id = ?") { statement in
-            sqlite3_bind_int64(statement, 1, id)
-        }
+    public func adjustedPurchases() throws -> [Purchase] {
+        try purchases().map { PortfolioAnalytics.adjusted($0, for: sessionSplits[$0.ticker] ?? []) }
     }
 
     @discardableResult
@@ -175,111 +144,29 @@ public actor PortfolioStore {
         }
     }
 
-    @discardableResult
-    public func clear() throws -> Int {
-        try mutate("DELETE FROM purchases") { _ in }
-    }
-
-    public func setManualPrice(ticker rawTicker: String, close: Double) throws {
+    /// Market data lives only for this app session. Only original purchase records are persisted.
+    public func importPriceHistory(ticker rawTicker: String, points: [PricePoint], source: String, splits: [StockSplit]? = nil) throws {
         let ticker = rawTicker.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        guard !ticker.isEmpty, close >= 0 else {
-            throw StockAgentError.validation("Enter a valid ticker and non-negative price.")
+        guard !ticker.isEmpty, !points.isEmpty,
+              points.allSatisfy({ $0.close.isFinite && $0.close > 0 && $0.date.timeIntervalSince1970.isFinite }),
+              (splits ?? []).allSatisfy({ $0.ratio.isFinite && $0.ratio > 0 && $0.date.timeIntervalSince1970.isFinite }) else {
+            throw StockAgentError.validation("Market history contained invalid prices or split events.")
         }
-        let database = try Self.open(databaseURL)
-        defer { sqlite3_close(database) }
-        let statement = try Self.prepare(
-            database,
-            sql: """
-            INSERT INTO manual_prices(ticker, close, updated_at) VALUES (?, ?, ?)
-            ON CONFLICT(ticker) DO UPDATE SET close=excluded.close, updated_at=excluded.updated_at
-            """
-        )
-        defer { sqlite3_finalize(statement) }
-        Self.bind(ticker, to: 1, in: statement)
-        sqlite3_bind_double(statement, 2, close)
-        Self.bind(ISO8601DateFormatter().string(from: .now), to: 3, in: statement)
-        try Self.stepDone(statement, database: database)
+        sessionPrices[ticker] = points.sorted { $0.date < $1.date }
+        sessionSplits[ticker] = splits ?? []
+        if source == "Yahoo Finance (split-adjusted)" { verifiedTickers.insert(ticker) }
     }
 
-    public func importPriceHistory(ticker rawTicker: String, points: [PricePoint], source: String) throws {
-        let ticker = rawTicker.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        guard !ticker.isEmpty else { throw StockAgentError.validation("Enter a ticker.") }
-        guard !points.isEmpty else { throw StockAgentError.validation("No price rows were found.") }
-        let database = try Self.open(databaseURL)
-        defer { sqlite3_close(database) }
-        try Self.execute(database, sql: "BEGIN IMMEDIATE")
-        do {
-            let statement = try Self.prepare(
-                database,
-                sql: """
-                INSERT INTO price_history(ticker, price_date, close, source) VALUES (?, ?, ?, ?)
-                ON CONFLICT(ticker, price_date) DO UPDATE
-                SET close=excluded.close, source=excluded.source
-                """
-            )
-            defer { sqlite3_finalize(statement) }
-            for point in points where point.close >= 0 {
-                sqlite3_reset(statement)
-                sqlite3_clear_bindings(statement)
-                Self.bind(ticker, to: 1, in: statement)
-                Self.bind(Self.dayString(point.date), to: 2, in: statement)
-                sqlite3_bind_double(statement, 3, point.close)
-                Self.bind(source, to: 4, in: statement)
-                try Self.stepDone(statement, database: database)
-            }
-            try Self.execute(database, sql: "COMMIT")
-        } catch {
-            try? Self.execute(database, sql: "ROLLBACK")
-            throw error
-        }
+    public func priceHistory(ticker: String) -> [PricePoint] {
+        sessionPrices[ticker.uppercased()] ?? []
     }
 
-    public func priceHistory(ticker rawTicker: String) throws -> [PricePoint] {
-        let ticker = rawTicker.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        let database = try Self.open(databaseURL)
-        defer { sqlite3_close(database) }
-        let statement = try Self.prepare(
-            database,
-            sql: """
-            SELECT price_date, close FROM price_history
-            WHERE ticker = ? ORDER BY price_date
-            """
-        )
-        defer { sqlite3_finalize(statement) }
-        Self.bind(ticker, to: 1, in: statement)
-        var output = [PricePoint]()
-        while sqlite3_step(statement) == SQLITE_ROW {
-            guard let date = Self.date(Self.string(statement, column: 0)) else { continue }
-            output.append(.init(date: date, close: sqlite3_column_double(statement, 1)))
-        }
-        return output
+    public func hasVerifiedPriceHistory(ticker: String) -> Bool {
+        verifiedTickers.contains(ticker.uppercased())
     }
 
-    private func currentPrices() throws -> [String: Double] {
-        let database = try Self.open(databaseURL)
-        defer { sqlite3_close(database) }
-        let statement = try Self.prepare(
-            database,
-            sql: """
-            WITH latest AS (
-                SELECT p.ticker, p.close
-                FROM price_history p
-                JOIN (
-                    SELECT ticker, MAX(price_date) AS max_date
-                    FROM price_history GROUP BY ticker
-                ) d ON d.ticker = p.ticker AND d.max_date = p.price_date
-            )
-            SELECT ticker, close FROM latest
-            UNION ALL
-            SELECT ticker, close FROM manual_prices
-            """
-        )
-        defer { sqlite3_finalize(statement) }
-        var output = [String: Double]()
-        while sqlite3_step(statement) == SQLITE_ROW {
-            output[Self.string(statement, column: 0)] = sqlite3_column_double(statement, 1)
-        }
-        return output
+    private func currentPrices() -> [String: Double] {
+        sessionPrices.compactMapValues { $0.last?.close }
     }
 
     private func mutate(
@@ -360,46 +247,56 @@ public actor PortfolioStore {
 }
 
 public enum PortfolioAnalytics {
-    public static func timeWeightedIndex(
-        purchases: [Purchase],
-        priceHistory: [String: [PricePoint]]
-    ) -> [PortfolioValuePoint] {
-        let sortedPurchases = purchases.sorted { $0.purchasedAt < $1.purchasedAt }
-        let sortedHistory = priceHistory.mapValues { $0.sorted { $0.date < $1.date } }
-        let dates = Set(
-            sortedHistory.values.flatMap { $0.map(\.date) } + sortedPurchases.map(\.purchasedAt)
-        ).sorted()
-        guard !dates.isEmpty else { return [] }
+    public static func adjusted(_ purchase: Purchase, for splits: [StockSplit]) -> Purchase {
+        let calendar = Calendar(identifier: .gregorian)
+        let purchaseDay = calendar.startOfDay(for: purchase.purchasedAt)
+        let factor = splits.filter { calendar.startOfDay(for: $0.date) > purchaseDay && $0.date <= .now }
+            .reduce(1.0) { $0 * $1.ratio }
+        var adjusted = purchase
+        adjusted.quantity *= factor
+        adjusted.price /= factor
+        return adjusted
+    }
 
-        var previousDate: Date?
-        var previousValue: Double?
-        var index = 100.0
-        var output = [PortfolioValuePoint]()
-        for date in dates {
-            let active = sortedPurchases.filter { $0.purchasedAt <= date }
-            guard !active.isEmpty else { continue }
-            let value = active.reduce(0.0) { total, purchase in
-                let close = sortedHistory[purchase.ticker]?
-                    .last(where: { $0.date <= date })?.close ?? purchase.price
-                return total + purchase.quantity * close
+    /// Unrealized capital gain divided by the actual cost of active purchase lots.
+    /// Ranges are viewports, not rebased price comparisons. Excludes dividends and sales.
+    public static func returnsOnCost(purchases: [Purchase], priceHistory: [String: [PricePoint]]) -> [PortfolioValuePoint] {
+        let calendar = Calendar(identifier: .gregorian)
+        let lots = purchases.filter { $0.quantity.isFinite && $0.quantity > 0 && $0.price.isFinite && $0.price > 0 }
+        guard let first = lots.map(\.purchasedAt).min() else { return [] }
+        let firstDay = calendar.startOfDay(for: first)
+        var history = [String: [PricePoint]]()
+        for ticker in Set(lots.map(\.ticker)) {
+            var daily = [Date: Double]()
+            for point in (priceHistory[ticker] ?? []).sorted(by: { $0.date < $1.date })
+                where point.close.isFinite && point.close > 0 {
+                daily[calendar.startOfDay(for: point.date)] = point.close
             }
-            if let previousDate, let previousValue, previousValue > 0 {
-                let contributions = sortedPurchases
-                    .filter { $0.purchasedAt > previousDate && $0.purchasedAt <= date }
-                    .reduce(0.0) { $0 + $1.quantity * $1.price }
-                let adjustedValue = value - contributions
-                let periodFactor = adjustedValue / previousValue
-                if periodFactor.isFinite, periodFactor >= 0 {
-                    index *= periodFactor
-                }
-            }
-            if index.isFinite {
-                output.append(PortfolioValuePoint(date: date, value: index))
-            }
-            previousDate = date
-            previousValue = value
+            guard !daily.isEmpty else { return [] }
+            history[ticker] = daily.map { PricePoint(date: $0.key, close: $0.value) }.sorted { $0.date < $1.date }
         }
-        return output
+        let dates = Set(history.values.flatMap { $0.map(\.date) }).filter { $0 >= firstDay }.sorted()
+        // The purchase anchor is actual transaction cost, not an invented market quote.
+        var output = [PortfolioValuePoint(date: firstDay, value: 0)]
+        for day in dates {
+            let active = lots.filter { calendar.startOfDay(for: $0.purchasedAt) <= day }
+            let cost = active.reduce(0) { $0 + $1.quantity * $1.price }
+            var value = 0.0
+            var complete = true
+            for lot in active {
+                guard let quote = history[lot.ticker]?.last(where: { $0.date <= day }),
+                    quote.date >= calendar.startOfDay(for: lot.purchasedAt),
+                    day.timeIntervalSince(quote.date) <= 7 * 86_400 else { complete = false; break }
+                value += lot.quantity * quote.close
+            }
+            guard complete else { break }
+            guard cost.isFinite, cost > 0, value.isFinite else { break }
+            let percentage = (value / cost - 1) * 100
+            guard percentage.isFinite else { break }
+            // Daily closes follow the day's transactions. Distinct times preserve the initial zero.
+            output.append(.init(date: day.addingTimeInterval(86_399), value: percentage))
+        }
+        return output.count > 1 ? output : []
     }
 
 }

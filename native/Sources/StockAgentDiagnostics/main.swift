@@ -5,6 +5,14 @@ import StockAgentCore
 struct StockAgentDiagnostics {
     static func main() async {
         var arguments = Array(CommandLine.arguments.dropFirst())
+        if arguments.first == "--prices", arguments.count == 2 {
+            do {
+                let history = try await YahooPriceService().history(ticker: arguments[1])
+                print("Daily closes: \(history.prices.count); splits: \(history.splits.count)")
+                if let latest = history.prices.last { print("Latest: \(latest.date) — \(latest.close)") }
+            } catch { print("Price retrieval failed: \(error.localizedDescription)"); Foundation.exit(1) }
+            return
+        }
         if arguments.first == "--market" {
             let regime = await FREDMarketService().regime()
             print("Regime: \(regime.label)")
@@ -49,11 +57,14 @@ struct StockAgentDiagnostics {
                     print("\n\(company.candidate.ticker) — \(company.candidate.name)")
                     print(company.thesis)
                     if let investmentCase = company.investmentCase {
-                        print("Investment view [\(investmentCase.stance.rawValue)]: \(investmentCase.summary)")
+                        print("Investment evidence: \(investmentCase.summary)")
                         for point in investmentCase.reasons { print("+ \(point.text)") }
                         for point in investmentCase.watchouts { print("! \(point.text)") }
                     }
                     print("Evidence excerpts: \(company.evidence.count)")
+                    if ProcessInfo.processInfo.environment["STOCK_AGENT_DEBUG_SOURCES"] == "1" {
+                        for evidence in company.evidence { print(evidence) }
+                    }
                     print("Filing: \(company.candidate.filingURL?.absoluteString ?? "unavailable")")
                 }
                 for note in report.notes { print("Note: \(note)") }

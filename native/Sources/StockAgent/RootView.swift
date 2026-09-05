@@ -12,13 +12,13 @@ struct RootView: View {
             NavigationSplitView {
                 Sidebar(selection: $model.selectedSection)
                     .navigationSplitViewColumnWidth(min: 210, ideal: 232, max: 260)
+                    .toolbar(removing: .sidebarToggle)
             } detail: {
                 Group {
                     switch model.selectedSection {
                     case .research: ResearchView()
                     case .portfolio: PortfolioView()
                     case .market: MarketView()
-                    case .account: AccountView()
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -26,7 +26,6 @@ struct RootView: View {
             }
             .navigationSplitViewStyle(.balanced)
             .toolbar(removing: .sidebarToggle)
-            .toolbarVisibility(.hidden, for: .windowToolbar)
             .background(Color.clear)
 
             if model.proposal != nil {
